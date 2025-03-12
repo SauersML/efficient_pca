@@ -5,9 +5,7 @@
 use ndarray::{Array1, Array2, Axis, s};
 use ndarray_linalg::svd::SVD;
 use std::error::Error;
-use ndarray::{Array2};
 use ndarray_linalg::QR;
-use ndarray_linalg::svd::SVD;
 use rand::{thread_rng, Rng};
 use rand_distr::Normal;
 use rand::SeedableRng;
