@@ -101,9 +101,10 @@ impl PCA {
         data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
         // 2) Compute covariance-like matrix: shape (num_samples, num_samples)
-        //    We do not necessarily divide by (num_samples - 1), because
-        //    we only need the eigenvectors for principal directions.
-        let cov_matrix = data_matrix.dot(&data_matrix.t());
+        //    We DO divide by (num_samples - 1) to match the original scaling.
+        let mut cov_matrix = data_matrix.dot(&data_matrix.t());
+        cov_matrix /= (num_samples - 1) as f64;
+
 
         // 3) Eigen-decomposition of this symmetric (n×n) matrix
         let (eigenvalues, eigenvectors) = cov_matrix.eigh(UPLO::Upper)
