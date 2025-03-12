@@ -204,6 +204,85 @@ impl PCA {
     }
 }
 
+#[cfg(test)]
+mod genome_tests {
+    use super::*;
+    use ndarray::{Array2, Axis};
+    use rand::Rng;
+    use std::time::Instant;
+    use sysinfo::{System, SystemExt};
+
+    #[test]
+    fn test_one_million_variants_88_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
+        // Monitor memory usage before data generation
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let initial_mem = sys.used_memory();
+        println!("Initial memory usage: {} KB", initial_mem);
+
+        // Dimensions: 88 haplotypes (rows) x 1,000,000 variants (columns)
+        let n_rows = 88;
+        let n_cols = 1_000_000;
+
+        // Generate random binary data (0 or 1) to simulate haplotype alleles
+        // Each entry is either 0.0 or 1.0
+        let start_data_gen = Instant::now();
+        let mut data = Array2::<f64>::zeros((n_rows, n_cols));
+        let mut rng = rand::thread_rng();
+        for i in 0..n_rows {
+            for j in 0..n_cols {
+                let allele = rng.gen_range(0..=1);
+                data[[i, j]] = allele as f64;
+            }
+        }
+        let data_gen_duration = start_data_gen.elapsed();
+        println!("Binary data generation completed in {:.2?}", data_gen_duration);
+
+        // Instantiate PCA
+        let mut pca = PCA::new();
+
+        // We will do randomized SVD with e.g. 10 principal components
+        // Oversampling to 5, fixed random seed
+        let n_components = 10;
+        let n_oversamples = 5;
+        let seed = Some(42_u64);
+
+        // Fit PCA with rfit
+        let start_pca = Instant::now();
+        pca.rfit(data.clone(), n_components, n_oversamples, seed, None)?;
+        let pca_duration = start_pca.elapsed();
+        println!("Randomized PCA fit completed in {:.2?}", pca_duration);
+
+        // Apply PCA transformation
+        let start_transform = Instant::now();
+        let transformed = pca.transform(data)?;
+        let transform_duration = start_transform.elapsed();
+        println!("PCA transform completed in {:.2?}", transform_duration);
+
+        // Basic dimensional checks
+        assert_eq!(transformed.nrows(), n_rows, "Row count of transformed data is incorrect");
+        assert_eq!(transformed.ncols(), n_components, "Column count of transformed data is incorrect");
+
+        // Verify that none of the values are NaN or infinite
+        for row in 0..n_rows {
+            for col in 0..n_components {
+                let val = transformed[[row, col]];
+                assert!(val.is_finite(), "PCA output contains non-finite value");
+            }
+        }
+
+        // Check memory usage afterwards
+        sys.refresh_all();
+        let final_mem = sys.used_memory();
+        println!("Final memory usage: {} KB", final_mem);
+        if final_mem < initial_mem {
+            println!("Note: system-reported memory decreased; this can happen if other processes ended.");
+        }
+
+        println!("Test completed successfully with 1,000,000 variants x 88 haplotypes (binary).");
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
