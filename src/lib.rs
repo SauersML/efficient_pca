@@ -161,9 +161,22 @@ impl PCA {
         //    Formula: rotation = X^T * U / sqrt(eigenvalue) per column
         //    We'll do it by:
         //      (A) Multiply X^T * top_evecs, shape => (num_features, final_rank)
-        //      (B) Optionally scale each column by 1/sqrt(eigenvalue)
+        //      (B) Scale each column by 1/sqrt(eigenvalue)
         let mut rotation_matrix = data_matrix.t().dot(&top_eigenvectors);
 
+        // Normalize each principal axis by sqrt of its eigenvalue
+        for (col_index, &eig_val) in top_eigenvalues.iter().enumerate() {
+            // eigenvalue can be numerically near zero or negative (due to rounding),
+            // so ensure safe sqrt:
+            let scale_factor = if eig_val > 1e-12 {
+                eig_val.sqrt()
+            } else {
+                1e-12
+            };
+            let mut column_mut = rotation_matrix.index_axis_mut(Axis(1), col_index);
+            column_mut.mapv_inplace(|val| val / scale_factor);
+        }
+        
         self.rotation = Some(rotation_matrix);
         Ok(())
     }
