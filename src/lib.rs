@@ -201,39 +201,51 @@ impl PCA {
         if n < 2 {
             return Err("Input matrix must have at least 2 rows.".into());
         }
-
+    
         // Compute mean for centering
         let mean = x.mean_axis(Axis(0)).ok_or("Failed to compute mean")?;
         self.mean = Some(mean.clone());
         x -= &mean;
-
+    
         // Compute scale
         let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
-
-        let k = std::cmp::min(n_components, std::cmp::min(n, x.ncols()));
-
-        // Compute SVD
-        let (_u, mut s, vt) = rsvd(&x, n_components, n_oversamples, seed);
-        //.map_err(|_| "Failed to compute SVD")?;
-
-        // Normalize singular values
-        s.mapv_inplace(|v| v / ((n as f64 - 1.0).max(1.0)).sqrt());
-
-        // Compute Rotation
-        let rotation;
-        if let Some(t) = tol {
-            // convert diagonal matrix s into a vector
-            let s = s.diag().to_owned();
-            let threshold = s[0] * t;
-            let rank = s.iter().take_while(|&si| *si > threshold).count();
-            rotation = vt.slice_move(s![..std::cmp::min(rank, k), ..]).reversed_axes();
+    
+        // Determine effective number of components (can't exceed number of samples)
+        let k = std::cmp::min(n_components, n);
+    
+        // COVARIANCE TRICK: Compute covariance matrix (n×n) instead of working with original (n×p) matrix
+        // This is much more efficient when p >> n
+        let cov_matrix = x.dot(&x.t()) / (n as f64 - 1.0).max(1.0);
+    
+        // Use randomized SVD on the covariance matrix
+        // For a symmetric matrix like covariance matrix, u contains the eigenvectors
+        let (u, s, _) = rsvd(&cov_matrix, k, n_oversamples, seed);
+    
+        // Extract singular values
+        let singular_values = s.diag().to_owned();
+    
+        // Apply tolerance if specified
+        let final_k = if let Some(t) = tol {
+            let threshold = singular_values[0] * t;
+            let rank = singular_values.iter()
+                .take(k)
+                .take_while(|&v| *v > threshold)
+                .count();
+            rank
         } else {
-            rotation = vt.slice_move(s![..k, ..]).reversed_axes();
-        }
-        self.rotation = Some(rotation);
-
+            k
+        };
+    
+        // Extract the top eigenvectors
+        let top_eigenvectors = u.slice(s![.., ..final_k]).to_owned();
+    
+        // Map the eigenvectors back to feature space to get principal components
+        // This is the key step that transforms from sample space back to feature space
+        let rotation_matrix = x.t().dot(&top_eigenvectors);
+    
+        self.rotation = Some(rotation_matrix);
         Ok(())
     }
 
