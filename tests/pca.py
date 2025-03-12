@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 import scipy.linalg as la
 
-def correct_pca(X, n_components=None):
+def manual_pca(X, n_components=None):
     """Perform PCA with proper normalization"""
     # Center and scale the data
     scaler = StandardScaler()
