@@ -210,7 +210,7 @@ mod genome_tests {
     use ndarray::{Array2};
     use rand::Rng;
     use std::time::Instant;
-    use sysinfo::{System, SystemExt};
+    use sysinfo::{System};
 
     #[test]
     fn test_one_million_variants_88_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
