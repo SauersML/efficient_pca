@@ -96,6 +96,24 @@ def library_pca(X, n_components=None):
     
     return X_transformed, components, explained_variance
 
+def print_pca_results(X, n_components=None, name="Test"):
+    """Print PCA results for a given input and number of components"""
+    print(f"\n=== {name} ===")
+    
+    # Run manual PCA
+    manual_transformed, manual_components, manual_eigvals = manual_pca(X, n_components)
+    
+    # Print manual PCA results
+    print("Manual PCA Transformed Data:")
+    print("let expected = array![")
+    for row in manual_transformed:
+        print(f"    [{', '.join([f'{x}' for x in row])}],")
+    print("];")
+    print(f"\nManual PCA Eigenvalues: {manual_eigvals}")
+    
+    # Return the result for potential further use
+    return manual_transformed, manual_components, manual_eigvals
+
 def compare_pca(X, n_components=None, name="Test"):
     """Compare manual and library PCA implementations"""
     print(f"\n=== {name} ===")
@@ -151,14 +169,30 @@ def compare_pca(X, n_components=None, name="Test"):
 # Set print options
 np.set_printoptions(precision=15)
 
-# Test case 1: 2x2 matrix
-test1 = np.array([
+# Test case for test_pca_2x2
+test_2x2 = np.array([
     [0.5855288, -0.1093033],
     [0.7094660, -0.4534972]
 ])
 
-# Test case 2: 5x7 matrix 
-test2 = np.array([
+# Test case for test_pca_3x5
+test_3x5 = np.array([
+    [0.5855288, -0.4534972, 0.6300986, -0.9193220, 0.3706279],
+    [0.7094660, 0.6058875, -0.2761841, -0.1162478, 0.5202165],
+    [-0.1093033, -1.8179560, -0.2841597, 1.8173120, -0.7505320]
+])
+
+# Test case for test_pca_5x5
+test_5x5 = np.array([
+    [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219],
+    [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851],
+    [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284],
+    [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374],
+    [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095]
+])
+
+# Test case for test_pca_5x7 and test_rpca_5x7_k3
+test_5x7 = np.array([
     [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
     [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
     [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
@@ -166,21 +200,32 @@ test2 = np.array([
     [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
 ])
 
-# Run tests
-compare_pca(test1, name="2x2 PCA Comparison")
-compare_pca(test2, name="5x7 PCA Comparison")
-compare_pca(test2, n_components=4, name="5x7 PCA with k=4 Comparison")
+# Print results for test_pca_2x2
+print_pca_results(test_2x2, name="test_pca_2x2 Ground Truth")
 
-# Random test case with fixed seed
-np.random.seed(1926)
-rng = np.random.RandomState(1926)
-random_2x2 = rng.randn(2, 2)
-compare_pca(random_2x2, name="Random 2x2 PCA")
+# Print results for test_pca_3x5
+print_pca_results(test_3x5, name="test_pca_3x5 Ground Truth")
+
+# Print results for test_pca_5x5
+print_pca_results(test_5x5, name="test_pca_5x5 Ground Truth")
+
+# Print results for test_pca_5x7
+print_pca_results(test_5x7, name="test_pca_5x7 Ground Truth")
+
+# Print results for test_rpca_5x7_k3 (with n_components=3)
+print_pca_results(test_5x7, n_components=3, name="test_rpca_5x7_k3 Ground Truth")
+
+# Compare with scikit-learn PCA for validation
+compare_pca(test_2x2, name="2x2 PCA Comparison")
+compare_pca(test_3x5, name="3x5 PCA Comparison")
+compare_pca(test_5x5, name="5x5 PCA Comparison")
+compare_pca(test_5x7, name="5x7 PCA Comparison")
+compare_pca(test_5x7, n_components=3, name="5x7 PCA with k=3 Comparison")
 
 # Additional visualization for understanding differences
 print("\n=== Detailed Comparison for 5x7 matrix ===")
-manual_tr, manual_comp, manual_eig = manual_pca(test2)
-library_tr, library_comp, library_eig = library_pca(test2)
+manual_tr, manual_comp, manual_eig = manual_pca(test_5x7)
+library_tr, library_comp, library_eig = library_pca(test_5x7)
 
 print("\nManual vs Library Eigenvalue Differences:")
 for i, (m_eig, l_eig) in enumerate(zip(manual_eig, library_eig)):
