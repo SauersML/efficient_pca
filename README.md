@@ -1,6 +1,8 @@
 # Principal component analysis (PCA)
 
-This is a rust library for performing principal component analysis (PCA). It supports:
+Forked from https://github.com/ekg/pca.
+
+This is a Rust library for performing principal component analysis (PCA). It supports:
 
 - Fitting a PCA model on a data matrix 
 - Projecting data into the PCA space
@@ -12,7 +14,7 @@ Tests confirm the correspondence.
 
 ## Usage
 
-```rust
+```
 use pca::PCA;
 use ndarray::array;
 
@@ -48,6 +50,7 @@ Or just `cargo add pca` to get the latest version.
 ## Authors
 
 Erik Garrison <erik.garrison@gmail.com>
+See original repository: https://github.com/ekg/pca
 
 ## License
 
