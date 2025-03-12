@@ -84,7 +84,6 @@ impl PCA {
     ) -> Result<(), Box<dyn Error>> 
     {
         let num_samples = data_matrix.nrows();
-        let num_features = data_matrix.ncols();
 
         if num_samples < 2 {
             return Err("Input matrix must have at least 2 rows.".into());
