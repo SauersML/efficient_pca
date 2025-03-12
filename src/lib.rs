@@ -4,7 +4,8 @@
 
 use ndarray::{Array1, Array2, Axis, s};
 use ndarray_linalg::svd::SVD;
-use ndarray_linalg::symmetric_eig::SymmetricEig;
+use ndarray_linalg::eigh::Eigh;
+use ndarray_linalg::UPLO;
 use std::error::Error;
 use ndarray_linalg::QR;
 use rand::{thread_rng, Rng};
@@ -45,18 +46,22 @@ impl PCA {
         }
     }
 
-    /// Fit the PCA rotation to the data
+    /// Fit the PCA rotation to the data **using the covariance approach**.
     ///
-    /// This computes the mean, scaling and rotation to apply PCA 
-    /// to the input data matrix.
+    /// This method computes the mean, scaling, and principal axes (rotation)
+    /// via an eigen-decomposition of the covariance matrix \( X \cdot X^T \).
+    /// This approach is especially suitable when the number of features (columns)
+    /// is much larger than the number of samples (rows).
     ///
-    /// * `x` - Input data as a 2D array
-    /// * `tol` - Tolerance for excluding low variance components.
-    ///           If None, all components are kept.
+    /// * `data_matrix` - Input data as a 2D array, shape (n_samples, n_features).
+    /// * `tolerance` - Tolerance for excluding low-variance components
+    ///   (fraction of the largest eigenvalue). If `None`, all components are kept.
     ///
     /// # Errors
     ///
-    /// Returns an error if the input matrix has fewer than 2 rows.
+    /// Returns an error if:
+    /// - The input matrix has fewer than 2 rows.
+    /// - Eigen-decomposition fails (very unlikely for a well-formed covariance).
     ///
     /// # Examples
     ///
@@ -64,45 +69,116 @@ impl PCA {
     /// use ndarray::array;
     /// use pca::PCA;
     ///
-    /// let x = array![[1.0, 2.0], [3.0, 4.0]];
+    /// let data = array![
+    ///     [1.0, 2.0],
+    ///     [3.0, 4.0]
+    /// ];
+    ///
     /// let mut pca = PCA::new();
-    /// pca.fit(x, None).unwrap();
+    /// pca.fit(data, None).unwrap();
     /// ```
-    pub fn fit(&mut self, mut x: Array2<f64>, tol: Option<f64>) -> Result<(), Box<dyn Error>> {
-        let n = x.nrows();
-        if n < 2 {
+    pub fn fit(
+        &mut self,
+        mut data_matrix: Array2<f64>,
+        tolerance: Option<f64>
+    ) -> Result<(), Box<dyn Error>> 
+    {
+        let num_samples = data_matrix.nrows();
+        let num_features = data_matrix.ncols();
+
+        if num_samples < 2 {
             return Err("Input matrix must have at least 2 rows.".into());
         }
 
-        // Compute mean for centering
-        let mean = x.mean_axis(Axis(0)).ok_or("Failed to compute mean")?;
-        self.mean = Some(mean.clone());
-        x -= &mean;
+        // 1) Center and scale the data
+        let mean_vector = data_matrix
+            .mean_axis(Axis(0))
+            .ok_or("Failed to compute mean of the data.")?;
+        self.mean = Some(mean_vector.clone());
+        data_matrix -= &mean_vector;
 
-        // Compute scale
-        let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
-        self.scale = Some(std_dev.clone());
-        x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
+        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(1.0));
+        self.scale = Some(std_dev_vector.clone());
+        data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
-        let k = std::cmp::min(n, x.ncols());
+        // 2) Compute covariance-like matrix: shape (num_samples, num_samples)
+        //    We do not necessarily divide by (num_samples - 1), because
+        //    we only need the eigenvectors for principal directions.
+        let cov_matrix = data_matrix.dot(&data_matrix.t());
 
-        // Compute SVD
-        let (_u, mut s, vt) = x.svd(true, true).map_err(|_| "Failed to compute SVD")?;
+        // 3) Eigen-decomposition of this symmetric (n×n) matrix
+        let (eigenvalues, eigenvectors) = cov_matrix.eigh(UPLO::Upper)
+            .map_err(|_| "Eigen decomposition of covariance matrix failed.")?;
+        // shape of eigenvectors is (num_samples, num_samples)
 
-        // Normalize singular values
-        s.mapv_inplace(|v| v / ((n as f64 - 1.0).max(1.0)).sqrt());
+        // 4) Sort eigenvalues and eigenvectors in descending order of eigenvalue
+        //    (They may come in ascending or arbitrary order.)
+        let mut eigen_pairs: Vec<(f64, Array1<f64>)> = eigenvalues
+            .iter()
+            .cloned()
+            .zip(eigenvectors.columns().into_iter().map(|col| col.to_owned()))
+            .collect();
 
-        // Compute Rotation
-        let rotation;
-        if let Some(t) = tol {
-            let threshold = s[0] * t;
-            let rank = s.iter().take_while(|&si| *si > threshold).count();
-            rotation = vt.unwrap().slice_move(s![..std::cmp::min(rank, k), ..]).reversed_axes();
+        // Sort descending by eigenvalue
+        eigen_pairs.sort_by(|(val_a, _), (val_b, _)| val_b.partial_cmp(val_a).unwrap());
+
+        // 5) Apply tolerance if provided (skip any eigenvalues below threshold of largest)
+        //    For example, if tolerance=0.01, we exclude eigenvalues < 0.01 * largest_eigenvalue.
+        let largest_eigenvalue = eigen_pairs.get(0).map_or(0.0, |(val, _)| *val);
+        let rank_by_tolerance = if let Some(tol) = tolerance {
+            let threshold = largest_eigenvalue * tol;
+            eigen_pairs
+                .iter()
+                .take_while(|(val, _)| *val > threshold)
+                .count()
         } else {
-            rotation = vt.unwrap().slice_move(s![..k, ..]).reversed_axes();
-        }
-        self.rotation = Some(rotation);
+            eigen_pairs.len()
+        };
 
+        // 6) Build the top subset of eigenvectors
+        //    We also can't exceed num_samples in rank.
+        let final_rank = std::cmp::min(rank_by_tolerance, num_samples);
+        let (top_eigenvalues, top_eigenvectors) = {
+            let mut values = Vec::with_capacity(final_rank);
+            let mut vectors = Vec::with_capacity(final_rank);
+
+            for i in 0..final_rank {
+                let (eval, evec) = &eigen_pairs[i];
+                values.push(*eval);
+                vectors.push(evec.clone());
+            }
+            // shape the vectors as (num_samples, final_rank)
+            let stacked_vecs = ndarray::stack(
+                Axis(1),
+                &vectors.iter().map(|v| v.view()).collect::<Vec<_>>()
+            )?;
+
+            (values, stacked_vecs)
+        };
+
+        // 7) Map those eigenvectors back into feature space. 
+        //    This recovers the principal axes in shape (num_features, final_rank).
+        //    Formula: rotation = X^T * U / sqrt(eigenvalue) per column
+        //    We'll do it by:
+        //      (A) Multiply X^T * top_evecs, shape => (num_features, final_rank)
+        //      (B) Optionally scale each column by 1/sqrt(eigenvalue)
+        let mut rotation_matrix = data_matrix.t().dot(&top_eigenvectors);
+
+        // 8) Optionally normalize each principal axis by sqrt of its eigenvalue,
+        //    so that each axis is unit-norm in standard PCA sense.
+        for (col_index, &eig_val) in top_eigenvalues.iter().enumerate() {
+            // eigenvalue can be numerically near zero or negative (due to rounding),
+            // so ensure safe sqrt:
+            let scale_factor = if eig_val > 1e-12 {
+                eig_val.sqrt()
+            } else {
+                1e-12
+            };
+            let mut column_mut = rotation_matrix.index_axis_mut(Axis(1), col_index);
+            column_mut.mapv_inplace(|val| val / scale_factor);
+        }
+
+        self.rotation = Some(rotation_matrix);
         Ok(())
     }
 
@@ -131,6 +207,7 @@ impl PCA {
     /// let mut pca = PCA::new();
     /// pca.rfit(x, 1, 0, None, None).unwrap();
     /// ```
+    /// `rsvd` internally calls `.svd(true, true)`.
     pub fn rfit(&mut self, mut x: Array2<f64>,
                 n_components: usize, n_oversamples: usize,
                 seed: Option<u64>, tol: Option<f64>) -> Result<(), Box<dyn Error>> {
