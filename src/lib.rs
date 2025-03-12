@@ -4,6 +4,7 @@
 
 use ndarray::{Array1, Array2, Axis, s};
 use ndarray_linalg::svd::SVD;
+use ndarray_linalg::symmetric_eig::SymmetricEig;
 use std::error::Error;
 use ndarray_linalg::QR;
 use rand::{thread_rng, Rng};
