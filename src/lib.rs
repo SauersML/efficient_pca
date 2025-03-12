@@ -347,51 +347,6 @@ mod tests {
         test_rpca(input, expected, 4, 0, None, 1e-6);
     }
 
-    // helper to make a random matrix with a given number of rows and columns
-    fn make_random_matrix(rows: usize, cols: usize, seed: Option<u64>) -> Array2<f64> {
-        let rng = match seed {
-            Some(s) => ChaCha8Rng::seed_from_u64(s),
-            None => ChaCha8Rng::from_rng(thread_rng()).unwrap(),
-        };
-        let x = {
-            let vec = rng.sample_iter(Normal::new(0.0, 1.0).unwrap())
-                .take(rows * cols)
-                .collect::<Vec<_>>();
-            ndarray::Array::from_shape_vec((rows, cols), vec).unwrap()
-        };
-        x
-    }
-    
-    // this helper test function compares randomized pca to the regular pca
-    // the randomized pca is expected to be less accurate, but faster
-    fn compare_rpca_to_pca(m: usize, n: usize, expected: Array2<f64>, k: usize, p: usize, seed: Option<u64>, e: f64) {
-
-        let mut pca = PCA::new();
-        let mut rpca = PCA::new();
-
-        let input = make_random_matrix(m, n, seed);
-
-        pca.fit(input.clone(), None).unwrap();
-        rpca.rfit(input.clone(), k, p, seed, None).unwrap();
-
-        // get the components
-        let output_pca = pca.transform(input.clone()).unwrap();
-        let output_rpca = pca.transform(input).unwrap();
-        // check that the output arrays are equivalent
-
-        assert!(equivalent(&output_pca, &output_rpca, e));
-    }
-
-    fn equivalent(a: &Array2<f64>, b: &Array2<f64>, e: f64) -> bool {
-        let a = a.clone().mapv_into(f64::abs);
-        let b = b.clone().mapv_into(f64::abs);
-        // sum of absolute differences
-        let diff = a - b;
-        // average difference per cell
-        let avg = diff.sum() / (diff.len() as f64);
-        avg < e
-    }
-
     use ndarray::Array2;
     use ndarray_rand::RandomExt; // for creating random arrays
     use rand::distributions::Uniform;
