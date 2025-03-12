@@ -210,7 +210,6 @@ mod tests {
 
     use ndarray::array;
     use ndarray_rand::rand_distr::Distribution;
-    use ndarray_rand::rand_distr::Normal;
     use super::*;
     use float_cmp::approx_eq;
 
@@ -351,7 +350,6 @@ mod tests {
     use ndarray_rand::RandomExt; // for creating random arrays
     use rand::distributions::Uniform;
     use rand::prelude::SeedableRng;
-    use rand::{thread_rng, Rng};
     use rand_chacha::ChaCha8Rng;
 
     // This helper function will make a random matrix that's size x size and check that there are no NaNs in the output
