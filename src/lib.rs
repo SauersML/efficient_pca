@@ -144,7 +144,7 @@ impl PCA {
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
 
-        let k = std::cmp::min(n, x.ncols());
+        let k = std::cmp::min(n_components, std::cmp::min(n, x.ncols()));
 
         // Compute SVD
         let (_u, mut s, vt) = rsvd(&x, n_components, n_oversamples, seed);
