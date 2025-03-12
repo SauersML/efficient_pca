@@ -207,7 +207,7 @@ impl PCA {
 #[cfg(test)]
 mod genome_tests {
     use super::*;
-    use ndarray::{Array2, Axis};
+    use ndarray::{Array2};
     use rand::Rng;
     use std::time::Instant;
     use sysinfo::{System, SystemExt};
