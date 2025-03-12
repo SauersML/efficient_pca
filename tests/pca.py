@@ -4,37 +4,74 @@ from sklearn.decomposition import PCA
 import scipy.linalg as la
 
 def manual_pca(X, n_components=None):
-    """Perform PCA with proper normalization"""
+    """
+    Perform PCA with proper normalization and using the covariance trick
+    when n_features > n_samples.
+    """
     # Center and scale the data
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # Compute covariance matrix
-    n_samples = X_scaled.shape[0]
-    cov_matrix = np.dot(X_scaled.T, X_scaled) / (n_samples - 1)
+    n_samples, n_features = X_scaled.shape
     
-    # Eigendecomposition
-    eigvals, eigvecs = la.eigh(cov_matrix)
+    # Determine number of components if not specified
+    if n_components is None:
+        n_components = min(n_samples, n_features)
+    else:
+        n_components = min(n_components, min(n_samples, n_features))
     
-    # Sort in descending order
-    idx = np.argsort(eigvals)[::-1]
-    eigvals = eigvals[idx]
-    eigvecs = eigvecs[:, idx]
-    
-    # Limit components if specified
-    if n_components is not None:
+    # Apply covariance trick when n_features > n_samples
+    if n_features > n_samples:
+        # Use the Gram matrix X·X^T (covariance trick)
+        gram_matrix = np.dot(X_scaled, X_scaled.T) / (n_samples - 1)
+        
+        # Eigendecomposition of Gram matrix
+        eigvals, eigvecs = la.eigh(gram_matrix)
+        
+        # Sort in descending order
+        idx = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
+        
+        # Select the top components
         eigvals = eigvals[:n_components]
         eigvecs = eigvecs[:, :n_components]
+        
+        # Calculate the actual principal components (eigenvectors of covariance matrix)
+        # V = X^T · U / sqrt(λ)
+        components = np.zeros((n_features, n_components))
+        for i in range(n_components):
+            # Handle very small eigenvalues to avoid division by zero
+            scale_factor = np.sqrt(eigvals[i]) if eigvals[i] > 1e-12 else 1e-12
+            components[:, i] = np.dot(X_scaled.T, eigvecs[:, i]) / (scale_factor * np.sqrt(n_samples - 1))
+            # Normalize
+            components[:, i] = components[:, i] / np.linalg.norm(components[:, i])
+        
+        # Transform data
+        X_transformed = np.dot(X_scaled, components)
+    else:
+        # Use standard covariance matrix X^T·X
+        cov_matrix = np.dot(X_scaled.T, X_scaled) / (n_samples - 1)
+        
+        # Eigendecomposition
+        eigvals, eigvecs = la.eigh(cov_matrix)
+        
+        # Sort in descending order
+        idx = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
+        
+        # Limit components
+        eigvals = eigvals[:n_components]
+        eigvecs = eigvecs[:, :n_components]
+        
+        # Transform data
+        X_transformed = np.dot(X_scaled, eigvecs)
+        
+        # The eigenvectors are already the components
+        components = eigvecs
     
-    # Correctly normalize by sqrt(eigenvalues)
-    for i in range(len(eigvals)):
-        scale_factor = np.sqrt(eigvals[i]) if eigvals[i] > 1e-12 else 1e-12
-        eigvecs[:, i] /= scale_factor
-    
-    # Transform data
-    X_transformed = np.dot(X_scaled, eigvecs)
-    
-    return X_transformed, eigvecs, eigvals
+    return X_transformed, components, eigvals
 
 def library_pca(X, n_components=None):
     """Perform PCA using scikit-learn"""
@@ -42,8 +79,14 @@ def library_pca(X, n_components=None):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
+    # Determine max components (can't exceed min(n_samples, n_features))
+    max_components = min(X.shape)
+    if n_components is None:
+        n_components = max_components
+    else:
+        n_components = min(n_components, max_components)
+    
     # Use scikit-learn's PCA
-    n_components = min(n_components if n_components is not None else X.shape[1], min(X.shape))
     pca = PCA(n_components=n_components)
     X_transformed = pca.fit_transform(X_scaled)
     
@@ -81,8 +124,22 @@ def compare_pca(X, n_components=None, name="Test"):
     
     # Compare results
     print("\nComparison:")
+    
     # Check if transformed data is similar (allowing for sign flips)
-    transformed_similar = np.allclose(np.abs(manual_transformed), np.abs(library_transformed), rtol=1e-5, atol=1e-5)
+    # We need to check column by column since the sign might be flipped
+    transformed_similar = True
+    for i in range(manual_transformed.shape[1]):
+        manual_col = manual_transformed[:, i]
+        library_col = library_transformed[:, i]
+        
+        # Try both signs
+        sim_positive = np.allclose(manual_col, library_col, rtol=1e-5, atol=1e-5)
+        sim_negative = np.allclose(manual_col, -library_col, rtol=1e-5, atol=1e-5)
+        
+        if not (sim_positive or sim_negative):
+            transformed_similar = False
+            break
+    
     print(f"Transformed data similar (accounting for sign flips): {transformed_similar}")
     
     # Compare eigenvalues
@@ -136,7 +193,7 @@ for i in range(min(manual_comp.shape[1], library_comp.shape[1])):
     m_vec = manual_comp[:, i]
     l_vec = library_comp[:, i]
     
-    # Check correlation (accounting for possible sign flip)
+    # Calculate correlation coefficient (accounting for possible sign flip)
     corr = abs(np.dot(m_vec, l_vec) / (np.linalg.norm(m_vec) * np.linalg.norm(l_vec)))
     print(f"\nComponent {i+1} eigenvector correlation: {corr:.8f}")
     
