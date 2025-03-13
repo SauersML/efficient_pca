@@ -1,6 +1,6 @@
 [package]
-name = "pca"
-version = "0.1.3"
+name = "efficient_pca"
+version = "0.1.0"
 authors = ["Erik Garrison <erik.garrison@gmail.com>, SauersML"]
 edition = "2021"
 description = "principal component computation using SVD"
@@ -9,9 +9,7 @@ repository = "https://github.com/SauersML/pca"
 readme = "README.md"
 keywords = ["statistics", "PCA"]
 categories = ["science"]
-documentation = "https://docs.rs/pca"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+documentation = "https://github.com/SauersML/efficient_pca"
 
 [dependencies]
 float-cmp = "0.9.0"
