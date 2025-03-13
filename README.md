@@ -139,6 +139,7 @@ fn main() {
 Creates a new, empty `PCA` struct. Before use, you must call either `fit` or `rfit`.  
 
 ```
+use efficient_pca::PCA;
 let pca = PCA::new();
 ```
 
@@ -151,6 +152,11 @@ Fits PCA using the **covariance eigen-decomposition** approach.
 - **Returns**: `Result<(), Box<dyn Error>>`, but on success, stores internal rotation, mean, and scale.
 
 ```
+use ndarray::array;
+use efficient_pca::PCA;
+let data = array![[1.0, 2.0],
+                  [3.0, 4.0]];
+let mut pca = PCA::new();
 pca.fit(data, Some(0.01)).unwrap();
 ```
 
@@ -165,6 +171,11 @@ Fits PCA using **randomized SVD**.
 - **Returns**: Same as `fit`, but uses a different internal approach optimized for large dimensions.
 
 ```
+use ndarray::array;
+use efficient_pca::PCA;
+let data = array![[1.0, 2.0],
+                  [3.0, 4.0]];
+let mut pca = PCA::new();
 pca.rfit(data, 10, 5, Some(42_u64), Some(0.01)).unwrap();
 ```
 
@@ -175,7 +186,13 @@ Transforms data using the previously fitted PCA’s rotation, mean, and scale.
 - **Returns**: The matrix of shape (n_samples, n_components) in principal-component space.
 
 ```
-let projected = pca.transform(some_data)?;
+use ndarray::array;
+use efficient_pca::PCA;
+let data = array![[1.0, 2.0],
+                  [3.0, 4.0]];
+let mut pca = PCA::new();
+pca.fit(data.clone(), None).unwrap();
+let projected = pca.transform(data)?;
 ```
 
 ## Performance Considerations
