@@ -457,8 +457,10 @@ mod genome_tests {
         // Monitor memory usage before data generation
         let mut sys = System::new_all();
         sys.refresh_all();
-        let initial_mem = sys.used_memory();
-        println!("Initial memory usage: {} KB", initial_mem);
+        let pid = sysinfo::get_current_pid().expect("Unable to get current PID");
+        let process_before = sys.process(pid).expect("Unable to get current process");
+        let initial_mem = process_before.memory();
+        println!("Initial memory usage (KB): {}", initial_mem);
 
         // Dimensions: 88 haplotypes (rows) x 100,000 variants (columns)
         let n_rows = 88;
@@ -524,11 +526,12 @@ mod genome_tests {
 
         // Check memory usage afterwards
         sys.refresh_all();
-        let final_mem = sys.used_memory();
-        println!("Final memory usage: {} KB", final_mem);
+        let process_after = sys.process(pid).expect("Unable to get current process after test");
+        let final_mem = process_after.memory();
+        println!("Final memory usage (KB): {}", final_mem);
         if final_mem < initial_mem {
             println!(
-                "Note: system-reported memory decreased; this can happen if other processes ended."
+                "Note: process-reported memory decreased; this can happen if allocations were freed."
             );
         }
 
@@ -1331,7 +1334,9 @@ mod pca_bench_tests {
         // Track memory usage before
         let mut sys = System::new_all();
         sys.refresh_all();
-        let initial_mem = sys.used_memory();
+        let pid = sysinfo::get_current_pid().expect("Unable to get current PID");
+        let process_start = sys.process(pid).expect("Unable to get current process");
+        let initial_mem = process_start.memory();
 
         // Start timing
         let start_time = Instant::now();
@@ -1353,7 +1358,8 @@ mod pca_bench_tests {
 
         // Track memory usage after
         sys.refresh_all();
-        let final_mem = sys.used_memory();
+        let process_end = sys.process(pid).expect("Unable to get current process at end");
+        let final_mem = process_end.memory();
         let used = if final_mem > initial_mem {
             final_mem - initial_mem
         } else {
