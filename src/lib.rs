@@ -1163,6 +1163,7 @@ mod pca_tests {
     }
 }
 
+// Note: memory benchmarks are not accurate
 #[cfg(test)]
 mod rsvd_tests {
     use super::*;
