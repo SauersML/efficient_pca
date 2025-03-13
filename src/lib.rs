@@ -440,10 +440,16 @@ pub fn rsvd(
 #[cfg(test)]
 mod genome_tests {
     use super::*;
-    use ndarray::Array2;
+    use ndarray::{Array2, ArrayView1};
+    use rand::distributions::Uniform;
     use rand::Rng;
+    use rand_chacha::ChaCha8Rng;
+    use rand::SeedableRng;
+    use std::io::Write;
+    use std::process::Command;
     use std::time::Instant;
     use sysinfo::System;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_one_million_variants_88_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
@@ -527,6 +533,192 @@ mod genome_tests {
 
         println!("Test completed successfully with 1,000,000 variants x 88 haplotypes (binary).");
         Ok(())
+    }
+
+    #[test]
+    fn test_large_genotype_matrix_pc_correlation() -> Result<(), Box<dyn std::error::Error>> {
+        // Dimensions: 88 diploid samples (rows) x 10,000 variants (columns)
+        let n_samples = 88;
+        let n_variants = 10000;
+        
+        // Create population structure with 3 distinct populations
+        let pop_sizes = vec![30, 28, 30]; // 3 populations
+        
+        // Initialize RNG with fixed seed for reproducibility
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        
+        // Generate data with population structure
+        let mut data = Array2::<f64>::zeros((n_samples, n_variants));
+        
+        // Add population structure - different allele frequencies per population
+        let mut sample_idx = 0;
+        for (pop_idx, &pop_size) in pop_sizes.iter().enumerate() {
+            // Each population gets different baseline allele frequencies
+            let pop_bias = (pop_idx as f64) * 0.15; // 0, 0.15, 0.30
+            
+            for _ in 0..pop_size {
+                for var_idx in 0..n_variants {
+                    // Base frequency varies by variant (0.1 to 0.5)
+                    let base_freq = 0.1 + (var_idx as f64 / n_variants as f64) * 0.4;
+                    
+                    // Adjust frequency by population
+                    let freq = (base_freq + pop_bias).min(0.9);
+                    
+                    // Generate genotype (0, 1, or 2) based on frequency
+                    let allele = if rng.gen::<f64>() < freq * freq {
+                        2.0 // Homozygous alt
+                    } else if rng.gen::<f64>() < 2.0 * freq * (1.0 - freq) / (1.0 - freq * freq) {
+                        1.0 // Heterozygous
+                    } else {
+                        0.0 // Homozygous ref
+                    };
+                    
+                    data[[sample_idx, var_idx]] = allele;
+                }
+                sample_idx += 1;
+            }
+        }
+        
+        println!("Generated genotype matrix with {} samples and {} variants", n_samples, n_variants);
+        
+        // Run Rust PCA
+        let mut rust_pca = PCA::new();
+        rust_pca.fit(data.clone(), None)?;
+        let rust_transformed = rust_pca.transform(data.clone())?;
+        
+        // Run Python PCA using the existing test infrastructure
+        let mut file = NamedTempFile::new().unwrap();
+        {
+            let mut handle = file.as_file();
+            for row in data.rows() {
+                let line = row.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                writeln!(handle, "{}", line).unwrap();
+            }
+        }
+        
+        let cmd_output = Command::new("python3")
+            .args(&vec![
+                "tests/pca.py",
+                "--data_csv",
+                file.path().to_str().unwrap(),
+                "--n_components",
+                "5",
+            ])
+            .output()
+            .expect("Failed to run Python PCA");
+        
+        assert!(cmd_output.status.success(), "Python PCA process failed");
+        
+        let stdout_text = String::from_utf8_lossy(&cmd_output.stdout).to_string();
+        let python_transformed = parse_transformed_csv_from_python(&stdout_text);
+        
+        // Verify shapes match
+        assert_eq!(rust_transformed.shape()[0], n_samples, "Rust PCA output has wrong number of samples");
+        assert!(rust_transformed.shape()[1] >= 5, "Rust PCA should have at least 5 components");
+        assert_eq!(python_transformed.shape()[0], n_samples, "Python PCA output has wrong number of samples");
+        assert_eq!(python_transformed.shape()[1], 5, "Python PCA should have 5 components");
+        
+        // Compare the first 5 PCs
+        for pc_idx in 0..5 {
+            // Extract PC vectors
+            let rust_pc = rust_transformed.column(pc_idx);
+            let python_pc = python_transformed.column(pc_idx);
+            
+            // Calculate Pearson correlation
+            let correlation = calculate_pearson_correlation(rust_pc, python_pc);
+            
+            // Take absolute value to account for sign flips
+            let abs_correlation = correlation.abs();
+            
+            println!("PC{} correlation: {}", pc_idx + 1, abs_correlation);
+            
+            // Assert correlation is high (accounting for sign flips)
+            assert!(abs_correlation > 0.98, 
+                    "PC{} correlation too low: {}", pc_idx + 1, abs_correlation);
+        }
+        
+        println!("PCA implementations highly correlated on genotype data!");
+        Ok(())
+    }
+    
+    fn calculate_pearson_correlation(v1: ArrayView1<f64>, v2: ArrayView1<f64>) -> f64 {
+        // Get means
+        let mean1 = v1.mean().unwrap();
+        let mean2 = v2.mean().unwrap();
+        
+        // Calculate numerator (covariance)
+        let mut numerator = 0.0;
+        for (x1, x2) in v1.iter().zip(v2.iter()) {
+            numerator += (x1 - mean1) * (x2 - mean2);
+        }
+        
+        // Calculate denominators (std devs)
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+        for &x1 in v1.iter() {
+            var1 += (x1 - mean1).powi(2);
+        }
+        for &x2 in v2.iter() {
+            var2 += (x2 - mean2).powi(2);
+        }
+        
+        // Calculate correlation
+        numerator / (var1.sqrt() * var2.sqrt())
+    }
+    
+    fn parse_transformed_csv_from_python(output_text: &str) -> Array2<f64> {
+        let mut lines = Vec::new();
+        let mut in_csv_block = false;
+        for line in output_text.lines() {
+            // Start capturing once we see "Transformed Data (CSV):"
+            if line.starts_with("Transformed Data (CSV):") {
+                in_csv_block = true;
+                continue;
+            }
+            // Stop capturing if we see "Components (CSV):"
+            if line.starts_with("Components (CSV):") {
+                break;
+            }
+            // If we are in CSV block, gather lines that are presumably CSV
+            if in_csv_block {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // For single-column outputs, there won't be commas but data is still valid
+                lines.push(trimmed.to_string());
+            }
+        }
+
+        if lines.is_empty() {
+            return Array2::<f64>::zeros((0, 0));
+        }
+        
+        let col_count = lines[0].split(',').count();
+        let row_count = lines.len();
+        
+        let mut arr = Array2::<f64>::zeros((row_count, col_count));
+        for (i, l) in lines.iter().enumerate() {
+            let nums: Vec<f64> = l
+                .split(',')
+                .map(|x| {
+                    let trimmed_val = x.trim();
+                    match trimmed_val.parse::<f64>() {
+                        Ok(val) => val,
+                        Err(_) => 0.0
+                    }
+                })
+                .collect();
+
+            for (j, &val) in nums.iter().enumerate() {
+                arr[[i, j]] = val;
+            }
+        }
+        
+        arr
     }
 }
 
