@@ -96,7 +96,7 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         data_matrix -= &mean_vector;
 
-        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(1.0));
+        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
         self.scale = Some(std_dev_vector.clone());
         data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
@@ -267,7 +267,7 @@ impl PCA {
         x -= &mean;
 
         // Compute scale
-        let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
+        let std_dev = x.map_axis(Axis(0), |v| v.std(0.0));
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
 
