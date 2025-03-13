@@ -11,9 +11,11 @@ Functionality:
    - A manual covariance-trick-based implementation
    - The scikit-learn PCA library
 4) (Optional) Compares results between the manual and library implementations
-   if the --test-flag is set, checking for sign-flip invariances and similarity
-   in eigenvalues.
-5) Outputs results (transformed data, components, and eigenvalues) in CSV format.
+   if the --test-flag is set:
+     - If a CSV is supplied, it will test that particular dataset.
+     - It will also run a battery of random tests.
+5) Outputs results (transformed data, components, and eigenvalues) in CSV format
+   (or optionally in a human-readable form).
 6) Prints copious step-by-step details for clarity and debugging.
 
 Example usages:
@@ -30,6 +32,9 @@ Example usages:
   # Compare manual vs library implementation on loaded data:
   python pca_script.py --data_csv data.csv --test-flag
 
+  # If --test-flag is provided without a CSV, the script will run multiple random tests.
+  python pca_script.py --test-flag
+
 Config file format (JSON), e.g.:
 {
   "data_csv": "data.csv",
@@ -44,8 +49,8 @@ Note:
 - Command-line arguments override config-file settings.
 - If no data source is specified, random data is generated with default shape
   (5 samples x 5 features).
-- When --test-flag is used, the script compares manual and library PCA on a single
-  input dataset or on multiple random scenarios to verify correctness.
+- When --test-flag is used, the script compares manual vs. library PCA and also
+  runs a battery of random-dimension tests.
 """
 
 import argparse
@@ -55,6 +60,7 @@ import os
 import scipy.linalg as la
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+import random
 
 
 def parse_config_file(config_path):
@@ -101,7 +107,7 @@ def parse_arguments():
                         help="Random seed for reproducibility in data generation.")
     parser.add_argument("--test-flag",
                         action="store_true",
-                        help="Compare manual PCA and library PCA for consistency. If no CSV given, multiple random tests run.")
+                        help="Compare manual PCA and library PCA for consistency and run a suite of tests.")
     parser.add_argument("--human-readable",
                         action="store_true",
                         help="Print data and results in a more verbose/human-readable format (otherwise CSV).")
@@ -136,6 +142,8 @@ def load_data_from_csv(csv_path):
 def generate_random_data(samples=5, features=5, random_seed=None):
     """
     Generate random data (samples x features).
+    If random_seed is provided, we use it for reproducibility;
+    otherwise data is non-deterministic.
     """
     print(f"[Data] Generating random data with shape ({samples} x {features}).")
     if random_seed is not None:
@@ -347,31 +355,36 @@ def output_array_human_readable(arr, name="Array"):
     print("-" * 40)
 
 
-def test_multiple_random_scenarios():
+def run_random_test_suite(num_tests=5):
     """
-    Run multiple random scenarios to thoroughly test the manual vs library PCA.
-    Demonstrates different (samples, features, n_components) combos.
+    Run a set of random tests to thoroughly verify the manual vs library PCA
+    under various shapes and n_components. Non-deterministic data ensures
+    we test a variety of scenarios.
     """
-    print("[Multi-Scenario Testing] Beginning multiple random PCA tests...")
-    scenarios = [
-        (5, 5, None),
-        (5, 5, 2),
-        (10, 5, None),
-        (5, 10, None),
-        (8, 3, 2),
-        (8, 8, 8),
-    ]
-    random_seed_base = 100
+    print("\n[Random Test-Suite] Beginning multiple random PCA tests...")
+    for test_idx in range(1, num_tests + 1):
+        # Randomly choose number of samples and features between [2..12]
+        samples = random.randint(2, 12)
+        features = random.randint(2, 12)
 
-    for idx, (samps, feats, comps) in enumerate(scenarios):
-        print(f"\n[Multi-Scenario {idx+1}] samples={samps}, features={feats}, n_components={comps}")
-        np.random.seed(random_seed_base + idx)  # For repeatable test data
-        X_rand = np.random.randn(samps, feats)
+        # Possibly choose n_components up to the min dimension, or just None
+        # 50% chance we use None, 50% chance we pick a random n_components
+        if random.random() < 0.5:
+            n_components = None
+        else:
+            n_components = random.randint(1, min(samples, features))
+
+        print(f"\n[Test {test_idx}] samples={samples}, features={features}, "
+              f"n_components={n_components if n_components else 'Auto'}")
+
+        # Generate data (non-deterministically)
+        X_rand = np.random.randn(samples, features)
 
         # Compare manual and library PCA
-        result = compare_pca(X_rand, n_components=comps)
-        print(f"[Multi-Scenario {idx+1}] => PCA comparison result: {result}")
-    print("[Multi-Scenario Testing] Done.")
+        result = compare_pca(X_rand, n_components=n_components)
+        print(f"[Test {test_idx}] => PCA comparison result: {result}")
+
+    print("[Random Test-Suite] All random tests completed.\n")
 
 
 def main():
@@ -402,6 +415,8 @@ def main():
         print("[Main] Loading data from CSV.")
         X = load_data_from_csv(data_csv)
     else:
+        # If no CSV was provided, we'll just generate some data
+        # for immediate usage outside test-flag scenario.
         print("[Main] Generating random data (no CSV provided).")
         if samples is None:
             samples = 5
@@ -409,26 +424,27 @@ def main():
             features = 5
         X = generate_random_data(samples, features, random_seed)
 
-    # If --test-flag is set and a CSV was provided, compare on that data.
-    # If no CSV was provided, run multiple random scenario tests.
     if test_flag:
+        # 1) If CSV was provided, do a direct compare on that data.
         if data_csv:
-            print("[Main] --test-flag is set. Comparing manual vs library PCA on loaded CSV.")
+            print("[Main] --test-flag is set. Comparing manual vs library PCA on loaded CSV dataset.")
             compare_result = compare_pca(X, n_components)
             print(f"[Main] Single-dataset comparison result: {compare_result}")
-        else:
-            print("[Main] --test-flag is set, but no CSV provided. Running multiple random scenario tests.")
-            test_multiple_random_scenarios()
+
+        # 2) Always run the random test-suite for broader coverage
+        print("[Main] Now running random test-suite with non-deterministic data.")
+        run_random_test_suite(num_tests=5)
+
     else:
+        # No test-flag => run library PCA, output results
         print("[Main] --test-flag not set. Performing PCA (library) and outputting results.")
-        # Perform library PCA
         transformed, components, eigvals = library_pca(X, n_components)
 
         # Output results
         if human_readable:
             print("\n[Output] PCA Results (Library) in human-readable form:")
             output_array_human_readable(transformed, name="Transformed Data")
-            output_array_human_readable(components, name="Components (columns=PCs after transpose)")
+            output_array_human_readable(components, name="Components (n_features x n_components)")
             output_array_human_readable(eigvals, name="Eigenvalues")
         else:
             print("\n[Output] PCA Results (Library) in CSV form:")
@@ -436,7 +452,6 @@ def main():
             output_array_csv(transformed)
 
             print("\nComponents (CSV):")
-            # We store them in (n_features x n_components),
             output_array_csv(components)
 
             print("\nEigenvalues (CSV):")
