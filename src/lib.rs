@@ -530,28 +530,41 @@ mod pca_tests {
     ) {
         fn parse_transformed_csv_from_python(output_text: &str) -> ndarray::Array2<f64> {
             let mut lines = Vec::new();
+            let mut in_csv_block = false;
             for line in output_text.lines() {
+                // Start capturing once we see "Transformed Data (CSV):"
                 if line.starts_with("Transformed Data (CSV):") {
+                    in_csv_block = true;
                     continue;
                 }
+                // Stop capturing if we see "Components (CSV):"
                 if line.starts_with("Components (CSV):") {
                     break;
                 }
-                if line.trim().is_empty() {
-                    continue;
+                // If we are in CSV block, gather lines that are presumably CSV
+                if in_csv_block {
+                    let trimmed = line.trim();
+                    // skip blank lines or ones that do not contain a comma
+                    if trimmed.is_empty() || !trimmed.contains(',') {
+                        continue;
+                    }
+                    lines.push(trimmed.to_string());
                 }
-                lines.push(line.trim().to_string());
             }
-            let row_count = lines.len();
-            if row_count == 0 {
+        
+            // now parse only the collected lines
+            if lines.is_empty() {
                 return ndarray::Array2::<f64>::zeros((0, 0));
             }
             let col_count = lines[0].split(',').count();
-            let mut arr = ndarray::Array2::<f64>::zeros((row_count, col_count));
+            let mut arr = ndarray::Array2::<f64>::zeros((lines.len(), col_count));
             for (i, l) in lines.iter().enumerate() {
-                let nums: Vec<f64> = l.split(',').map(|x| x.parse::<f64>().unwrap()).collect();
-                for (j, val) in nums.iter().enumerate() {
-                    arr[[i, j]] = *val;
+                let nums: Vec<f64> = l.split(',')
+                    .map(|x| x.trim().parse::<f64>())
+                    .filter_map(Result::ok) // or .map(|r| r.unwrap()) if we want to crash on parse fail...
+                    .collect();
+                for (j, &val) in nums.iter().enumerate() {
+                    arr[[i, j]] = val;
                 }
             }
             arr
