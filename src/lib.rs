@@ -680,27 +680,14 @@ mod pca_tests {
     fn test_rpca_2x2() {
         let input = array![[0.5855288, -0.1093033],
                            [0.7094660, -0.4534972]];
-        super::run_python_pca_test(&input, 2, true, 0, Some(1926), 1e-6, "test_rpca_2x2");
-    }
-
-
-    #[test]
-    fn test_rpca_2x2() {
-        let input = array![[0.5855288, -0.1093033], 
-                           [0.7094660, -0.4534972]];
-        let expected = array![
-            [-1.4142135623730951, 1.570092458683775e-16],
-            [1.414213562373095, 7.850462293418875e-17]
-        ];
-
-        test_rpca(input, expected, 2, 0, None, 1e-6);
+        run_python_pca_test(&input, 2, true, 0, Some(1926), 1e-6, "test_rpca_2x2");
     }
 
     #[test]
     fn test_rpca_2x2_k1() {
         let input = array![[0.5855288, -0.1093033],
                            [0.7094660, -0.4534972]];
-        super::run_python_pca_test(&input, 1, true, 0, Some(1926), 1e-6, "test_rpca_2x2_k1");
+        run_python_pca_test(&input, 1, true, 0, Some(1926), 1e-6, "test_rpca_2x2_k1");
     }
     
     #[test]
@@ -709,7 +696,7 @@ mod pca_tests {
             [0.5855288, -0.1093033],
             [0.7094660, -0.4534972]
         ];
-        super::run_python_pca_test(&input, 2, false, 0, None, 1e-6, "test_pca_2x2");
+        run_python_pca_test(&input, 2, false, 0, None, 1e-6, "test_pca_2x2");
     }
 
     #[test]
@@ -719,7 +706,7 @@ mod pca_tests {
             [0.7094660, 0.6058875, -0.2761841, -0.1162478, 0.5202165],
             [-0.1093033, -1.8179560, -0.2841597, 1.8173120, -0.7505320]
         ];
-        super::run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_3x5");
+        run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_3x5");
     }
 
     #[test]
@@ -731,7 +718,7 @@ mod pca_tests {
             [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374],
             [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095]
         ];
-        super::run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_5x5");
+        run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_5x5");
     }
 
     #[test]
@@ -743,7 +730,7 @@ mod pca_tests {
             [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
             [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
         ];
-        super::run_python_pca_test(&input, 7, false, 0, None, 1e-6, "test_pca_5x7");
+        run_python_pca_test(&input, 7, false, 0, None, 1e-6, "test_pca_5x7");
     }
 
     #[test]
@@ -755,7 +742,7 @@ mod pca_tests {
             [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
             [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
         ];
-        super::run_python_pca_test(&input, 4, true, 0, Some(1926), 1e-6, "test_rpca_5x7_k4");
+        run_python_pca_test(&input, 4, true, 0, Some(1926), 1e-6, "test_rpca_5x7_k4");
     }
 
 
