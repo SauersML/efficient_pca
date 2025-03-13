@@ -692,11 +692,13 @@ mod pca_tests {
         }
         let rust_transformed = pca.transform(input.clone()).unwrap();
 
-        assert!(
-            compare_pca_outputs_allow_sign_flip(&rust_transformed, &python_transformed, tol),
-            "Comparison with Python PCA failed in {}",
-            test_name
-        );
+        if !compare_pca_outputs_allow_sign_flip(&rust_transformed, &python_transformed, tol) {
+            eprintln!("[Test: {}] => PCA mismatch with Python", test_name);
+            eprintln!("EXPECTED (from Python):\n{:?}", python_transformed);
+            eprintln!("ACTUAL   (from Rust):\n{:?}", rust_transformed);
+            eprintln!("Rust PCA Rotation:\n{:?}", pca.rotation);
+            panic!("Comparison with Python PCA failed in {}", test_name);
+        }
     }
 
     use super::*;
