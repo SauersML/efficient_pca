@@ -1,6 +1,6 @@
 # Principal component analysis (PCA)
 
-Forked from https://github.com/ekg/pca.
+Forked from https://github.com/ekg/pca. Modified from Erik Garrison's original implementation.
 
 A Rust library providing **Principal Component Analysis (PCA)** functionality using either:
 1. A **covariance-based** eigen-decomposition (classical PCA). (Faster, less memory-efficient.)
