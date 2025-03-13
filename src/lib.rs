@@ -589,7 +589,7 @@ mod genome_tests {
         let rust_transformed = rust_pca.transform(data.clone())?;
         
         // Run Python PCA using the existing test infrastructure
-        let mut file = NamedTempFile::new().unwrap();
+        let file = NamedTempFile::new().unwrap();
         {
             let mut handle = file.as_file();
             for row in data.rows() {
@@ -844,7 +844,7 @@ mod pca_tests {
             true
         }
 
-        let mut file = NamedTempFile::new().unwrap();
+        let file = NamedTempFile::new().unwrap();
         {
             let mut handle = file.as_file();
             for row in input.rows() {
