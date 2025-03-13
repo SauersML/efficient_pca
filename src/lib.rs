@@ -320,10 +320,11 @@ impl PCA {
             col_i.mapv_inplace(|v| v / ((n as f64 - 1.0).sqrt()));
 
             // 3) final unit length
-            let norm_i = col_i.dot(&col_i).sqrt();
-            if norm_i > 1e-12 {
-                col_i.mapv_inplace(|v| v / norm_i);
-            }
+            // let norm_i = col_i.dot(&col_i).sqrt();
+            // if norm_i > 1e-12 {
+            //     col_i.mapv_inplace(|v| v / norm_i);
+            // }
+            //  actually no
         }
         self.rotation = Some(rotation_matrix);
         Ok(())
