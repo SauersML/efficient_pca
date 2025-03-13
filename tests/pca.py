@@ -286,6 +286,22 @@ def compare_pca(X, n_components=None):
     print("[Comparison] Comparing Manual PCA and Library PCA.")
     manual_transformed, manual_components, manual_eigvals = manual_pca(X, n_components)
     library_transformed, library_components, library_eigvals = library_pca(X, n_components)
+    
+    # Calculate and print explained variance
+    total_variance_manual = np.sum(manual_eigvals)
+    total_variance_library = np.sum(library_eigvals)
+    
+    print("\n[Comparison] Explained Variance:")
+    print("Component | Manual PCA |  %  | Library PCA |  %  ")
+    print("---------+------------+-----+-------------+-----")
+    for i in range(len(manual_eigvals)):
+        manual_pct = (manual_eigvals[i] / total_variance_manual) * 100
+        library_pct = (library_eigvals[i] / total_variance_library) * 100
+        print(f"    PC{i+1}  | {manual_eigvals[i]:10.2f} | {manual_pct:3.1f}% | {library_eigvals[i]:11.2f} | {library_pct:3.1f}%")
+    
+    print(f"\nTotal variance - Manual: {total_variance_manual:.2f}, Library: {total_variance_library:.2f}")
+    print(f"PC1 captures {(manual_eigvals[0] / total_variance_manual) * 100:.1f}% of variance in Manual PCA")
+    print(f"PC1 captures {(library_eigvals[0] / total_variance_library) * 100:.1f}% of variance in Library PCA")
 
     # Compare shapes
     same_shape = (manual_transformed.shape == library_transformed.shape)
