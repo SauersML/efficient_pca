@@ -1,4 +1,4 @@
-//! Principal component analysis (PCA)
+// Principal component analysis (PCA)
 
 #![doc = include_str!("../README.md")]
 
