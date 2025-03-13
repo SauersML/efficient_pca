@@ -476,20 +476,26 @@ mod genome_tests {
             let position = 1000 + i as i64 * 100;
             let mut genotypes = Vec::with_capacity(n_samples);
             
-            // Simulate population structure by making some variants
-            // more common in certain groups
+            // Create some extremely rare variants
+            let is_extreme_rare = i < 100; // First 100 variants are extremely rare
+            
             for sample_idx in 0..n_samples {
-                let pop_group = sample_idx % 4; // Simulate 4 population groups
+                let pop_group = sample_idx % 4;
                 
-                // Base probability varies by variant and population
-                let base_prob = match i % 10 {
-                    0..=1 => if pop_group == 0 { 0.4 } else { 0.05 }, // Pop 1
-                    2..=3 => if pop_group == 1 { 0.3 } else { 0.02 }, // Pop 2
-                    4..=6 => if pop_group == 2 { 0.5 } else { 0.08 }, // Pop 3
-                    _ => if pop_group == 3 { 0.3 } else { 0.02 },     // Pop 4
+                let base_prob = if is_extreme_rare {
+                    // For extremely rare variants, only a single sample in a single population has it
+                    if sample_idx == (i % n_samples) && pop_group == 0 { 0.5 } else { 0.0 }
+                } else {
+                    // Structure for other variants
+                    match i % 10 {
+                        0..=1 => if pop_group == 0 { 0.4 } else { 0.05 },
+                        2..=3 => if pop_group == 1 { 0.3 } else { 0.02 },
+                        4..=6 => if pop_group == 2 { 0.5 } else { 0.08 },
+                        _ => if pop_group == 3 { 0.3 } else { 0.02 },
+                    }
                 };
                 
-                // Create haplotypes with patterns
+                // Create haplotypes
                 let left_allele = if rand::random::<f64>() < base_prob { 1u8 } else { 0u8 };
                 let right_allele = if rand::random::<f64>() < base_prob { 1u8 } else { 0u8 };
                 
