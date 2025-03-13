@@ -560,7 +560,7 @@ mod genome_tests {
                 println!("PCA computation successful");
                 
                 // Transform data to get PC coordinates
-                let transformed = match pca.transform(data_matrix) {
+                let transformed = match pca.transform(data_matrix.clone()) {
                     Ok(t) => t,
                     Err(e) => {
                         panic!("PCA transformation failed: {}", e);
