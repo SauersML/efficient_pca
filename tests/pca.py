@@ -308,6 +308,13 @@ def compare_pca(X, n_components=None):
 
         if not (sim_positive or sim_negative):
             print(f"[Comparison] Column {i} differs beyond tolerance.")
+            print("[Comparison] Manual implementation (ACTUAL):")
+            print(manual_col)
+            print("[Comparison] Library implementation (EXPECTED):")
+            print(library_col)
+            print("[Comparison] Absolute difference:")
+            print(np.abs(manual_col - library_col))
+            print("[Comparison] Max difference:", np.max(np.abs(manual_col - library_col)))
             transformed_similar = False
             break
 
@@ -320,8 +327,25 @@ def compare_pca(X, n_components=None):
     print(f"  -> Transformed data similar (accounting for sign flips): {transformed_similar}")
     print(f"  -> Eigenvalues similar: {eigvals_similar}")
 
-    overall = transformed_similar and eigvals_similar
+   overall = transformed_similar and eigvals_similar
     print(f"[Comparison] Overall PCA match status: {overall}")
+    
+    # If comparison failed, print full matrices
+    if not overall:
+        print("\n[Comparison] FULL MATRICES:")
+        print("[Comparison] Manual transformed data (ACTUAL):")
+        print(manual_transformed)
+        print("[Comparison] Library transformed data (EXPECTED):")
+        print(library_transformed)
+        print("\n[Comparison] Manual components (ACTUAL):")
+        print(manual_components)
+        print("[Comparison] Library components (EXPECTED):")
+        print(library_components)
+        print("\n[Comparison] Manual eigenvalues (ACTUAL):")
+        print(manual_eigvals)
+        print("[Comparison] Library eigenvalues (EXPECTED):")
+        print(library_eigvals)
+    
     return overall
 
 
