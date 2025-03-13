@@ -1338,7 +1338,7 @@ mod rsvd_tests {
 #[cfg(test)]
 mod pca_bench_tests {
     use super::*;
-    use sysinfo::{System, SystemExt};
+    use sysinfo::{System};
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::time::Instant;
