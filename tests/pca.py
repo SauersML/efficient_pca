@@ -13,27 +13,26 @@ Functionality:
 4) (Optional) Compares results between the manual and library implementations
    if the --test-flag is set:
      - If a CSV is supplied, it will test that particular dataset.
-     - It will also run a battery of random tests.
-5) Outputs results (transformed data, components, and eigenvalues) in CSV format
-   (or optionally in a human-readable form).
+     - Itt will also run a battery of random tests.
+5) Outputs results (transformed data, components, and eigenvalues) in CSV format.
 6) Prints copious step-by-step details for clarity and debugging.
 
 Example usages:
 
   # Basic usage with CSV data file and 2 components:
-  python pca_script.py --data_csv mydata.csv --n_components 2
+  python pca.py --data_csv mydata.csv --n_components 2
 
   # Generate random data of shape (10 samples x 5 features), keep 3 components:
-  python pca_script.py --samples 10 --features 5 --n_components 3
+  python pca.py --samples 10 --features 5 --n_components 3
 
   # Use a config file (JSON) with fields data_csv, n_components, etc.:
-  python pca_script.py --config myconfig.json
+  python pca.py --config myconfig.json
 
   # Compare manual vs library implementation on loaded data:
-  python pca_script.py --data_csv data.csv --test-flag
+  python pca.py --data_csv data.csv --test-flag
 
-  # If --test-flag is provided without a CSV, the script will run multiple random tests.
-  python pca_script.py --test-flag
+  # If --test-flag is provided without a CSV, the script will run multiple random tests:
+  python pca.py --test-flag
 
 Config file format (JSON), e.g.:
 {
@@ -370,18 +369,18 @@ def run_random_test_suite(num_tests=5):
         # Possibly choose n_components up to the min dimension, or just None
         # 50% chance we use None, 50% chance we pick a random n_components
         if random.random() < 0.5:
-            n_components = None
+            chosen_n_components = None
         else:
-            n_components = random.randint(1, min(samples, features))
+            chosen_n_components = random.randint(1, min(samples, features))
 
         print(f"\n[Test {test_idx}] samples={samples}, features={features}, "
-              f"n_components={n_components if n_components else 'Auto'}")
+              f"n_components={chosen_n_components if chosen_n_components else 'Auto'}")
 
         # Generate data (non-deterministically)
         X_rand = np.random.randn(samples, features)
 
         # Compare manual and library PCA
-        result = compare_pca(X_rand, n_components=n_components)
+        result = compare_pca(X_rand, n_components=chosen_n_components)
         print(f"[Test {test_idx}] => PCA comparison result: {result}")
 
     print("[Random Test-Suite] All random tests completed.\n")
@@ -416,7 +415,7 @@ def main():
         X = load_data_from_csv(data_csv)
     else:
         # If no CSV was provided, we'll just generate some data
-        # for immediate usage outside test-flag scenario.
+        # for immediate usage (outside test-flag scenario).
         print("[Main] Generating random data (no CSV provided).")
         if samples is None:
             samples = 5
@@ -424,6 +423,7 @@ def main():
             features = 5
         X = generate_random_data(samples, features, random_seed)
 
+    # Handle test-flag
     if test_flag:
         # 1) If CSV was provided, do a direct compare on that data.
         if data_csv:
@@ -431,7 +431,7 @@ def main():
             compare_result = compare_pca(X, n_components)
             print(f"[Main] Single-dataset comparison result: {compare_result}")
 
-        # 2) Always run the random test-suite for broader coverage
+        # 2) Always run the random test-suite to ensure broader coverage
         print("[Main] Now running random test-suite with non-deterministic data.")
         run_random_test_suite(num_tests=5)
 
@@ -458,3 +458,6 @@ def main():
             output_array_csv(eigvals.reshape(-1, 1))
 
     print("\n=== PCA SCRIPT END ===")
+
+if __name__ == "__main__":
+    main()
