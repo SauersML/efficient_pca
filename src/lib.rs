@@ -532,7 +532,7 @@ mod genome_tests {
             );
         }
 
-        println!("Test completed successfully with 1,000,000 variants x 88 haplotypes (binary).");
+        println!("Test completed successfully with 100,000 variants x 88 haplotypes (binary).");
         Ok(())
     }
 
