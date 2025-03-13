@@ -454,7 +454,7 @@ mod genome_tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_one_million_variants_88_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_many_variants_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
         // Monitor memory usage before data generation
         let mut sys = System::new_all();
         sys.refresh_all();
