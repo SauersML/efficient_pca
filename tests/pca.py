@@ -407,6 +407,54 @@ def run_random_test_suite(num_tests=5):
 
     print("[Random Test-Suite] All random tests completed.\n")
 
+def run_large_genotype_matrix_test():
+    """
+    Generate a 'large genotype-like' matrix with some population structure,
+    then compare manual vs library PCA. 
+    Meant to replicate the 'test_large_genotype_matrix_pc_correlation'-style logic.
+    """
+
+    print("\n[Genotype-like Test] Generating a matrix with 3 distinct populations...")
+
+    # Dimensions: e.g. 88 samples x 10,000 'variants'
+    n_samples = 88
+    n_variants = 10_000
+    pop_sizes = [30, 28, 30]  # total = 88
+
+    # Optionally, fix the random seed
+    np.random.seed(42)
+
+    # Build genotype-like data:
+    #   - Each population has distinct allele-frequency bias
+    X = np.zeros((n_samples, n_variants), dtype=float)
+    sample_idx = 0
+    for pop_idx, size in enumerate(pop_sizes):
+        pop_bias = 0.15 * pop_idx  # 0.0, 0.15, 0.30
+        for _ in range(size):
+            for v in range(n_variants):
+                base_freq = 0.1 + (v / n_variants) * 0.4  # from 0.1 to 0.5
+                freq = min(base_freq + pop_bias, 0.9)
+                # 0/1/2 genotype depending on freq
+                # For simplicity, treat each sample as diploid:
+                rnd = np.random.rand()
+                # A quick simplistic genotype approach:
+                if rnd < freq * freq:
+                    genotype = 2.0
+                elif rnd < (2 * freq * (1 - freq) + freq * freq):
+                    genotype = 1.0
+                else:
+                    genotype = 0.0
+                X[sample_idx, v] = genotype
+            sample_idx += 1
+
+    print(f"[Genotype-like Test] Created data shape: {X.shape}")
+    
+    # We'll pick e.g. 5 components
+    n_components = 5
+
+    print("[Genotype-like Test] Now comparing manual vs library PCA...")
+    result = compare_pca(X, n_components=n_components)
+    print(f"[Genotype-like Test] => PCA comparison result: {result}")
 
 def main():
     print("=== PCA SCRIPT START ===\n")
@@ -456,6 +504,10 @@ def main():
         # 2) Always run the random test-suite to ensure broader coverage
         print("[Main] Now running random test-suite with non-deterministic data.")
         run_random_test_suite(num_tests=5)
+
+        # 3)
+        print("[Main] Also running large genotype-like test comparing manual vs library PCA.")
+        run_large_genotype_matrix_test()
 
     else:
         # No test-flag => run library PCA, output results
