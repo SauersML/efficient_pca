@@ -199,9 +199,17 @@ def manual_pca(X, n_components=None):
         for i in range(n_components):
             val = eigvals[i]
             if val < 1e-12:
-                scale_factor = 1e-12
+                # For zero variance, return a zero vector
+                components[:, i] = 0.0
             else:
                 scale_factor = np.sqrt(val)
+                components[:, i] = (X_scaled.T @ eigvecs[:, i]) / (scale_factor * np.sqrt(n_samples - 1))
+                # Normalize each component
+                comp_norm = np.linalg.norm(components[:, i])
+                if comp_norm > 1e-12:
+                    components[:, i] /= comp_norm
+                else:
+                    print(f"[Manual PCA] Warning: Component {i} norm is near zero.")
 
             # V = X^T · U / ( sqrt(eigval) * sqrt(n_samples - 1) )
             components[:, i] = (X_scaled.T @ eigvecs[:, i]) / (scale_factor * np.sqrt(n_samples - 1))
