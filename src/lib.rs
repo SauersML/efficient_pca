@@ -387,6 +387,7 @@ impl PCA {
 ///
 /// ```
 /// use ndarray::Array2;
+/// use efficient_pca::rsvd;
 ///
 /// let a = Array2::from_shape_vec((3, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]).unwrap();
 /// let (u, s, vt) = rsvd(&a, 2, 1, None);
