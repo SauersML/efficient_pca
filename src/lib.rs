@@ -568,12 +568,12 @@ mod genome_tests {
                 };
                 
                 // Check for NaN values
-                let nan_count = transformed.iter().filter(|&&x| x.is_nan()).count();
+                let nan_count_unfiltered = transformed.iter().filter(|&&x| x.is_nan()).count();
                 let total_values = transformed.nrows() * transformed.ncols();
                 
                 println!("NaN check: {}/{} values are NaN ({:.2}%)", 
-                         nan_count, total_values, 
-                         100.0 * nan_count as f64 / total_values as f64);
+                         nan_count_unfiltered, total_values, 
+                         100.0 * nan_count_unfiltered as f64 / total_values as f64);
                 
                 // Print first few PC values for inspection
                 println!("First 3 rows of PC values:");
@@ -585,8 +585,6 @@ mod genome_tests {
                     println!();
                 }
 
-                // Assert that there are no NaN values
-                assert_eq!(nan_count, 0, "PCA produced NaN values");
                 
                 // Try the process with filtering rare variants
                 println!("\nNow testing with filtered rare variants:");
@@ -628,17 +626,20 @@ mod genome_tests {
                     ) {
                         Ok(()) => {
                             let transformed_filtered = pca_filtered.transform(filtered_matrix).unwrap();
-                            let nan_count = transformed_filtered.iter().filter(|&&x| x.is_nan()).count();
+                            let nan_count_filtered = transformed_filtered.iter().filter(|&&x| x.is_nan()).count();
                             println!("Filtered PCA NaN check: {}/{} values are NaN", 
-                                     nan_count, transformed_filtered.len());
+                                     nan_count_filtered, transformed_filtered.len());
                             
-                            assert_eq!(nan_count, 0, "Filtered PCA produced NaN values");
+                            assert_eq!(nan_count_filtered, 0, "Filtered PCA produced NaN values");
                         },
                         Err(e) => {
                             panic!("Filtered PCA computation failed: {}", e);
                         }
                     }
                 }
+
+            // Assert that there are no NaN values
+            assert_eq!(nan_count_unfiltered, 0, "PCA (unfiltered) produced NaN values");
             },
             Err(e) => {
                 panic!("PCA computation failed: {}", e);
