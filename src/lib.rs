@@ -149,6 +149,17 @@ impl PCA {
 
             // These vectors are the principal axes in feature space
             self.rotation = Some(top_eigvecs);
+
+            // So that each column is unit length
+            if let Some(ref mut rot) = self.rotation {
+                for i in 0..rot.ncols() {
+                    let mut col_i = rot.slice_mut(s![.., i]);
+                    let norm_i = col_i.dot(&col_i).sqrt();
+                    if norm_i > 1e-12 {
+                        col_i.mapv_inplace(|x| x / norm_i);
+                    }
+                }
+            }
         } else {
             // ==========================================
             // (B) Gram trick: n×n covariance
