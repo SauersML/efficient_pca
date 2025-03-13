@@ -969,7 +969,6 @@ mod pca_tests {
     }
 
     use super::*;
-    use float_cmp::approx_eq;
     use ndarray::array;
     use ndarray_rand::rand_distr::Distribution;
 
