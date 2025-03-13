@@ -631,6 +631,12 @@ mod genome_tests {
             
             // Calculate Pearson correlation
             let correlation = calculate_pearson_correlation(rust_pc, python_pc);
+            if correlation.abs() < 0.98 {
+                eprintln!("Low correlation in PC{}: {}", pc_idx+1, correlation);
+                eprintln!("Rust PC:\n{:?}", rust_pc);
+                eprintln!("Python PC:\n{:?}", python_pc);
+            }
+            assert!(correlation.abs() > 0.98, "PC{} correlation too low: {}", pc_idx+1, correlation);
             
             // Take absolute value to account for sign flips
             let abs_correlation = correlation.abs();
