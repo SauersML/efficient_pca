@@ -2,16 +2,16 @@
 
 #![doc = include_str!("../README.md")]
 
-use ndarray::{Array1, Array2, Axis, s};
-use ndarray_linalg::svd::SVD;
+use ndarray::{s, Array1, Array2, Axis};
 use ndarray_linalg::eigh::Eigh;
-use ndarray_linalg::UPLO;
-use std::error::Error;
+use ndarray_linalg::svd::SVD;
 use ndarray_linalg::QR;
-use rand::{thread_rng, Rng};
-use rand_distr::Normal;
+use ndarray_linalg::UPLO;
 use rand::SeedableRng;
+use rand::{thread_rng, Rng};
 use rand_chacha::ChaCha8Rng;
+use rand_distr::Normal;
+use std::error::Error;
 
 /// Principal component analysis (PCA) structure
 pub struct PCA {
@@ -80,9 +80,8 @@ impl PCA {
     pub fn fit(
         &mut self,
         mut data_matrix: Array2<f64>,
-        tolerance: Option<f64>
-    ) -> Result<(), Box<dyn std::error::Error>> 
-    {
+        tolerance: Option<f64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let n_samples = data_matrix.nrows();
         let n_features = data_matrix.ncols();
 
@@ -112,7 +111,8 @@ impl PCA {
             cov_matrix /= (n_samples - 1) as f64;
 
             // Eigen-decomposition (p×p)
-            let (vals, vecs) = cov_matrix.eigh(UPLO::Upper)
+            let (vals, vecs) = cov_matrix
+                .eigh(UPLO::Upper)
                 .map_err(|_| "Eigen decomposition of covariance failed.")?;
 
             // Sort descending by eigenvalue
@@ -144,7 +144,7 @@ impl PCA {
             }
             let top_eigvecs = ndarray::stack(
                 Axis(1),
-                &top_eigvecs.iter().map(|v| v.view()).collect::<Vec<_>>()
+                &top_eigvecs.iter().map(|v| v.view()).collect::<Vec<_>>(),
             )?;
 
             // These vectors are the principal axes in feature space
@@ -168,7 +168,8 @@ impl PCA {
             gram_matrix /= (n_samples - 1) as f64;
 
             // Eigen-decompose (n×n)
-            let (vals, vecs) = gram_matrix.eigh(UPLO::Upper)
+            let (vals, vecs) = gram_matrix
+                .eigh(UPLO::Upper)
                 .map_err(|_| "Eigen decomposition of Gram matrix failed.")?;
 
             // Sort descending
@@ -207,15 +208,13 @@ impl PCA {
 
                 // extra division by sqrt(n-1):
                 axis_i.mapv_inplace(|x| x / ((n_samples - 1) as f64).sqrt());
-                
+
                 // then normalize this axis to length 1:
                 let norm_i = axis_i.dot(&axis_i).sqrt();
                 axis_i.mapv_inplace(|x| x / norm_i);
 
                 // Put it as the i-th column in rotation_matrix
-                rotation_matrix
-                    .slice_mut(s![.., i])
-                    .assign(&axis_i);
+                rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
             }
             self.rotation = Some(rotation_matrix);
         }
@@ -225,7 +224,7 @@ impl PCA {
 
     /// Use randomized SVD to fit a PCA rotation to the data
     ///
-    /// This computes the mean, scaling and rotation to apply PCA 
+    /// This computes the mean, scaling and rotation to apply PCA
     /// to the input data matrix.
     ///
     /// * `x` - Input data as a 2D array
@@ -249,42 +248,48 @@ impl PCA {
     /// pca.rfit(x, 1, 0, None, None).unwrap();
     /// ```
     /// `rsvd` internally calls `.svd(true, true)`.
-    pub fn rfit(&mut self, mut x: Array2<f64>,
-                n_components: usize, n_oversamples: usize,
-                seed: Option<u64>, tol: Option<f64>) -> Result<(), Box<dyn Error>> {
+    pub fn rfit(
+        &mut self,
+        mut x: Array2<f64>,
+        n_components: usize,
+        n_oversamples: usize,
+        seed: Option<u64>,
+        tol: Option<f64>,
+    ) -> Result<(), Box<dyn Error>> {
         let n = x.nrows();
         if n < 2 {
             return Err("Input matrix must have at least 2 rows.".into());
         }
-    
+
         // Compute mean for centering
         let mean = x.mean_axis(Axis(0)).ok_or("Failed to compute mean")?;
         self.mean = Some(mean.clone());
         x -= &mean;
-    
+
         // Compute scale
         let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
-    
+
         // Determine effective number of components (can't exceed number of samples)
         let k = std::cmp::min(n_components, n);
-    
+
         // COVARIANCE TRICK: Compute covariance matrix (n×n) instead of working with original (n×p) matrix
         // This is much more efficient when p >> n
         let cov_matrix = x.dot(&x.t()) / (n as f64 - 1.0).max(1.0);
-    
+
         // Use randomized SVD on the covariance matrix
         // For a symmetric matrix like covariance matrix, u contains the eigenvectors
         let (u, s, _) = rsvd(&cov_matrix, k, n_oversamples, seed);
-    
+
         // Extract singular values
         let singular_values = s.diag().to_owned();
-    
+
         // Apply tolerance if specified
         let final_k = if let Some(t) = tol {
             let threshold = singular_values[0] * t;
-            let rank = singular_values.iter()
+            let rank = singular_values
+                .iter()
                 .take(k)
                 .take_while(|&v| *v > threshold)
                 .count();
@@ -292,27 +297,27 @@ impl PCA {
         } else {
             k
         };
-    
+
         // Extract the top eigenvectors
         let top_eigenvectors = u.slice(s![.., ..final_k]).to_owned();
-    
+
         // Map the eigenvectors (u) back to feature space
         let mut rotation_matrix = x.t().dot(&top_eigenvectors);
-        
+
         // For each column, divide by sqrt(eigval), then / sqrt(n-1), then unit‐normalize.
         // singular_values[i] is the eigenvalue (already s[i], from the n×n covariance)
         for i in 0..final_k {
             let lam = singular_values[i].max(1e-12);
-        
+
             // slice the i-th column in "rotation_matrix"
             let mut col_i = rotation_matrix.slice_mut(s![.., i]);
-        
+
             // 1) / sqrt(lambda)
             col_i.mapv_inplace(|v| v / lam.sqrt());
-        
+
             // 2) / sqrt(n-1)
             col_i.mapv_inplace(|v| v / ((n as f64 - 1.0).sqrt()));
-        
+
             // 3) final unit length
             let norm_i = col_i.dot(&col_i).sqrt();
             if norm_i > 1e-12 {
@@ -323,10 +328,9 @@ impl PCA {
         Ok(())
     }
 
-
     /// Apply the PCA rotation to the data
     ///
-    /// This projects the data into the PCA space using the 
+    /// This projects the data into the PCA space using the
     /// previously computed rotation, mean and scale.
     ///
     /// * `x` - Input data to transform
@@ -361,7 +365,6 @@ impl PCA {
 // =================================================================================
 // rSVD implementation copied from: https://github.com/ekg/rsvd/blob/main/src/lib.rs
 
-
 /// Calculate a randomized SVD approximation of a matrix.
 ///
 /// # Arguments
@@ -387,7 +390,12 @@ impl PCA {
 /// let a = Array2::from_shape_vec((3, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]).unwrap();
 /// let (u, s, vt) = rsvd(&a, 2, 1, None);
 /// ```
-pub fn rsvd(input: &Array2<f64>, k: usize, p: usize, seed: Option<u64>) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
+pub fn rsvd(
+    input: &Array2<f64>,
+    k: usize,
+    p: usize,
+    seed: Option<u64>,
+) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
     //let m = input.shape()[0];
     let n = input.shape()[1];
 
@@ -401,16 +409,17 @@ pub fn rsvd(input: &Array2<f64>, k: usize, p: usize, seed: Option<u64>) -> (Arra
     // Generate Gaussian random test matrix
     let l = k + p; // Oversampling
     let omega = {
-        let vec = rng.sample_iter(Normal::new(0.0, 1.0).unwrap())
-        .take(l * n)
-        .collect::<Vec<_>>();
+        let vec = rng
+            .sample_iter(Normal::new(0.0, 1.0).unwrap())
+            .take(l * n)
+            .collect::<Vec<_>>();
         ndarray::Array::from_shape_vec((n, l), vec).unwrap()
     };
 
     // Form sample matrix Y
     let y = input.dot(&omega);
 
-    // Orthogonalize Y 
+    // Orthogonalize Y
     let (q, _) = y.qr().unwrap();
 
     // Project input to lower dimension
@@ -424,17 +433,17 @@ pub fn rsvd(input: &Array2<f64>, k: usize, p: usize, seed: Option<u64>) -> (Arra
     // Convert s to an Array2<f64>
     let s = Array2::from_diag(&s);
 
-    // Return truncated SVD 
+    // Return truncated SVD
     (q.dot(&u), s, vt)
 }
 
 #[cfg(test)]
 mod genome_tests {
     use super::*;
-    use ndarray::{Array2};
+    use ndarray::Array2;
     use rand::Rng;
     use std::time::Instant;
-    use sysinfo::{System};
+    use sysinfo::System;
 
     #[test]
     fn test_one_million_variants_88_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
@@ -460,7 +469,10 @@ mod genome_tests {
             }
         }
         let data_gen_duration = start_data_gen.elapsed();
-        println!("Binary data generation completed in {:.2?}", data_gen_duration);
+        println!(
+            "Binary data generation completed in {:.2?}",
+            data_gen_duration
+        );
 
         // Instantiate PCA
         let mut pca = PCA::new();
@@ -484,8 +496,16 @@ mod genome_tests {
         println!("PCA transform completed in {:.2?}", transform_duration);
 
         // Basic dimensional checks
-        assert_eq!(transformed.nrows(), n_rows, "Row count of transformed data is incorrect");
-        assert_eq!(transformed.ncols(), n_components, "Column count of transformed data is incorrect");
+        assert_eq!(
+            transformed.nrows(),
+            n_rows,
+            "Row count of transformed data is incorrect"
+        );
+        assert_eq!(
+            transformed.ncols(),
+            n_components,
+            "Column count of transformed data is incorrect"
+        );
 
         // Verify that none of the values are NaN or infinite
         for row in 0..n_rows {
@@ -500,7 +520,9 @@ mod genome_tests {
         let final_mem = sys.used_memory();
         println!("Final memory usage: {} KB", final_mem);
         if final_mem < initial_mem {
-            println!("Note: system-reported memory decreased; this can happen if other processes ended.");
+            println!(
+                "Note: system-reported memory decreased; this can happen if other processes ended."
+            );
         }
 
         println!("Test completed successfully with 1,000,000 variants x 88 haplotypes (binary).");
@@ -510,9 +532,9 @@ mod genome_tests {
 
 #[cfg(test)]
 mod pca_tests {
-    use tempfile::NamedTempFile;
     use std::io::Write;
     use std::process::Command;
+    use tempfile::NamedTempFile;
 
     /// This function runs Python-based PCA as a reference and compares it to our Rust PCA.
     /// It writes the input data to a temporary CSV file, invokes `tests/pca.py` with the specified
@@ -551,7 +573,7 @@ mod pca_tests {
                     lines.push(trimmed.to_string());
                 }
             }
-        
+
             // now parse only the collected lines
             if lines.is_empty() {
                 return ndarray::Array2::<f64>::zeros((0, 0));
@@ -559,7 +581,8 @@ mod pca_tests {
             let col_count = lines[0].split(',').count();
             let mut arr = ndarray::Array2::<f64>::zeros((lines.len(), col_count));
             for (i, l) in lines.iter().enumerate() {
-                let nums: Vec<f64> = l.split(',')
+                let nums: Vec<f64> = l
+                    .split(',')
                     .map(|x| x.trim().parse::<f64>())
                     .filter_map(Result::ok) // or .map(|r| r.unwrap()) if we want to crash on parse fail...
                     .collect();
@@ -573,7 +596,7 @@ mod pca_tests {
         fn compare_pca_outputs_allow_sign_flip(
             rust_mat: &ndarray::Array2<f64>,
             py_mat: &ndarray::Array2<f64>,
-            tol: f64
+            tol: f64,
         ) -> bool {
             if rust_mat.shape() != py_mat.shape() {
                 return false;
@@ -582,9 +605,13 @@ mod pca_tests {
             for c in 0..ncols {
                 let col_r = rust_mat.column(c);
                 let col_p = py_mat.column(c);
-                let same_sign = col_r.iter().zip(col_p.iter())
+                let same_sign = col_r
+                    .iter()
+                    .zip(col_p.iter())
                     .all(|(&a, &b)| (a - b).abs() < tol);
-                let opp_sign = col_r.iter().zip(col_p.iter())
+                let opp_sign = col_r
+                    .iter()
+                    .zip(col_p.iter())
                     .all(|(&a, &b)| (a + b).abs() < tol);
                 if !(same_sign || opp_sign) {
                     return false;
@@ -597,7 +624,11 @@ mod pca_tests {
         {
             let mut handle = file.as_file();
             for row in input.rows() {
-                let line = row.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+                let line = row
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 writeln!(handle, "{}", line).unwrap();
             }
         }
@@ -627,7 +658,8 @@ mod pca_tests {
 
         let mut pca = super::PCA::new();
         if is_rpca {
-            pca.rfit(input.clone(), n_components, oversamples, seed, None).unwrap();
+            pca.rfit(input.clone(), n_components, oversamples, seed, None)
+                .unwrap();
         } else {
             pca.fit(input.clone(), None).unwrap();
         }
@@ -640,11 +672,10 @@ mod pca_tests {
         );
     }
 
-
-    use ndarray::array;
-    use ndarray_rand::rand_distr::Distribution;
     use super::*;
     use float_cmp::approx_eq;
+    use ndarray::array;
+    use ndarray_rand::rand_distr::Distribution;
 
     fn test_pca(input: Array2<f64>, expected_output: Array2<f64>, tol: Option<f64>, e: f64) {
         let mut pca = PCA::new();
@@ -653,62 +684,67 @@ mod pca_tests {
 
         eprintln!("output: {:?}", output);
         eprintln!("expected_output: {:?}", expected_output);
-        
+
         // Calculate absolute values for arrays
         let output_abs = output.mapv_into(f64::abs);
         let expected_output_abs = expected_output.mapv_into(f64::abs);
 
         // Compare arrays
-        let equal = output_abs.shape() == expected_output_abs.shape() &&
-            output_abs.iter().zip(expected_output_abs.iter())
-                      .all(|(a, b)| approx_eq!(f64, *a, *b, epsilon = e));
+        let equal = output_abs.shape() == expected_output_abs.shape()
+            && output_abs
+                .iter()
+                .zip(expected_output_abs.iter())
+                .all(|(a, b)| approx_eq!(f64, *a, *b, epsilon = e));
         assert!(equal);
     }
 
-    fn test_rpca(input: Array2<f64>, expected_output: Array2<f64>,
-                 n_components: usize, n_oversamples: usize, tol: Option<f64>, e: f64) {
+    fn test_rpca(
+        input: Array2<f64>,
+        expected_output: Array2<f64>,
+        n_components: usize,
+        n_oversamples: usize,
+        tol: Option<f64>,
+        e: f64,
+    ) {
         let mut pca = PCA::new();
-        pca.rfit(input.clone(), n_components, n_oversamples, Some(1926), tol).unwrap();
+        pca.rfit(input.clone(), n_components, n_oversamples, Some(1926), tol)
+            .unwrap();
         let output = pca.transform(input).unwrap();
 
         eprintln!("output: {:?}", output);
         eprintln!("expected_output: {:?}", expected_output);
-        
+
         // Calculate absolute values for arrays
         let output_abs = output.mapv_into(f64::abs);
         let expected_output_abs = expected_output.mapv_into(f64::abs);
-        
+
         // Compare only up to the lesser of the two column counts.
         let min_cols = std::cmp::min(output_abs.ncols(), expected_output_abs.ncols());
         let output_slice = output_abs.slice(s![.., ..min_cols]);
         let expected_slice = expected_output_abs.slice(s![.., ..min_cols]);
-        
-        let equal = output_slice.iter().zip(expected_slice.iter())
+
+        let equal = output_slice
+            .iter()
+            .zip(expected_slice.iter())
             .all(|(a, b)| approx_eq!(f64, *a, *b, epsilon = e));
         assert!(equal);
-
     }
 
     #[test]
     fn test_rpca_2x2() {
-        let input = array![[0.5855288, -0.1093033],
-                           [0.7094660, -0.4534972]];
+        let input = array![[0.5855288, -0.1093033], [0.7094660, -0.4534972]];
         run_python_pca_test(&input, 2, true, 0, Some(1926), 1e-6, "test_rpca_2x2");
     }
 
     #[test]
     fn test_rpca_2x2_k1() {
-        let input = array![[0.5855288, -0.1093033],
-                           [0.7094660, -0.4534972]];
+        let input = array![[0.5855288, -0.1093033], [0.7094660, -0.4534972]];
         run_python_pca_test(&input, 1, true, 0, Some(1926), 1e-6, "test_rpca_2x2_k1");
     }
-    
+
     #[test]
     fn test_pca_2x2() {
-        let input = array![
-            [0.5855288, -0.1093033],
-            [0.7094660, -0.4534972]
-        ];
+        let input = array![[0.5855288, -0.1093033], [0.7094660, -0.4534972]];
         run_python_pca_test(&input, 2, false, 0, None, 1e-6, "test_pca_2x2");
     }
 
@@ -757,7 +793,6 @@ mod pca_tests {
         ];
         run_python_pca_test(&input, 4, true, 0, Some(1926), 1e-6, "test_rpca_5x7_k4");
     }
-
 
     use ndarray::Array2;
     use ndarray_rand::RandomExt; // for creating random arrays
@@ -808,7 +843,11 @@ mod pca_tests {
 
         // Input is a size x size matrix with elements randomly chosen from a uniform distribution between -1.0 and 1.0
         // n.b. we need to use a discrete distribution
-        let input = Array2::<f64>::random_using((size, size), Uniform::new_inclusive(0, 2).map(|x| x as f64), &mut rng);
+        let input = Array2::<f64>::random_using(
+            (size, size),
+            Uniform::new_inclusive(0, 2).map(|x| x as f64),
+            &mut rng,
+        );
 
         // Transform the input with PCA
         let mut pca = PCA::new();
@@ -827,7 +866,7 @@ mod pca_tests {
             .rows()
             .into_iter()
             .for_each(|row| writeln!(file, "{}", row.iter().map(|x| x.to_string()).collect::<Vec<String>>().join(",")).unwrap());
-        
+
         // write the result to a file
         let mut file = File::create(format!("test_pca_random_012_{}_{}_output.csv", size, seed)).unwrap();
         output
@@ -867,7 +906,7 @@ mod pca_tests {
     #[should_panic]
     fn test_pca_fit_insufficient_samples() {
         let x = array![[1.0]];
-        
+
         let mut pca = PCA::new();
         pca.fit(x, None).unwrap();
     }
@@ -876,13 +915,11 @@ mod pca_tests {
     #[should_panic]
     fn test_pca_transform_not_fitted() {
         let x = array![[1.0, 2.0]];
-        
+
         let pca = PCA::new();
         let _ = pca.transform(x).unwrap();
     }
 }
-
-
 
 #[cfg(test)]
 mod rsvd_tests {
@@ -892,7 +929,7 @@ mod rsvd_tests {
     // input a dimension, a seed, and a tolerance
     // we make a random matrix to match
     // then check if the rsvd is within a tolerance of the actual svd
-    fn test_rsvd(m: usize, n:usize, k: usize, p: usize, seed: u64, tol: f64) {
+    fn test_rsvd(m: usize, n: usize, k: usize, p: usize, seed: u64, tol: f64) {
         // Generate random matrix
         // use seeded RNG
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -901,8 +938,9 @@ mod rsvd_tests {
         // Compute rank approximation
         let (u, s, vt) = rsvd(&a, k, p, Some(1337));
 
-        let (Some(u2), s2, Some(vt2)) = a.svd(true, true).unwrap()
-        else { panic!("SVD failed"); };
+        let (Some(u2), s2, Some(vt2)) = a.svd(true, true).unwrap() else {
+            panic!("SVD failed");
+        };
 
         // convert s2 to a vector and diagonalize
         let s2 = Array2::from_diag(&s2);
@@ -927,7 +965,7 @@ mod rsvd_tests {
 
         assert!(equivalent(&vt, &vt2, tol));
     }
-    
+
     fn equivalent(a: &Array2<f64>, b: &Array2<f64>, e: f64) -> bool {
         let a = a.clone().mapv_into(f64::abs);
         let b = b.clone().mapv_into(f64::abs);
@@ -977,7 +1015,7 @@ mod rsvd_tests {
             test_rsvd(10, 10, 5, 1, i, 0.1);
         }
     }
-    
+
     // test 100x100 matrix k=10
     #[test]
     fn test_rsvd_100x100_k10() {
@@ -993,7 +1031,7 @@ mod rsvd_tests {
             test_rsvd(100, 10, 10, 1, i, 1e-2);
         }
     }
-    
+
     // test 10x100 matrix k=10
     #[test]
     fn test_rsvd_10x100_k10() {
