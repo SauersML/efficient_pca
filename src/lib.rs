@@ -8,7 +8,7 @@ use ndarray_linalg::svd::SVD;
 use ndarray_linalg::QR;
 use ndarray_linalg::UPLO;
 use rand::SeedableRng;
-use rand::rngs::ThreadRng;
+use rand::thread_rng;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::Normal;
@@ -402,11 +402,13 @@ pub fn rsvd(
     //let m = input.shape()[0];
     let n = input.shape()[1];
 
-    // handle the seed, which could be None
-    // if it's None, we should use whatever default seeding is used by the RNG
+    // Handle the seed, which could be None
+    // If it's None, we should use whatever default seeding is used by the RNG
     let rng = match seed {
         Some(s) => ChaCha8Rng::seed_from_u64(s),
-        None => ChaCha8Rng::from_rng(&mut thread_rng()).unwrap(),
+        None => ChaCha8Rng::from_rng(&mut thread_rng()).unwrap_or_else(|_| {
+            panic!("Failed to create ChaCha8Rng from thread_rng.");
+        }),
     };
 
     // Generate Gaussian random test matrix
