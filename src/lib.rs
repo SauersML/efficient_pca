@@ -296,10 +296,29 @@ impl PCA {
         // Extract the top eigenvectors
         let top_eigenvectors = u.slice(s![.., ..final_k]).to_owned();
     
-        // Map the eigenvectors back to feature space to get principal components
-        // This is the key step that transforms from sample space back to feature space
-        let rotation_matrix = x.t().dot(&top_eigenvectors);
-    
+        // Map the eigenvectors (u) back to feature space
+        let mut rotation_matrix = x.t().dot(&top_eigenvectors);
+        
+        // For each column, divide by sqrt(eigval), then / sqrt(n-1), then unit‐normalize.
+        // singular_values[i] is the eigenvalue (already s[i], from the n×n covariance)
+        for i in 0..final_k {
+            let lam = singular_values[i].max(1e-12);
+        
+            // slice the i-th column in "rotation_matrix"
+            let mut col_i = rotation_matrix.slice_mut(s![.., i]);
+        
+            // 1) / sqrt(lambda)
+            col_i.mapv_inplace(|v| v / lam.sqrt());
+        
+            // 2) / sqrt(n-1)
+            col_i.mapv_inplace(|v| v / ((n as f64 - 1.0).sqrt()));
+        
+            // 3) final unit length
+            let norm_i = col_i.dot(&col_i).sqrt();
+            if norm_i > 1e-12 {
+                col_i.mapv_inplace(|v| v / norm_i);
+            }
+        }
         self.rotation = Some(rotation_matrix);
         Ok(())
     }
