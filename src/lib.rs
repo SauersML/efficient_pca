@@ -35,7 +35,7 @@ impl PCA {
     /// # Examples
     ///
     /// ```
-    /// use pca::PCA;
+    /// use efficient_pca::PCA;
     /// let pca = PCA::new();
     /// ```
     pub fn new() -> Self {
@@ -67,7 +67,7 @@ impl PCA {
     ///
     /// ```
     /// use ndarray::array;
-    /// use pca::PCA;
+    /// use efficient_pca::PCA;
     ///
     /// let data = array![
     ///     [1.0, 2.0],
@@ -242,7 +242,7 @@ impl PCA {
     ///
     /// ```
     /// use ndarray::array;
-    /// use pca::PCA;
+    /// use efficient_pca::PCA;
     ///
     /// let x = array![[1.0, 2.0], [3.0, 4.0]];
     /// let mut pca = PCA::new();
@@ -345,7 +345,7 @@ impl PCA {
     ///
     /// ```
     /// use ndarray::array;
-    /// use pca::PCA;
+    /// use efficient_pca::PCA;
     ///
     /// let x = array![[1.0, 2.0],[3.0, 4.0]];
     /// let mut pca = PCA::new();
