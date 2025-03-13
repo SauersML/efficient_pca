@@ -2,6 +2,8 @@
 
 Forked from https://github.com/ekg/pca. Modified from Erik Garrison's original implementation.
 
+Consider using this library if you have more features than samples.
+
 A Rust library providing **Principal Component Analysis (PCA)** functionality using either:
 1. A **covariance-based** eigen-decomposition (classical PCA). (Faster, less memory-efficient.)
 2. A **randomized SVD** approach (for large-scale or high-dimensional data). (Slower, more memory-efficient.)
