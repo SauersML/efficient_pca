@@ -574,11 +574,8 @@ mod pca_tests {
                         println!("[Rust Debug] Skipping empty line in CSV block.");
                         continue;
                     }
-                    if !trimmed.contains(',') {
-                        println!("[Rust Debug] Skipping non-CSV line: {:?}", trimmed);
-                        continue;
-                    }
-                    println!("[Rust Debug] Accepting CSV line: {:?}", trimmed);
+                    // For single-column outputs, there won't be commas but data is still valid
+                    println!("[Rust Debug] Accepting line: {:?}", trimmed);
                     lines.push(trimmed.to_string());
                 }
             }
