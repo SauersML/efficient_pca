@@ -186,6 +186,8 @@ Transforms data using the previously fitted PCA’s rotation, mean, and scale.
 - **Returns**: The matrix of shape (n_samples, n_components) in principal-component space.
 
 ```
+use ndarray::array;
+use efficient_pca::PCA;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = array![[1.0, 2.0],
                       [3.0, 4.0]];
