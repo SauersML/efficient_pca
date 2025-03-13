@@ -97,7 +97,7 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         data_matrix -= &mean_vector;
 
-        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
+        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(1.0));
         self.scale = Some(std_dev_vector.clone());
         data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
@@ -193,6 +193,14 @@ impl PCA {
                 // shape => (p,)
                 let mut axis_i = data_matrix.t().dot(u_col);
                 axis_i.mapv_inplace(|x| x / lam.sqrt());
+
+                // extra division by sqrt(n-1):
+                axis_i.mapv_inplace(|x| x / ((n_samples - 1) as f64).sqrt());
+                
+                // then normalize this axis to length 1:
+                let norm_i = axis_i.dot(&axis_i).sqrt();
+                axis_i.mapv_inplace(|x| x / norm_i);
+
                 // Put it as the i-th column in rotation_matrix
                 rotation_matrix
                     .slice_mut(s![.., i])
@@ -244,7 +252,7 @@ impl PCA {
         x -= &mean;
     
         // Compute scale
-        let std_dev = x.map_axis(Axis(0), |v| v.std(0.0));
+        let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
     
