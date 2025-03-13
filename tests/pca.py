@@ -44,15 +44,17 @@ Note:
 - Command-line arguments override config-file settings.
 - If no data source is specified, random data is generated with default shape
   (5 samples x 5 features).
+- When --test-flag is used, the script compares manual and library PCA on a single
+  input dataset or on multiple random scenarios to verify correctness.
 """
 
 import argparse
 import json
 import numpy as np
 import os
+import scipy.linalg as la
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-import scipy.linalg as la
 
 
 def parse_config_file(config_path):
@@ -60,13 +62,13 @@ def parse_config_file(config_path):
     Parse JSON config file if provided.
     Returns a dictionary of parameters (some may be None if not specified).
     """
-    print(f"Attempting to load config file: {config_path}")
+    print(f"[Config] Attempting to load config file: {config_path}")
     if not os.path.isfile(config_path):
-        print(f"Config file {config_path} not found; ignoring.")
+        print(f"[Config] Config file '{config_path}' not found; ignoring.")
         return {}
     with open(config_path, 'r') as f:
         config = json.load(f)
-    print(f"Loaded config: {config}")
+    print(f"[Config] Loaded config: {config}")
     return config
 
 
@@ -99,7 +101,11 @@ def parse_arguments():
                         help="Random seed for reproducibility in data generation.")
     parser.add_argument("--test-flag",
                         action="store_true",
-                        help="Flag to compare manual PCA and library PCA for consistency.")
+                        help="Compare manual PCA and library PCA for consistency. If no CSV given, multiple random tests run.")
+    parser.add_argument("--human-readable",
+                        action="store_true",
+                        help="Print data and results in a more verbose/human-readable format (otherwise CSV).")
+
     args = parser.parse_args()
 
     # Convert to dict
@@ -111,6 +117,7 @@ def parse_arguments():
         "features": args.features,
         "random_seed": args.random_seed,
         "test_flag": args.test_flag,
+        "human_readable": args.human_readable,
     }
     return cli_params
 
@@ -120,9 +127,9 @@ def load_data_from_csv(csv_path):
     Load data from a CSV file into a NumPy array.
     Assumes rows=samples, columns=features.
     """
-    print(f"Loading data from CSV file: {csv_path}")
+    print(f"[Data] Loading data from CSV file: {csv_path}")
     data = np.loadtxt(csv_path, delimiter=",")
-    print(f"Data shape from CSV: {data.shape}")
+    print(f"[Data] Data shape from CSV: {data.shape}")
     return data
 
 
@@ -130,12 +137,12 @@ def generate_random_data(samples=5, features=5, random_seed=None):
     """
     Generate random data (samples x features).
     """
-    print(f"Generating random data with shape ({samples} x {features}).")
+    print(f"[Data] Generating random data with shape ({samples} x {features}).")
     if random_seed is not None:
-        print(f"Using random seed: {random_seed}")
+        print(f"[Data] Using random seed: {random_seed}")
         np.random.seed(random_seed)
     data = np.random.randn(samples, features)
-    print(f"Random data generated with shape {data.shape}.")
+    print(f"[Data] Random data generated with shape {data.shape}.")
     return data
 
 
@@ -143,115 +150,122 @@ def manual_pca(X, n_components=None):
     """
     Perform PCA with proper normalization using the covariance trick
     when n_features > n_samples (a 'thin' data matrix).
-    
+
     Returns:
-        X_transformed: Transformed data matrix of shape (n_samples, n_components).
-        components: Principal component vectors of shape (n_features, n_components).
+        X_transformed: Transformed data matrix (n_samples, n_components).
+        components: Principal component vectors (n_features, n_components).
         eigvals: Eigenvalues associated with each principal component.
     """
     print("[Manual PCA] Starting manual PCA computation...")
-    print(f"[Manual PCA] Original shape: {X.shape}")
-    
+    print(f"[Manual PCA] Original data shape: {X.shape}")
+
     # Center and scale the data
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     n_samples, n_features = X_scaled.shape
-    
-    # Determine number of components if not specified
+    print("[Manual PCA] Data has been standardized (zero mean, unit variance).")
+
+    # Determine the number of components if not specified
     if n_components is None:
         n_components = min(n_samples, n_features)
     else:
         n_components = min(n_components, min(n_samples, n_features))
-    print(f"[Manual PCA] Using n_components={n_components}")
-    
+    print(f"[Manual PCA] Using n_components = {n_components}")
+
     # Apply covariance trick when n_features > n_samples
     if n_features > n_samples:
         print("[Manual PCA] Using the covariance trick (features > samples).")
         gram_matrix = np.dot(X_scaled, X_scaled.T) / (n_samples - 1)
         eigvals, eigvecs = la.eigh(gram_matrix)
-        
+
         # Sort eigenvalues/vectors in descending order
         idx = np.argsort(eigvals)[::-1]
         eigvals = eigvals[idx]
         eigvecs = eigvecs[:, idx]
-        
+
         # Select the top components
         eigvals = eigvals[:n_components]
         eigvecs = eigvecs[:, :n_components]
-        
+
         # Calculate the actual principal components
         components = np.zeros((n_features, n_components))
         for i in range(n_components):
             val = eigvals[i]
-            scale_factor = np.sqrt(val) if val > 1e-12 else 1e-12
-            # V = X^T · U / (sqrt(λ)*(sqrt(n_samples-1)))
-            components[:, i] = np.dot(X_scaled.T, eigvecs[:, i]) / (scale_factor * np.sqrt(n_samples - 1))
-            # Normalize
-            norm_val = np.linalg.norm(components[:, i])
-            if norm_val > 1e-12:
-                components[:, i] /= norm_val
-        
+            if val < 1e-12:
+                scale_factor = 1e-12
+            else:
+                scale_factor = np.sqrt(val)
+
+            # V = X^T · U / ( sqrt(eigval) * sqrt(n_samples - 1) )
+            components[:, i] = (X_scaled.T @ eigvecs[:, i]) / (scale_factor * np.sqrt(n_samples - 1))
+
+            # Normalize each component
+            comp_norm = np.linalg.norm(components[:, i])
+            if comp_norm > 1e-12:
+                components[:, i] /= comp_norm
+            else:
+                print(f"[Manual PCA] Warning: Component {i} norm is near zero.")
+
         # Transform data
-        X_transformed = np.dot(X_scaled, components)
-        
+        X_transformed = X_scaled @ components
+
     else:
-        print("[Manual PCA] Using the standard covariance matrix approach (samples >= features).")
-        cov_matrix = np.dot(X_scaled.T, X_scaled) / (n_samples - 1)
+        print("[Manual PCA] Using standard covariance approach (samples >= features).")
+        cov_matrix = (X_scaled.T @ X_scaled) / (n_samples - 1)
         eigvals, eigvecs = la.eigh(cov_matrix)
-        
+
         # Sort in descending order
         idx = np.argsort(eigvals)[::-1]
         eigvals = eigvals[idx]
         eigvecs = eigvecs[:, idx]
-        
+
         # Limit components
         eigvals = eigvals[:n_components]
         eigvecs = eigvecs[:, :n_components]
-        
+
         # Transform data
-        X_transformed = np.dot(X_scaled, eigvecs)
+        X_transformed = X_scaled @ eigvecs
         components = eigvecs
-    
-    print("[Manual PCA] Finished manual PCA computation.")
-    print(f"[Manual PCA] Transformed shape: {X_transformed.shape}")
+
+    print(f"[Manual PCA] PCA finished. Transformed shape: {X_transformed.shape}")
     return X_transformed, components, eigvals
 
 
 def library_pca(X, n_components=None):
     """
     Perform PCA using the scikit-learn library.
-    
+
     Returns:
-        X_transformed: Transformed data matrix (n_samples x n_components).
-        components: Principal components (n_features x n_components).
-        explained_variance: Eigenvalues representing variance explained (1D array).
+        X_transformed: Transformed data matrix (n_samples, n_components).
+        components: Principal components (n_features, n_components).
+        explained_variance: The eigenvalues representing variance explained.
     """
     print("[Library PCA] Starting PCA using scikit-learn...")
-    print(f"[Library PCA] Original shape: {X.shape}")
-    
+    print(f"[Library PCA] Original data shape: {X.shape}")
+
     # Center and scale the data
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    
+    n_samples, n_features = X_scaled.shape
+    print("[Library PCA] Data has been standardized (zero mean, unit variance).")
+
     # Determine max components
-    n_samples, n_features = X.shape
     max_components = min(n_samples, n_features)
     if n_components is None:
         n_components = max_components
     else:
         n_components = min(n_components, max_components)
-    print(f"[Library PCA] Using n_components={n_components}")
-    
+    print(f"[Library PCA] Using n_components = {n_components}")
+
     pca = PCA(n_components=n_components)
     X_transformed = pca.fit_transform(X_scaled)
-    
-    # scikit-learn returns components_ as shape (n_components, n_features).
-    # We transpose it to match the manual_pca's shape (n_features, n_components).
+
+    # scikit-learn returns components_ in shape (n_components, n_features).
+    # We'll transpose to match the manual PCA shape of (n_features, n_components).
     components = pca.components_.T
     explained_variance = pca.explained_variance_
-    
-    print("[Library PCA] Finished PCA using scikit-learn.")
-    print(f"[Library PCA] Transformed shape: {X_transformed.shape}")
+
+    print(f"[Library PCA] PCA finished. Transformed shape: {X_transformed.shape}")
     return X_transformed, components, explained_variance
 
 
@@ -259,44 +273,46 @@ def compare_pca(X, n_components=None):
     """
     Compare results of manual_pca and library_pca, checking:
       - Transformed data similarity (accounting for sign flips)
-      - Eigenvalue similarity (within some tolerance)
-    
+      - Eigenvalue similarity (within a tolerance)
+
     Prints comparison details and returns True if they are sufficiently similar,
     False otherwise.
     """
     print("[Comparison] Comparing Manual PCA and Library PCA.")
     manual_transformed, manual_components, manual_eigvals = manual_pca(X, n_components)
     library_transformed, library_components, library_eigvals = library_pca(X, n_components)
-    
-    # Compare transformed data, allowing sign flips column by column
-    print("[Comparison] Checking column-by-column sign-flip invariances in transformed data.")
-    if manual_transformed.shape != library_transformed.shape:
+
+    # Compare shapes
+    same_shape = (manual_transformed.shape == library_transformed.shape)
+    if not same_shape:
         print("[Comparison] Mismatch in shape of transformed data.")
-        transformed_similar = False
-    else:
-        transformed_similar = True
-        for i in range(manual_transformed.shape[1]):
-            manual_col = manual_transformed[:, i]
-            library_col = library_transformed[:, i]
-            # Check if close with same sign or opposite sign
-            sim_positive = np.allclose(manual_col, library_col, rtol=1e-5, atol=1e-5)
-            sim_negative = np.allclose(manual_col, -library_col, rtol=1e-5, atol=1e-5)
-            if not (sim_positive or sim_negative):
-                print(f"[Comparison] Column {i} differs beyond tolerance.")
-                transformed_similar = False
-                break
-    
-    print(f"[Comparison] Transformed data similar (within sign flips): {transformed_similar}")
-    
+        return False
+
+    # Compare transformed data, allowing sign flips column by column
+    print("[Comparison] Checking column-by-column sign-flip invariance in transformed data...")
+    transformed_similar = True
+    for i in range(manual_transformed.shape[1]):
+        manual_col = manual_transformed[:, i]
+        library_col = library_transformed[:, i]
+
+        # Check if close with same sign or opposite sign
+        sim_positive = np.allclose(manual_col, library_col, rtol=1e-5, atol=1e-5)
+        sim_negative = np.allclose(manual_col, -library_col, rtol=1e-5, atol=1e-5)
+
+        if not (sim_positive or sim_negative):
+            print(f"[Comparison] Column {i} differs beyond tolerance.")
+            transformed_similar = False
+            break
+
     # Compare eigenvalues
-    print("[Comparison] Checking eigenvalues similarity.")
-    if len(manual_eigvals) != len(library_eigvals):
-        print("[Comparison] Mismatch in number of eigenvalues.")
-        eigvals_similar = False
-    else:
+    eigvals_similar = False
+    if len(manual_eigvals) == len(library_eigvals):
         eigvals_similar = np.allclose(manual_eigvals, library_eigvals, rtol=1e-5, atol=1e-5)
-    print(f"[Comparison] Eigenvalues similar: {eigvals_similar}")
-    
+
+    print("[Comparison] Results:")
+    print(f"  -> Transformed data similar (accounting for sign flips): {transformed_similar}")
+    print(f"  -> Eigenvalues similar: {eigvals_similar}")
+
     overall = transformed_similar and eigvals_similar
     print(f"[Comparison] Overall PCA match status: {overall}")
     return overall
@@ -304,76 +320,126 @@ def compare_pca(X, n_components=None):
 
 def output_array_csv(arr, header=""):
     """
-    Print a NumPy array as CSV to stdout.
+    Print a NumPy array as CSV rows to stdout.
     """
     if header:
         print(header)
     for row in arr:
         if np.ndim(row) == 0:
-            # Scalar
+            # It's a scalar
             print(f"{row}")
         else:
             print(",".join(str(x) for x in row))
 
 
+def output_array_human_readable(arr, name="Array"):
+    """
+    Print a NumPy array in a more human-readable format with row-by-row prints.
+    """
+    print(f"--- {name} (shape={arr.shape}) ---")
+    if arr.ndim == 1:
+        # Single vector
+        print("[" + ", ".join([f"{v: .6f}" for v in arr]) + "]")
+    else:
+        for i, row in enumerate(arr):
+            row_str = ", ".join([f"{v: .6f}" for v in row])
+            print(f"Row {i}: {row_str}")
+    print("-" * 40)
+
+
+def test_multiple_random_scenarios():
+    """
+    Run multiple random scenarios to thoroughly test the manual vs library PCA.
+    Demonstrates different (samples, features, n_components) combos.
+    """
+    print("[Multi-Scenario Testing] Beginning multiple random PCA tests...")
+    scenarios = [
+        (5, 5, None),
+        (5, 5, 2),
+        (10, 5, None),
+        (5, 10, None),
+        (8, 3, 2),
+        (8, 8, 8),
+    ]
+    random_seed_base = 100
+
+    for idx, (samps, feats, comps) in enumerate(scenarios):
+        print(f"\n[Multi-Scenario {idx+1}] samples={samps}, features={feats}, n_components={comps}")
+        np.random.seed(random_seed_base + idx)  # For repeatable test data
+        X_rand = np.random.randn(samps, feats)
+
+        # Compare manual and library PCA
+        result = compare_pca(X_rand, n_components=comps)
+        print(f"[Multi-Scenario {idx+1}] => PCA comparison result: {result}")
+    print("[Multi-Scenario Testing] Done.")
+
+
 def main():
-    print("=== PCA SCRIPT START ===")
-    # Set printing options for clarity
+    print("=== PCA SCRIPT START ===\n")
+
+    # For nicer numeric printing
     np.set_printoptions(precision=6, suppress=True)
 
-    # Parse command-line arguments
+    # Parse command-line arguments and possibly config
     args = parse_arguments()
-    
-    # Load config file if provided
+
+    # Load config file if specified
     config = {}
     if args["config"]:
         config = parse_config_file(args["config"])
 
-    # Merge config values (config file < command line)
-    # Command-line overrides config
-    data_csv = args["data_csv"] if args["data_csv"] is not None else config.get("data_csv", None)
+    # Merge config with command-line (command-line overrides)
+    data_csv = args["data_csv"] or config.get("data_csv", None)
     n_components = args["n_components"] if args["n_components"] is not None else config.get("n_components", None)
     test_flag = args["test_flag"] or config.get("test_flag", False)
     samples = args["samples"] if args["samples"] is not None else config.get("samples", None)
     features = args["features"] if args["features"] is not None else config.get("features", None)
     random_seed = args["random_seed"] if args["random_seed"] is not None else config.get("random_seed", None)
+    human_readable = args["human_readable"] or config.get("human_readable", False)
 
-    # Decide how to get data
-    X = None
+    # Acquire data either from CSV or by generation
     if data_csv:
         print("[Main] Loading data from CSV.")
         X = load_data_from_csv(data_csv)
     else:
-        # Generate random data if no CSV specified
-        print("[Main] Generating random data (no CSV path specified).")
+        print("[Main] Generating random data (no CSV provided).")
         if samples is None:
             samples = 5
         if features is None:
             features = 5
         X = generate_random_data(samples, features, random_seed)
 
-    # Now decide whether to run a test (compare manual vs library) or just run library PCA
+    # If --test-flag is set and a CSV was provided, compare on that data.
+    # If no CSV was provided, run multiple random scenario tests.
     if test_flag:
-        print("[Main] --test-flag is set. Comparing manual PCA vs library PCA.")
-        compare_pca(X, n_components)
+        if data_csv:
+            print("[Main] --test-flag is set. Comparing manual vs library PCA on loaded CSV.")
+            compare_result = compare_pca(X, n_components)
+            print(f"[Main] Single-dataset comparison result: {compare_result}")
+        else:
+            print("[Main] --test-flag is set, but no CSV provided. Running multiple random scenario tests.")
+            test_multiple_random_scenarios()
     else:
-        print("[Main] --test-flag not set. Performing library PCA by default.")
-        # Perform library PCA only
+        print("[Main] --test-flag not set. Performing PCA (library) and outputting results.")
+        # Perform library PCA
         transformed, components, eigvals = library_pca(X, n_components)
 
-        # Output in CSV format
-        print("\n--- PCA Output (Library) ---")
-        print("\nTransformed Data (CSV):")
-        output_array_csv(transformed)
+        # Output results
+        if human_readable:
+            print("\n[Output] PCA Results (Library) in human-readable form:")
+            output_array_human_readable(transformed, name="Transformed Data")
+            output_array_human_readable(components, name="Components (columns=PCs after transpose)")
+            output_array_human_readable(eigvals, name="Eigenvalues")
+        else:
+            print("\n[Output] PCA Results (Library) in CSV form:")
+            print("Transformed Data (CSV):")
+            output_array_csv(transformed)
 
-        print("\nComponents (CSV):")
-        output_array_csv(components.T)  # Original shape was (n_features, n_components)
+            print("\nComponents (CSV):")
+            # We store them in (n_features x n_components),
+            output_array_csv(components)
 
-        print("\nEigenvalues (CSV):")
-        output_array_csv(eigvals.reshape(-1, 1))
+            print("\nEigenvalues (CSV):")
+            output_array_csv(eigvals.reshape(-1, 1))
 
-    print("=== PCA SCRIPT END ===")
-
-
-if __name__ == "__main__":
-    main()
+    print("\n=== PCA SCRIPT END ===")
