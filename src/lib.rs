@@ -210,8 +210,9 @@ impl PCA {
                 axis_i.mapv_inplace(|x| x / ((n_samples - 1) as f64).sqrt());
 
                 // then normalize this axis to length 1:
-                let norm_i = axis_i.dot(&axis_i).sqrt();
-                axis_i.mapv_inplace(|x| x / norm_i);
+                // let norm_i = axis_i.dot(&axis_i).sqrt();
+                // axis_i.mapv_inplace(|x| x / norm_i);
+                // actually no
 
                 // Put it as the i-th column in rotation_matrix
                 rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
