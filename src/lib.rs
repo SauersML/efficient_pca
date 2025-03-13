@@ -10,7 +10,7 @@ use ndarray_linalg::UPLO;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::Normal;
-use rand::TryRngCore;
+use rand::Rng;
 use std::error::Error;
 
 /// Principal component analysis (PCA) structure
@@ -405,17 +405,14 @@ pub fn rsvd(
     // If it's None, we should use whatever default seeding is used by the RNG
     let rng = match seed {
         Some(s) => ChaCha8Rng::seed_from_u64(s),
-        None => match ChaCha8Rng::from_rng(&mut rand::rng()) {
-            Ok(rng) => rng,
-            Err(e) => panic!("Failed to create ChaCha8Rng from RNG: {:?}", e),
-        },
+        None => ChaCha8Rng::from_rng(&mut rand::rng()),
     };
 
     // Generate Gaussian random test matrix
     let l = k + p; // Oversampling
     let omega = {
         let vec = rng
-            .sample_iter(Normal::new(0.0, 1.0).unwrap())
+            .sample_iter(Normal::<f64>::new(0.0, 1.0).unwrap())
             .take(l * n)
             .collect::<Vec<_>>();
         ndarray::Array::from_shape_vec((n, l), vec).unwrap()
