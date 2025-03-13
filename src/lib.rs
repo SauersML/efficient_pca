@@ -443,7 +443,6 @@ pub fn rsvd(
 mod genome_tests {
     use super::*;
     use ndarray::{Array2, ArrayView1};
-    use rand::distributions::Uniform;
     use rand::Rng;
     use rand_chacha::ChaCha8Rng;
     use rand::SeedableRng;
@@ -926,7 +925,7 @@ mod pca_tests {
         }
 
         let comps_str = format!("{}", n_components);
-        let mut args_vec = vec![
+        let args_vec = vec![
             "tests/pca.py",
             "--data_csv",
             file.path().to_str().unwrap(),
@@ -1338,7 +1337,7 @@ mod rsvd_tests {
 #[cfg(test)]
 mod pca_bench_tests {
     use super::*;
-    use sysinfo::{System, SystemExt};
+    use sysinfo::{System};
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::time::Instant;
