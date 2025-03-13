@@ -10,6 +10,7 @@ use ndarray_linalg::UPLO;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::Normal;
+use rand::TryRngCore;
 use std::error::Error;
 
 /// Principal component analysis (PCA) structure
