@@ -551,45 +551,72 @@ mod pca_tests {
         test_name: &str,
     ) {
         fn parse_transformed_csv_from_python(output_text: &str) -> ndarray::Array2<f64> {
+            println!("[Rust Debug] Entering parse_transformed_csv_from_python...");
             let mut lines = Vec::new();
             let mut in_csv_block = false;
-            for line in output_text.lines() {
+            for (line_idx, line) in output_text.lines().enumerate() {
+                println!("[Rust Debug] Raw line {}: {:?}", line_idx, line);
                 // Start capturing once we see "Transformed Data (CSV):"
                 if line.starts_with("Transformed Data (CSV):") {
+                    println!("[Rust Debug] Found start of CSV block at line {}", line_idx);
                     in_csv_block = true;
                     continue;
                 }
                 // Stop capturing if we see "Components (CSV):"
                 if line.starts_with("Components (CSV):") {
+                    println!("[Rust Debug] Found end of CSV block at line {}", line_idx);
                     break;
                 }
                 // If we are in CSV block, gather lines that are presumably CSV
                 if in_csv_block {
                     let trimmed = line.trim();
-                    // skip blank lines or ones that do not contain a comma
-                    if trimmed.is_empty() || !trimmed.contains(',') {
+                    if trimmed.is_empty() {
+                        println!("[Rust Debug] Skipping empty line in CSV block.");
                         continue;
                     }
+                    if !trimmed.contains(',') {
+                        println!("[Rust Debug] Skipping non-CSV line: {:?}", trimmed);
+                        continue;
+                    }
+                    println!("[Rust Debug] Accepting CSV line: {:?}", trimmed);
                     lines.push(trimmed.to_string());
                 }
             }
 
-            // now parse only the collected lines
+            println!("[Rust Debug] Collected {} CSV lines.", lines.len());
             if lines.is_empty() {
+                println!("[Rust Debug] No CSV lines found. Returning empty array.");
                 return ndarray::Array2::<f64>::zeros((0, 0));
             }
             let col_count = lines[0].split(',').count();
-            let mut arr = ndarray::Array2::<f64>::zeros((lines.len(), col_count));
+            let row_count = lines.len();
+            println!("[Rust Debug] Parsing into {} rows x {} cols.", row_count, col_count);
+
+            let mut arr = ndarray::Array2::<f64>::zeros((row_count, col_count));
             for (i, l) in lines.iter().enumerate() {
+                println!("[Rust Debug] Parsing CSV row {}: {:?}", i, l);
                 let nums: Vec<f64> = l
                     .split(',')
-                    .map(|x| x.trim().parse::<f64>())
-                    .filter_map(Result::ok) // or .map(|r| r.unwrap()) if we want to crash on parse fail...
+                    .map(|x| {
+                        let trimmed_val = x.trim();
+                        match trimmed_val.parse::<f64>() {
+                            Ok(val) => {
+                                println!("[Rust Debug] Parsed float: {}", val);
+                                val
+                            },
+                            Err(e) => {
+                                println!("[Rust Debug] Parse error for {:?}: {:?}", trimmed_val, e);
+                                0.0
+                            }
+                        }
+                    })
                     .collect();
+
                 for (j, &val) in nums.iter().enumerate() {
                     arr[[i, j]] = val;
                 }
             }
+            println!("[Rust Debug] Final parsed array shape = ({}, {}).", arr.nrows(), arr.ncols());
             arr
         }
 
