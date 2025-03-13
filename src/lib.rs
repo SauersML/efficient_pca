@@ -7,10 +7,10 @@ use ndarray_linalg::eigh::Eigh;
 use ndarray_linalg::svd::SVD;
 use ndarray_linalg::QR;
 use ndarray_linalg::UPLO;
+use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::Normal;
-use rand::Rng;
 use std::error::Error;
 
 /// Principal component analysis (PCA) structure
@@ -444,8 +444,8 @@ mod genome_tests {
     use super::*;
     use ndarray::{Array2, ArrayView1};
     use rand::Rng;
-    use rand_chacha::ChaCha8Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
     use std::io::Write;
     use std::process::Command;
     use std::time::Instant;
@@ -526,7 +526,9 @@ mod genome_tests {
 
         // Check memory usage afterwards
         sys.refresh_all();
-        let process_after = sys.process(pid).expect("Unable to get current process after test");
+        let process_after = sys
+            .process(pid)
+            .expect("Unable to get current process after test");
         let final_mem = process_after.memory();
         println!("Final memory usage (KB): {}", final_mem);
         if final_mem < initial_mem {
@@ -541,25 +543,28 @@ mod genome_tests {
 
     #[test]
     fn test_large_genotype_matrix_pc_correlation() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n[Controlled Structure Test] Generating matrix with exactly 3 real components...");
-        
+        println!(
+            "\n[Controlled Structure Test] Generating matrix with exactly 3 real components..."
+        );
+
         // Use same dimensions as the original genotype test
         let n_samples = 88;
         let n_variants = 10000;
-        let n_real_components = 3;  // Exactly 3 components represent true structure
-        let signal_strength = [50.0, 20.0, 10.0];  // Stronger to weaker signals for each component
-        
+        let n_real_components = 3; // Exactly 3 components represent true structure
+        let signal_strength = [50.0, 20.0, 10.0]; // Stronger to weaker signals for each component
+
         // Set random seed for reproducibility
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        
+
         // Create orthogonal basis vectors for the signal components (QR decomposition)
-        let random_basis = Array2::<f64>::from_shape_fn((n_samples, n_real_components), 
-                                                       |_| rng.gen_range(-1.0..1.0));
+        let random_basis = Array2::<f64>::from_shape_fn((n_samples, n_real_components), |_| {
+            rng.gen_range(-1.0..1.0)
+        });
         let (q, _) = random_basis.qr().unwrap();
-        
+
         // Make sure we have orthogonal unit vectors for true factors
         let true_factors = q.slice(s![.., 0..n_real_components]).to_owned();
-        
+
         // Create random loadings for each variant (n_real_components x n_variants)
         let mut loadings = Array2::<f64>::zeros((n_real_components, n_variants));
         for i in 0..n_real_components {
@@ -567,7 +572,7 @@ mod genome_tests {
                 loadings[[i, j]] = rng.gen_range(-1.0..1.0);
             }
         }
-        
+
         // Create the pure signal matrix by combining factors and loadings, with decreasing strengths
         let mut pure_signal = Array2::<f64>::zeros((n_samples, n_variants));
         for k in 0..n_real_components {
@@ -579,7 +584,7 @@ mod genome_tests {
                 }
             }
         }
-        
+
         // Add pure random noise
         let mut noise = Array2::<f64>::zeros((n_samples, n_variants));
         for i in 0..n_samples {
@@ -587,32 +592,36 @@ mod genome_tests {
                 noise[[i, j]] = rng.gen_range(-1.0..1.0);
             }
         }
-        
+
         // Final matrix = signal + noise
         let data = &pure_signal + &noise;
-        
-        println!("[Controlled Test] Created data with {} real components and pure noise", n_real_components);
+
+        println!(
+            "[Controlled Test] Created data with {} real components and pure noise",
+            n_real_components
+        );
         println!("[Controlled Test] Matrix shape: {:?}", data.shape());
-        
+
         // Fit method
         let n_components = 5;
         let mut rust_pca_fit = PCA::new();
         rust_pca_fit.fit(data.clone(), None)?;
         let rust_transformed_fit = rust_pca_fit.transform(data.clone())?;
-        
+
         // Run Python PCA for comparison
         let file = NamedTempFile::new().unwrap();
         {
             let mut handle = file.as_file();
             for row in data.rows() {
-                let line = row.iter()
+                let line = row
+                    .iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
                 writeln!(handle, "{}", line).unwrap();
             }
         }
-        
+
         let cmd_output = Command::new("python3")
             .args(&vec![
                 "tests/pca.py",
@@ -623,12 +632,12 @@ mod genome_tests {
             ])
             .output()
             .expect("Failed to run Python PCA");
-        
+
         assert!(cmd_output.status.success(), "Python PCA process failed");
-        
+
         let stdout_text = String::from_utf8_lossy(&cmd_output.stdout).to_string();
         let python_transformed = parse_transformed_csv_from_python(&stdout_text);
-        
+
         // Get eigenvalues from the data for reference
         let mut centered_data = data.clone();
         let mean = centered_data.mean_axis(Axis(0)).unwrap();
@@ -639,100 +648,145 @@ mod genome_tests {
         }
         let cov_matrix = centered_data.dot(&centered_data.t()) / (n_samples as f64 - 1.0);
         let (mut eigenvalues, _) = cov_matrix.eigh(UPLO::Upper).unwrap();
-        eigenvalues.as_slice_mut().unwrap().sort_by(|a, b| b.partial_cmp(a).unwrap());
+        eigenvalues
+            .as_slice_mut()
+            .unwrap()
+            .sort_by(|a, b| b.partial_cmp(a).unwrap());
         let total_variance: f64 = eigenvalues.iter().take(n_components).sum();
-        
+
         println!("\n[Comparison] Explained Variance:");
         println!("Component | Rust Eigenvalue |  %   | Status");
         println!("---------+----------------+------+--------");
         for i in 0..n_components {
             let variance_pct = (eigenvalues[i] / total_variance) * 100.0;
-            let status = if i < n_real_components { "REAL SIGNAL" } else { "PURE NOISE" };
-            println!("    PC{:<2}  | {:>14.2} | {:>4.1}% | {}", 
-                    i+1, eigenvalues[i], variance_pct, status);
+            let status = if i < n_real_components {
+                "REAL SIGNAL"
+            } else {
+                "PURE NOISE"
+            };
+            println!(
+                "    PC{:<2}  | {:>14.2} | {:>4.1}% | {}",
+                i + 1,
+                eigenvalues[i],
+                variance_pct,
+                status
+            );
         }
-        
+
         println!("\nTotal variance: {:.2}", total_variance);
-        println!("First {} PCs capture real structure, remaining PCs are pure noise", n_real_components);
-        
+        println!(
+            "First {} PCs capture real structure, remaining PCs are pure noise",
+            n_real_components
+        );
+
         println!("\nCorrelations for fit method:");
         println!("Component | Correlation | Required | Status");
         println!("---------+------------+----------+--------");
-        
+
         let mut all_real_components_match_fit = true;
         for pc_idx in 0..n_components {
             let rust_pc = rust_transformed_fit.column(pc_idx);
             let python_pc = python_transformed.column(pc_idx);
             let correlation = calculate_pearson_correlation(rust_pc, python_pc);
             let abs_correlation = correlation.abs();
-            
+
             if pc_idx < n_real_components {
                 let threshold = 0.95;
                 if abs_correlation < threshold {
                     all_real_components_match_fit = false;
-                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED", 
-                           pc_idx+1, abs_correlation, threshold);
+                    println!(
+                        "    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED",
+                        pc_idx + 1,
+                        abs_correlation,
+                        threshold
+                    );
                 } else {
-                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ PASSED", 
-                           pc_idx+1, abs_correlation, threshold);
+                    println!(
+                        "    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ PASSED",
+                        pc_idx + 1,
+                        abs_correlation,
+                        threshold
+                    );
                 }
             } else {
-                println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED", 
-                       pc_idx+1, abs_correlation, 0.0);
+                println!(
+                    "    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED",
+                    pc_idx + 1,
+                    abs_correlation,
+                    0.0
+                );
             }
         }
-        
-        assert!(all_real_components_match_fit, "Real signal components do not match for fit method");
-        
+
+        assert!(
+            all_real_components_match_fit,
+            "Real signal components do not match for fit method"
+        );
+
         // Now the rfit method
         let mut rust_pca_rfit = PCA::new();
         rust_pca_rfit.rfit(data.clone(), n_components, 5, Some(42_u64), None)?;
         let rust_transformed_rfit = rust_pca_rfit.transform(data.clone())?;
-        
+
         println!("\nCorrelations for rfit method:");
         println!("Component | Correlation | Required | Status");
         println!("---------+------------+----------+--------");
-        
+
         let mut all_real_components_match_rfit = true;
         for pc_idx in 0..n_components {
             let rust_pc = rust_transformed_rfit.column(pc_idx);
             let python_pc = python_transformed.column(pc_idx);
             let correlation = calculate_pearson_correlation(rust_pc, python_pc);
             let abs_correlation = correlation.abs();
-            
+
             if pc_idx < n_real_components {
                 let threshold = 0.95;
                 if abs_correlation < threshold {
                     all_real_components_match_rfit = false;
-                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED", 
-                           pc_idx+1, abs_correlation, threshold);
+                    println!(
+                        "    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED",
+                        pc_idx + 1,
+                        abs_correlation,
+                        threshold
+                    );
                 } else {
-                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ PASSED", 
-                           pc_idx+1, abs_correlation, threshold);
+                    println!(
+                        "    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ PASSED",
+                        pc_idx + 1,
+                        abs_correlation,
+                        threshold
+                    );
                 }
             } else {
-                println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED", 
-                       pc_idx+1, abs_correlation, 0.0);
+                println!(
+                    "    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED",
+                    pc_idx + 1,
+                    abs_correlation,
+                    0.0
+                );
             }
         }
-        
-        assert!(all_real_components_match_rfit, "Real signal components do not match for rfit method");
-        
+
+        assert!(
+            all_real_components_match_rfit,
+            "Real signal components do not match for rfit method"
+        );
+
         println!("\n[Controlled Test] Both fit and rfit methods match correctly");
         Ok(())
     }
-    
+
     fn calculate_pearson_correlation(v1: ArrayView1<f64>, v2: ArrayView1<f64>) -> f64 {
         // Get means
         let mean1 = v1.mean().unwrap();
         let mean2 = v2.mean().unwrap();
-        
+
         // Calculate numerator (covariance)
         let mut numerator = 0.0;
         for (x1, x2) in v1.iter().zip(v2.iter()) {
             numerator += (x1 - mean1) * (x2 - mean2);
         }
-        
+
         // Calculate denominators (std devs)
         let mut var1 = 0.0;
         let mut var2 = 0.0;
@@ -742,11 +796,11 @@ mod genome_tests {
         for &x2 in v2.iter() {
             var2 += (x2 - mean2).powi(2);
         }
-        
+
         // Calculate correlation
         numerator / (var1.sqrt() * var2.sqrt())
     }
-    
+
     fn parse_transformed_csv_from_python(output_text: &str) -> Array2<f64> {
         let mut lines = Vec::new();
         let mut in_csv_block = false;
@@ -774,10 +828,10 @@ mod genome_tests {
         if lines.is_empty() {
             return Array2::<f64>::zeros((0, 0));
         }
-        
+
         let col_count = lines[0].split(',').count();
         let row_count = lines.len();
-        
+
         let mut arr = Array2::<f64>::zeros((row_count, col_count));
         for (i, l) in lines.iter().enumerate() {
             let nums: Vec<f64> = l
@@ -786,7 +840,7 @@ mod genome_tests {
                     let trimmed_val = x.trim();
                     match trimmed_val.parse::<f64>() {
                         Ok(val) => val,
-                        Err(_) => 0.0
+                        Err(_) => 0.0,
                     }
                 })
                 .collect();
@@ -795,7 +849,7 @@ mod genome_tests {
                 arr[[i, j]] = val;
             }
         }
-        
+
         arr
     }
 }
@@ -857,7 +911,10 @@ mod pca_tests {
             }
             let col_count = lines[0].split(',').count();
             let row_count = lines.len();
-            println!("[Rust Debug] Parsing into {} rows x {} cols.", row_count, col_count);
+            println!(
+                "[Rust Debug] Parsing into {} rows x {} cols.",
+                row_count, col_count
+            );
 
             let mut arr = ndarray::Array2::<f64>::zeros((row_count, col_count));
             for (i, l) in lines.iter().enumerate() {
@@ -870,7 +927,7 @@ mod pca_tests {
                             Ok(val) => {
                                 // println!("[Rust Debug] Parsed float: {}", val);
                                 val
-                            },
+                            }
                             Err(e) => {
                                 println!("[Rust Debug] Parse error for {:?}: {:?}", trimmed_val, e);
                                 0.0
@@ -883,7 +940,11 @@ mod pca_tests {
                     arr[[i, j]] = val;
                 }
             }
-            println!("[Rust Debug] Final parsed array shape = ({}, {}).", arr.nrows(), arr.ncols());
+            println!(
+                "[Rust Debug] Final parsed array shape = ({}, {}).",
+                arr.nrows(),
+                arr.ncols()
+            );
             arr
         }
 
@@ -1287,11 +1348,11 @@ mod rsvd_tests {
 #[cfg(test)]
 mod pca_bench_tests {
     use super::*;
-    use sysinfo::{System};
+    use ndarray::Array2;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::time::Instant;
-    use ndarray::Array2;
+    use sysinfo::System;
 
     /// Holds results for a single benchmark scenario.
     struct BenchResult {
@@ -1358,7 +1419,9 @@ mod pca_bench_tests {
 
         // Track memory usage after
         sys.refresh_all();
-        let process_end = sys.process(pid).expect("Unable to get current process at end");
+        let process_end = sys
+            .process(pid)
+            .expect("Unable to get current process at end");
         let final_mem = process_end.memory();
         let used = if final_mem > initial_mem {
             final_mem - initial_mem
@@ -1376,8 +1439,10 @@ mod pca_bench_tests {
         n_features: usize,
         seed: u64,
     ) -> BenchResult {
-        println!("\n=== Test Case: {} ({} samples x {} features) ===",
-                 scenario_name, n_samples, n_features);
+        println!(
+            "\n=== Test Case: {} ({} samples x {} features) ===",
+            scenario_name, n_samples, n_features
+        );
 
         let data = generate_random_data(n_samples, n_features, seed);
         let n_components = std::cmp::min(n_samples, n_features).min(30).max(2);
@@ -1417,7 +1482,9 @@ mod pca_bench_tests {
             "{:<10} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10}",
             "Scenario", "Samples", "Features", "fit (s)", "fit Mem", "rfit (s)", "rfit Mem"
         );
-        println!("----------+----------+----------+------------+------------+------------+------------");
+        println!(
+            "----------+----------+----------+------------+------------+------------+------------"
+        );
         for r in results {
             println!(
                 "{:<10} | {:>8} | {:>8} | {:>10.3} | {:>10} | {:>10.3} | {:>10}",
