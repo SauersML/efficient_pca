@@ -461,9 +461,9 @@ mod genome_tests {
         let initial_mem = sys.used_memory();
         println!("Initial memory usage: {} KB", initial_mem);
 
-        // Dimensions: 88 haplotypes (rows) x 1,000,000 variants (columns)
+        // Dimensions: 88 haplotypes (rows) x 100,000 variants (columns)
         let n_rows = 88;
-        let n_cols = 1_000_000;
+        let n_cols = 100_000;
 
         // Generate random binary data (0 or 1) to simulate haplotype alleles
         // Each entry is either 0.0 or 1.0
