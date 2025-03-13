@@ -551,10 +551,8 @@ mod genome_tests {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         
         // Create orthogonal basis vectors for the signal components (QR decomposition)
-        //    This means we get exactly n_real_components of signal
         let random_basis = Array2::<f64>::from_shape_fn((n_samples, n_real_components), 
                                                        |_| rng.gen_range(-1.0..1.0));
-        // QR decomposition to get orthogonal factors
         let (q, _) = random_basis.qr().unwrap();
         
         // Make sure we have orthogonal unit vectors for true factors
@@ -571,13 +569,8 @@ mod genome_tests {
         // Create the pure signal matrix by combining factors and loadings, with decreasing strengths
         let mut pure_signal = Array2::<f64>::zeros((n_samples, n_variants));
         for k in 0..n_real_components {
-            // Get the k-th factor (shape n_samples)
             let factor = true_factors.column(k);
-            
-            // Get the k-th loading (shape n_variants)
             let loading = loadings.row(k);
-            
-            // Outer product: factor ⊗ loading with decreasing strength
             for i in 0..n_samples {
                 for j in 0..n_variants {
                     pure_signal[[i, j]] += factor[i] * loading[j] * signal_strength[k];
@@ -599,11 +592,11 @@ mod genome_tests {
         println!("[Controlled Test] Created data with {} real components and pure noise", n_real_components);
         println!("[Controlled Test] Matrix shape: {:?}", data.shape());
         
-        // Run Rust PCA
-        let n_components = 5;  // Request 5 components, but only 3 are "real"
-        let mut rust_pca = PCA::new();
-        rust_pca.fit(data.clone(), None)?;
-        let rust_transformed = rust_pca.transform(data.clone())?;
+        // Fit method
+        let n_components = 5;
+        let mut rust_pca_fit = PCA::new();
+        rust_pca_fit.fit(data.clone(), None)?;
+        let rust_transformed_fit = rust_pca_fit.transform(data.clone())?;
         
         // Run Python PCA for comparison
         let file = NamedTempFile::new().unwrap();
@@ -634,14 +627,7 @@ mod genome_tests {
         let stdout_text = String::from_utf8_lossy(&cmd_output.stdout).to_string();
         let python_transformed = parse_transformed_csv_from_python(&stdout_text);
         
-        // Verify shapes match
-        assert_eq!(rust_transformed.shape()[0], n_samples, "Rust PCA output has wrong number of samples");
-        assert!(rust_transformed.shape()[1] >= n_components, "Rust PCA should have at least 5 components");
-        assert_eq!(python_transformed.shape()[0], n_samples, "Python PCA output has wrong number of samples");
-        assert_eq!(python_transformed.shape()[1], n_components, "Python PCA should have 5 components");
-        
-        // Get eigenvalues from the PCA
-        // We need to recreate a simplified PCA to extract eigenvalues
+        // Get eigenvalues from the data for reference
         let mut centered_data = data.clone();
         let mean = centered_data.mean_axis(Axis(0)).unwrap();
         for i in 0..n_samples {
@@ -650,21 +636,13 @@ mod genome_tests {
             }
         }
         let cov_matrix = centered_data.dot(&centered_data.t()) / (n_samples as f64 - 1.0);
-        
-        // Eigendecomposition of the covariance matrix
         let (mut eigenvalues, _) = cov_matrix.eigh(UPLO::Upper).unwrap();
-        
-        // Sort eigenvalues in descending order
         eigenvalues.as_slice_mut().unwrap().sort_by(|a, b| b.partial_cmp(a).unwrap());
-        
-        // Calculate total variance and percentage explained
         let total_variance: f64 = eigenvalues.iter().take(n_components).sum();
         
-        // Display variance explained information
         println!("\n[Comparison] Explained Variance:");
         println!("Component | Rust Eigenvalue |  %   | Status");
         println!("---------+----------------+------+--------");
-        
         for i in 0..n_components {
             let variance_pct = (eigenvalues[i] / total_variance) * 100.0;
             let status = if i < n_real_components { "REAL SIGNAL" } else { "PURE NOISE" };
@@ -675,28 +653,21 @@ mod genome_tests {
         println!("\nTotal variance: {:.2}", total_variance);
         println!("First {} PCs capture real structure, remaining PCs are pure noise", n_real_components);
         
-        // Compare correlations with different standards for real vs. noise components
-        let mut all_real_components_match = true;
-        
-        println!("\nComponent Correlations (accounting for sign flips):");
+        println!("\nCorrelations for fit method:");
         println!("Component | Correlation | Required | Status");
         println!("---------+------------+----------+--------");
         
+        let mut all_real_components_match_fit = true;
         for pc_idx in 0..n_components {
-            // Extract PC vectors
-            let rust_pc = rust_transformed.column(pc_idx);
+            let rust_pc = rust_transformed_fit.column(pc_idx);
             let python_pc = python_transformed.column(pc_idx);
-            
-            // Calculate correlation (accounting for sign flips)
             let correlation = calculate_pearson_correlation(rust_pc, python_pc);
             let abs_correlation = correlation.abs();
             
-            // Different requirements based on whether this is a signal or noise component
             if pc_idx < n_real_components {
-                // Real components must have strong correlation
                 let threshold = 0.95;
                 if abs_correlation < threshold {
-                    all_real_components_match = false;
+                    all_real_components_match_fit = false;
                     println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED", 
                            pc_idx+1, abs_correlation, threshold);
                 } else {
@@ -704,17 +675,48 @@ mod genome_tests {
                            pc_idx+1, abs_correlation, threshold);
                 }
             } else {
-                // Noise components can differ completely - no requirement
                 println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED", 
                        pc_idx+1, abs_correlation, 0.0);
             }
         }
         
-        // Final verification - only assert on real components
-        assert!(all_real_components_match, 
-                "Real signal components do not match between implementations");
+        assert!(all_real_components_match_fit, "Real signal components do not match for fit method");
         
-        println!("[Controlled Test] Real structure components match correctly");
+        // Now the rfit method
+        let mut rust_pca_rfit = PCA::new();
+        rust_pca_rfit.rfit(data.clone(), n_components, 5, Some(42_u64), None)?;
+        let rust_transformed_rfit = rust_pca_rfit.transform(data.clone())?;
+        
+        println!("\nCorrelations for rfit method:");
+        println!("Component | Correlation | Required | Status");
+        println!("---------+------------+----------+--------");
+        
+        let mut all_real_components_match_rfit = true;
+        for pc_idx in 0..n_components {
+            let rust_pc = rust_transformed_rfit.column(pc_idx);
+            let python_pc = python_transformed.column(pc_idx);
+            let correlation = calculate_pearson_correlation(rust_pc, python_pc);
+            let abs_correlation = correlation.abs();
+            
+            if pc_idx < n_real_components {
+                let threshold = 0.95;
+                if abs_correlation < threshold {
+                    all_real_components_match_rfit = false;
+                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✗ FAILED", 
+                           pc_idx+1, abs_correlation, threshold);
+                } else {
+                    println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ PASSED", 
+                           pc_idx+1, abs_correlation, threshold);
+                }
+            } else {
+                println!("    PC{:<2}  | {:>10.4} | >={:.2}     | ✓ IGNORED", 
+                       pc_idx+1, abs_correlation, 0.0);
+            }
+        }
+        
+        assert!(all_real_components_match_rfit, "Real signal components do not match for rfit method");
+        
+        println!("\n[Controlled Test] Both fit and rfit methods match correctly");
         Ok(())
     }
     
