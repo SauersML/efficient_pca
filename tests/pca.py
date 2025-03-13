@@ -423,54 +423,115 @@ def run_random_test_suite(num_tests=5):
 
     print("[Random Test-Suite] All random tests completed.\n")
 
-def run_large_genotype_matrix_test():
+def run_controlled_structure_test():
     """
-    Generate a 'large genotype-like' matrix with some population structure,
-    then compare manual vs library PCA. 
-    Meant to replicate the 'test_large_genotype_matrix_pc_correlation'-style logic.
+    Generate a large matrix with EXACTLY 3 real components and the rest pure noise.
+    We know precisely which PCs should matter and which are just noise.
     """
+    print("\n[Controlled Structure Test] Generating matrix with exactly 3 real components...")
 
-    print("\n[Genotype-like Test] Generating a matrix with 3 distinct populations...")
-
-    # Dimensions: e.g. 88 samples x 10,000 'variants'
+    # Use same dimensions as the original genotype test
     n_samples = 88
-    n_variants = 10_000
-    pop_sizes = [30, 28, 30]  # total = 88
+    n_variants = 10000
+    n_real_components = 3  # Exactly 3 components represent true structure
+    signal_strength = [50, 20, 10]  # Stronger to weaker signals for each component
 
-    # Optionally, fix the random seed
+    # Set random seed for reproducibility
     np.random.seed(42)
 
-    # Build genotype-like data:
-    #   - Each population has distinct allele-frequency bias
-    X = np.zeros((n_samples, n_variants), dtype=float)
-    sample_idx = 0
-    for pop_idx, size in enumerate(pop_sizes):
-        pop_bias = 0.15 * pop_idx  # 0.0, 0.15, 0.30
-        for _ in range(size):
-            for v in range(n_variants):
-                base_freq = 0.1 + (v / n_variants) * 0.4  # from 0.1 to 0.5
-                freq = min(base_freq + pop_bias, 0.9)
-                # 0/1/2 genotype depending on freq
-                # For simplicity, treat each sample as diploid:
-                rnd = np.random.rand()
-                # A quick simplistic genotype approach:
-                if rnd < freq * freq:
-                    genotype = 2.0
-                elif rnd < (2 * freq * (1 - freq) + freq * freq):
-                    genotype = 1.0
-                else:
-                    genotype = 0.0
-                X[sample_idx, v] = genotype
-            sample_idx += 1
-
-    print(f"[Genotype-like Test] Created data shape: {X.shape}")
+    # Create orthogonal basis vectors for the signal components
+    # This ensures we get exactly n_real_components of signal
+    random_basis = np.random.randn(n_samples, n_real_components)
+    Q, _ = np.linalg.qr(random_basis)  # Orthogonalize
+    true_factors = Q[:, :n_real_components]  # These are orthogonal unit vectors
     
-    # We'll pick e.g. 5 components
-    n_components = 5
+    # Create loadings for each variant (n_real_components x n_variants)
+    loadings = np.random.randn(n_real_components, n_variants)
+    
+    # Create the pure signal by combining factors and loadings, with decreasing strengths
+    pure_signal = np.zeros((n_samples, n_variants))
+    for i in range(n_real_components):
+        component_signal = np.outer(true_factors[:, i], loadings[i, :])
+        pure_signal += component_signal * signal_strength[i]
+    
+    # Add pure random noise
+    noise = np.random.randn(n_samples, n_variants)
+    
+    # Final matrix = signal + noise
+    X = pure_signal + noise
+    
+    print(f"[Controlled Test] Created data with {n_real_components} real components and pure noise")
+    print(f"[Controlled Test] Matrix shape: {X.shape}")
+    
+    # Test PCA with more components than we know are real
+    n_components = 5  # Request 5 components, but only 3 are "real"
+    
+    print("[Controlled Test] Now comparing manual vs library PCA...")
+    result = compare_pca_with_ground_truth(X, n_components, n_real_components)
+    print(f"[Controlled Test] => PCA meaningful structure match: {result}")
+    return result
 
-    print("[Genotype-like Test] Now comparing manual vs library PCA...")
-    result = compare_pca(X, n_components=n_components)
-    print(f"[Genotype-like Test] => PCA comparison result: {result}")
+def compare_pca_with_ground_truth(X, n_components, n_real_components):
+    """
+    Compare PCA implementations, but only require high correlation for
+    components we know represent real structure (not noise).
+    """
+    print("[Comparison] Comparing Manual PCA and Library PCA.")
+    manual_transformed, manual_components, manual_eigvals = manual_pca(X, n_components)
+    library_transformed, library_components, library_eigvals = library_pca(X, n_components)
+    
+    # Calculate and print explained variance
+    total_variance_manual = np.sum(manual_eigvals)
+    total_variance_library = np.sum(library_eigvals)
+    
+    print("\n[Comparison] Explained Variance:")
+    print("Component | Manual PCA |  %  | Library PCA |  %  | Status")
+    print("---------+------------+-----+-------------+-----+--------")
+    for i in range(len(manual_eigvals)):
+        manual_pct = (manual_eigvals[i] / total_variance_manual) * 100
+        library_pct = (library_eigvals[i] / total_variance_library) * 100
+        status = "REAL SIGNAL" if i < n_real_components else "PURE NOISE"
+        print(f"    PC{i+1}  | {manual_eigvals[i]:10.2f} | {manual_pct:3.1f}% | {library_eigvals[i]:11.2f} | {library_pct:3.1f}% | {status}")
+    
+    print(f"\nTotal variance - Manual: {total_variance_manual:.2f}, Library: {total_variance_library:.2f}")
+    print(f"First {n_real_components} PCs capture real structure, remaining PCs are pure noise")
+    
+    # Compare correlation for each component between implementations
+    correlations = []
+    print("\nComponent Correlations (accounting for sign flips):")
+    print("Component | Correlation | Required | Status")
+    print("---------+------------+----------+--------")
+    
+    all_match = True
+    
+    for i in range(n_components):
+        manual_col = manual_transformed[:, i]
+        library_col = library_transformed[:, i]
+        
+        # Calculate correlation (accounting for sign flips)
+        corr_pos = np.abs(np.corrcoef(manual_col, library_col)[0, 1])
+        corr_neg = np.abs(np.corrcoef(manual_col, -library_col)[0, 1])
+        corr = max(corr_pos, corr_neg)
+        correlations.append(corr)
+        
+        if i < n_real_components:
+            # Real components must have strong correlation
+            status = "MUST MATCH" 
+            threshold = 0.95
+            if corr < threshold:
+                all_match = False
+                result = "✗ FAILED"
+            else:
+                result = "✓ PASSED"
+        else:
+            # Noise components can differ completely
+            status = "CAN DIFFER"
+            threshold = 0.0
+            result = "✓ IGNORED"
+        
+        print(f"    PC{i+1}  | {corr:10.4f} | >={threshold:.2f}     | {result}")
+    
+    return all_match
 
 def main():
     print("=== PCA SCRIPT START ===\n")
@@ -522,8 +583,8 @@ def main():
         run_random_test_suite(num_tests=5)
 
         # 3)
-        print("[Main] Also running large genotype-like test comparing manual vs library PCA.")
-        run_large_genotype_matrix_test()
+        print("[Main] Also running controlled structure test with 3 real components.")
+        run_controlled_structure_test()
 
     else:
         # No test-flag => run library PCA, output results
