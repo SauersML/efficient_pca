@@ -1338,119 +1338,171 @@ mod rsvd_tests {
 #[cfg(test)]
 mod pca_bench_tests {
     use super::*;
-    use sysinfo::{System};
+    use sysinfo::{System, SystemExt};
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::time::Instant;
     use ndarray::Array2;
-    use ndarray::Axis;
 
-    /// Generates random data of shape (n_samples, n_features) in [0, 1), seeded for reproducibility.
+    /// Holds results for a single benchmark scenario.
+    struct BenchResult {
+        scenario_name: String,
+        n_samples: usize,
+        n_features: usize,
+        fit_time: f64,
+        fit_memory_kb: u64,
+        rfit_time: f64,
+        rfit_memory_kb: u64,
+    }
+
+    /// Generates random data of shape (n_samples x n_features) in [0, 1), seeded for reproducibility.
     fn generate_random_data(n_samples: usize, n_features: usize, seed: u64) -> Array2<f64> {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         Array2::from_shape_fn((n_samples, n_features), |_| rng.gen_range(0.0..1.0))
     }
 
-    /// A helper that runs `fit` or `rfit` on the provided data.
-    /// Returns a tuple: (time_in_seconds, memory_usage_kb).
+    /// Formats a memory size in KB into KB/MB/GB with 3 decimals where reasonable.
+    fn format_memory_kb(mem_kb: u64) -> String {
+        if mem_kb < 1024 {
+            return format!("{} KB", mem_kb);
+        }
+        let mb = mem_kb as f64 / 1024.0;
+        if mb < 1024.0 {
+            return format!("{:.3} MB", mb);
+        }
+        let gb = mb / 1024.0;
+        format!("{:.3} GB", gb)
+    }
+
+    /// Runs `fit` or `rfit` on the provided data, returns (time_secs, memory_kb) measured.
     fn benchmark_pca(
         use_rfit: bool,
         data: &Array2<f64>,
         n_components: usize,
         n_oversamples: usize,
-        seed: Option<u64>,
+        seed: u64,
     ) -> (f64, u64) {
-        // Monitor memory
+        // Track memory usage before
         let mut sys = System::new_all();
         sys.refresh_all();
         let initial_mem = sys.used_memory();
 
-        // Start timer
+        // Start timing
         let start_time = Instant::now();
 
         let mut pca = PCA::new();
         if use_rfit {
-            // rfit
-            pca.rfit(data.clone(), n_components, n_oversamples, seed, None)
+            pca.rfit(data.clone(), n_components, n_oversamples, Some(seed), None)
                 .expect("rfit failed");
         } else {
-            // fit
             pca.fit(data.clone(), None).expect("fit failed");
         }
 
-        // Transform to ensure the entire pipeline is tested
+        // Also transform the data so the entire pipeline is included
         let transformed = pca.transform(data.clone()).expect("transform failed");
-        assert_eq!(transformed.nrows(), data.nrows(), "row mismatch after PCA transform");
+        assert_eq!(transformed.nrows(), data.nrows());
 
-        // Stop timer
-        let duration = start_time.elapsed();
-        let secs = duration.as_secs_f64();
+        // Stop timing
+        let duration = start_time.elapsed().as_secs_f64();
 
-        // Final memory usage
+        // Track memory usage after
         sys.refresh_all();
         let final_mem = sys.used_memory();
-        let mem_usage = if final_mem > initial_mem {
+        let used = if final_mem > initial_mem {
             final_mem - initial_mem
         } else {
             0
         };
 
-        (secs, mem_usage)
+        (duration, used)
     }
 
-    /// Runs a single comparison for the given data shape and prints results.
-    fn run_bench_test_case(name: &str, n_samples: usize, n_features: usize, seed: u64) {
-        println!("\n=== Test Case: {} ({} samples x {} features) ===", name, n_samples, n_features);
+    /// Runs a single test scenario, returns the collected results.
+    fn run_scenario(
+        scenario_name: &str,
+        n_samples: usize,
+        n_features: usize,
+        seed: u64,
+    ) -> BenchResult {
+        println!("\n=== Test Case: {} ({} samples x {} features) ===",
+                 scenario_name, n_samples, n_features);
 
         let data = generate_random_data(n_samples, n_features, seed);
         let n_components = std::cmp::min(n_samples, n_features).min(30).max(2);
-
-        // We pick an oversample of 10 for rfit just to show extra dimension usage.
         let oversamples = 10;
 
-        let (fit_secs, fit_mem) = benchmark_pca(false, &data, n_components, oversamples, Some(seed));
+        // FIT
+        let (fit_time, fit_mem_kb) = benchmark_pca(false, &data, n_components, oversamples, seed);
         println!(
-            "[fit]     Elapsed time: {:>7.3} s,  Memory usage: {} KB",
-            fit_secs, fit_mem
+            "[fit]     Elapsed time: {:>7.3} s,  Memory usage: {}",
+            fit_time,
+            format_memory_kb(fit_mem_kb)
         );
 
-        let (rfit_secs, rfit_mem) = benchmark_pca(true, &data, n_components, oversamples, Some(seed));
+        // RFIT
+        let (rfit_time, rfit_mem_kb) = benchmark_pca(true, &data, n_components, oversamples, seed);
         println!(
-            "[rfit]    Elapsed time: {:>7.3} s,  Memory usage: {} KB",
-            rfit_secs, rfit_mem
+            "[rfit]    Elapsed time: {:>7.3} s,  Memory usage: {}",
+            rfit_time,
+            format_memory_kb(rfit_mem_kb)
         );
+
+        BenchResult {
+            scenario_name: scenario_name.to_string(),
+            n_samples,
+            n_features,
+            fit_time,
+            fit_memory_kb: fit_mem_kb,
+            rfit_time,
+            rfit_memory_kb: rfit_mem_kb,
+        }
     }
 
-    #[test]
-    fn bench_small_data() {
-        run_bench_test_case("Small", 100, 50, 1234);
+    /// Prints a final summary table of all scenario results.
+    fn print_summary_table(results: &[BenchResult]) {
+        println!("\n===== FINAL SUMMARY TABLE =====");
+        println!(
+            "{:<10} | {:>8} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10}",
+            "Scenario", "Samples", "Features", "fit (s)", "fit Mem", "rfit (s)", "rfit Mem"
+        );
+        println!("----------+----------+----------+------------+------------+------------+------------");
+        for r in results {
+            println!(
+                "{:<10} | {:>8} | {:>8} | {:>10.3} | {:>10} | {:>10.3} | {:>10}",
+                r.scenario_name,
+                r.n_samples,
+                r.n_features,
+                r.fit_time,
+                format_memory_kb(r.fit_memory_kb),
+                r.rfit_time,
+                format_memory_kb(r.rfit_memory_kb)
+            );
+        }
+        println!("================================");
     }
 
+    /// Main test that runs all scenarios in sequence, printing immediate results,
+    /// and ends with a summary table.
     #[test]
-    fn bench_medium_data() {
-        run_bench_test_case("Medium", 1000, 500, 1234);
-    }
+    fn bench_all_scenarios_in_one() {
+        // Define our scenarios
+        let scenarios = vec![
+            ("Small", 100, 50, 1234),
+            ("Medium", 1000, 500, 1234),
+            ("Large", 5000, 2000, 1234),
+            ("Square", 2000, 2000, 1234),
+            ("Tall", 10000, 500, 1234),
+            ("Wide", 500, 10000, 1234),
+        ];
 
-    #[test]
-    fn bench_large_data() {
-        run_bench_test_case("Large", 5000, 2000, 1234);
-    }
+        let mut results = Vec::new();
+        // Run them
+        for (name, samps, feats, seed) in scenarios {
+            let bench_result = run_scenario(name, samps, feats, seed);
+            results.push(bench_result);
+        }
 
-    #[test]
-    fn bench_wide_data() {
-        // Many features, fewer samples
-        run_bench_test_case("Wide", 500, 10000, 1234);
-    }
-
-    #[test]
-    fn bench_tall_data() {
-        // Many samples, fewer features
-        run_bench_test_case("Tall", 10000, 500, 1234);
-    }
-
-    #[test]
-    fn bench_square_data() {
-        // samples == features
-        run_bench_test_case("Square", 2000, 2000, 1234);
+        // Print final summary
+        print_summary_table(&results);
     }
 }
