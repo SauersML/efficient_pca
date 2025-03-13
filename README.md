@@ -19,7 +19,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-efficient_pca = "0.1.1"
+efficient_pca = "0.1.2"
 ```
 
 Or just `cargo add efficient_pca` to get the latest version.
