@@ -442,7 +442,7 @@ pub fn rsvd(
 #[cfg(test)]
 mod genome_tests {
     use super::*;
-    use ndarray::{Array2, ArrayView1};
+    use ndarray::{s, Array2, ArrayView1};
     use rand::Rng;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -451,6 +451,200 @@ mod genome_tests {
     use std::time::Instant;
     use sysinfo::System;
     use tempfile::NamedTempFile;
+
+    #[derive(Clone, Debug)]
+    struct Variant {
+        position: i64,
+        genotypes: Vec<Option<Vec<u8>>>,
+    }
+    
+    #[test]
+    fn test_genomic_pca_with_haplotypes() {
+        println!("Testing PCA with haplotype data similar to genomic application");
+        
+        // Set up parameters to match real usage
+        let n_samples = 44; // 44 samples = 88 haplotypes
+        let n_variants = 10000;
+        let n_components = 10;
+        
+        // Generate synthetic variants
+        let mut variants = Vec::with_capacity(n_variants);
+        
+        // Create variants with different allele frequencies
+        // Some variants will be common, some rare
+        for i in 0..n_variants {
+            let position = 1000 + i as i64 * 100;
+            let mut genotypes = Vec::with_capacity(n_samples);
+            
+            // Simulate population structure by making some variants
+            // more common in certain groups
+            for sample_idx in 0..n_samples {
+                let pop_group = sample_idx % 4; // Simulate 4 population groups
+                
+                // Base probability varies by variant and population
+                let base_prob = match i % 10 {
+                    0..=1 => if pop_group == 0 { 0.4 } else { 0.05 }, // Pop 1
+                    2..=3 => if pop_group == 1 { 0.3 } else { 0.02 }, // Pop 2
+                    4..=6 => if pop_group == 2 { 0.5 } else { 0.08 }, // Pop 3
+                    _ => if pop_group == 3 { 0.3 } else { 0.02 },     // Pop 4
+                };
+                
+                // Create haplotypes with patterns
+                let left_allele = if rand::random::<f64>() < base_prob { 1u8 } else { 0u8 };
+                let right_allele = if rand::random::<f64>() < base_prob { 1u8 } else { 0u8 };
+                
+                genotypes.push(Some(vec![left_allele, right_allele]));
+            }
+            
+            variants.push(Variant {
+                position,
+                genotypes,
+            });
+        }
+        
+        // Construct data matrix
+        let n_haplotypes = n_samples * 2;
+        let mut data_matrix = Array2::<f64>::zeros((n_haplotypes, n_variants));
+        let mut positions = Vec::with_capacity(n_variants);
+        
+        // Fill data matrix
+        for (valid_idx, variant) in variants.iter().enumerate() {
+            positions.push(variant.position);
+            
+            // Add each haplotype's data
+            for (sample_idx, genotypes_opt) in variant.genotypes.iter().enumerate() {
+                if let Some(genotypes) = genotypes_opt {
+                    if genotypes.len() >= 2 {
+                        // Left haplotype
+                        let left_idx = sample_idx * 2;
+                        data_matrix[[left_idx, valid_idx]] = genotypes[0] as f64;
+                        
+                        // Right haplotype
+                        let right_idx = sample_idx * 2 + 1;
+                        data_matrix[[right_idx, valid_idx]] = genotypes[1] as f64;
+                    }
+                }
+            }
+        }
+        
+        // Print matrix stats
+        let (rows, cols) = data_matrix.dim();
+        println!("Data matrix: {} rows (haplotypes) x {} columns (variants)", rows, cols);
+        
+        // Check data matrix properties
+        let zeros_count = data_matrix.iter().filter(|&&x| x == 0.0).count();
+        let ones_count = data_matrix.iter().filter(|&&x| x == 1.0).count();
+        println!("Matrix contains {} zeros and {} ones", zeros_count, ones_count);
+        
+        // Check first few columns for variance
+        for c in 0..5 {
+            let col = data_matrix.slice(s![.., c]);
+            let sum: f64 = col.iter().sum();
+            let mean = sum / col.len() as f64;
+            let sum_sq: f64 = col.iter().map(|&x| (x - mean).powi(2)).sum();
+            let var = sum_sq / col.len() as f64;
+            println!("Column {} variance: {:.6}", c, var);
+        }
+        
+        // Run PCA
+        let mut pca = PCA::new();
+        
+        match pca.rfit(
+            data_matrix.clone(),
+            n_components,
+            5, // oversampling parameter
+            Some(42), // seed
+            None, // no variance tolerance
+        ) {
+            Ok(()) => {
+                println!("PCA computation successful");
+                
+                // Transform data to get PC coordinates
+                let transformed = match pca.transform(data_matrix) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        panic!("PCA transformation failed: {}", e);
+                    }
+                };
+                
+                // Check for NaN values
+                let nan_count = transformed.iter().filter(|&&x| x.is_nan()).count();
+                let total_values = transformed.nrows() * transformed.ncols();
+                
+                println!("NaN check: {}/{} values are NaN ({:.2}%)", 
+                         nan_count, total_values, 
+                         100.0 * nan_count as f64 / total_values as f64);
+                
+                // Print first few PC values for inspection
+                println!("First 3 rows of PC values:");
+                for i in 0..3 {
+                    print!("Row {}: ", i);
+                    for j in 0..n_components {
+                        print!("{:.6} ", transformed[[i, j]]);
+                    }
+                    println!();
+                }
+
+                // Assert that there are no NaN values
+                assert_eq!(nan_count, 0, "PCA produced NaN values");
+                
+                // Try the process with filtering rare variants
+                println!("\nNow testing with filtered rare variants:");
+                let mut filtered_columns = Vec::new();
+                
+                // Identify columns with reasonable MAF
+                for c in 0..cols {
+                    let col = data_matrix.slice(s![.., c]);
+                    let sum: f64 = col.iter().sum();
+                    let freq = sum / col.len() as f64;
+                    
+                    // Keep only variants with MAF between 5% and 95%
+                    if freq >= 0.05 && freq <= 0.95 {
+                        filtered_columns.push(c);
+                    }
+                }
+                
+                println!("After filtering: {}/{} variants remain", 
+                         filtered_columns.len(), cols);
+                
+                if !filtered_columns.is_empty() {
+                    let mut filtered_matrix = Array2::<f64>::zeros((rows, filtered_columns.len()));
+                    
+                    // Copy selected columns to new matrix
+                    for (new_c, &old_c) in filtered_columns.iter().enumerate() {
+                        for r in 0..rows {
+                            filtered_matrix[[r, new_c]] = data_matrix[[r, old_c]];
+                        }
+                    }
+                    
+                    // Run PCA on filtered data
+                    let mut pca_filtered = PCA::new();
+                    match pca_filtered.rfit(
+                        filtered_matrix.clone(),
+                        n_components,
+                        5,
+                        Some(42),
+                        None,
+                    ) {
+                        Ok(()) => {
+                            let transformed_filtered = pca_filtered.transform(filtered_matrix).unwrap();
+                            let nan_count = transformed_filtered.iter().filter(|&&x| x.is_nan()).count();
+                            println!("Filtered PCA NaN check: {}/{} values are NaN", 
+                                     nan_count, transformed_filtered.len());
+                            
+                            assert_eq!(nan_count, 0, "Filtered PCA produced NaN values");
+                        },
+                        Err(e) => {
+                            panic!("Filtered PCA computation failed: {}", e);
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                panic!("PCA computation failed: {}", e);
+            }
+        }
+    }
 
     #[test]
     fn test_many_variants_haplotypes_binary() -> Result<(), Box<dyn std::error::Error>> {
