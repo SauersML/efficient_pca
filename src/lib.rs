@@ -970,59 +970,6 @@ mod pca_tests {
     use ndarray::array;
     use ndarray_rand::rand_distr::Distribution;
 
-    fn test_pca(input: Array2<f64>, expected_output: Array2<f64>, tol: Option<f64>, e: f64) {
-        let mut pca = PCA::new();
-        pca.fit(input.clone(), tol).unwrap();
-        let output = pca.transform(input).unwrap();
-
-        eprintln!("output: {:?}", output);
-        eprintln!("expected_output: {:?}", expected_output);
-
-        // Calculate absolute values for arrays
-        let output_abs = output.mapv_into(f64::abs);
-        let expected_output_abs = expected_output.mapv_into(f64::abs);
-
-        // Compare arrays
-        let equal = output_abs.shape() == expected_output_abs.shape()
-            && output_abs
-                .iter()
-                .zip(expected_output_abs.iter())
-                .all(|(a, b)| approx_eq!(f64, *a, *b, epsilon = e));
-        assert!(equal);
-    }
-
-    fn test_rpca(
-        input: Array2<f64>,
-        expected_output: Array2<f64>,
-        n_components: usize,
-        n_oversamples: usize,
-        tol: Option<f64>,
-        e: f64,
-    ) {
-        let mut pca = PCA::new();
-        pca.rfit(input.clone(), n_components, n_oversamples, Some(1926), tol)
-            .unwrap();
-        let output = pca.transform(input).unwrap();
-
-        eprintln!("output: {:?}", output);
-        eprintln!("expected_output: {:?}", expected_output);
-
-        // Calculate absolute values for arrays
-        let output_abs = output.mapv_into(f64::abs);
-        let expected_output_abs = expected_output.mapv_into(f64::abs);
-
-        // Compare only up to the lesser of the two column counts.
-        let min_cols = std::cmp::min(output_abs.ncols(), expected_output_abs.ncols());
-        let output_slice = output_abs.slice(s![.., ..min_cols]);
-        let expected_slice = expected_output_abs.slice(s![.., ..min_cols]);
-
-        let equal = output_slice
-            .iter()
-            .zip(expected_slice.iter())
-            .all(|(a, b)| approx_eq!(f64, *a, *b, epsilon = e));
-        assert!(equal);
-    }
-
     #[test]
     fn test_rpca_2x2() {
         let input = array![[0.5855288, -0.1093033], [0.7094660, -0.4534972]];
