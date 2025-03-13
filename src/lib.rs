@@ -405,7 +405,7 @@ pub fn rsvd(
     // If it's None, we should use whatever default seeding is used by the RNG
     let rng = match seed {
         Some(s) => ChaCha8Rng::seed_from_u64(s),
-        None => ChaCha8Rng::from_rng(&mut rand::rng()),
+        None => ChaCha8Rng::from_rng(&mut rand::thread_rng()).unwrap(),
     };
 
     // Generate Gaussian random test matrix
