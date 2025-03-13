@@ -555,7 +555,7 @@ mod pca_tests {
             let mut lines = Vec::new();
             let mut in_csv_block = false;
             for (line_idx, line) in output_text.lines().enumerate() {
-                println!("[Rust Debug] Raw line {}: {:?}", line_idx, line);
+                // println!("[Rust Debug] Raw line {}: {:?}", line_idx, line);
                 // Start capturing once we see "Transformed Data (CSV):"
                 if line.starts_with("Transformed Data (CSV):") {
                     println!("[Rust Debug] Found start of CSV block at line {}", line_idx);
@@ -591,14 +591,14 @@ mod pca_tests {
 
             let mut arr = ndarray::Array2::<f64>::zeros((row_count, col_count));
             for (i, l) in lines.iter().enumerate() {
-                println!("[Rust Debug] Parsing CSV row {}: {:?}", i, l);
+                // println!("[Rust Debug] Parsing CSV row {}: {:?}", i, l);
                 let nums: Vec<f64> = l
                     .split(',')
                     .map(|x| {
                         let trimmed_val = x.trim();
                         match trimmed_val.parse::<f64>() {
                             Ok(val) => {
-                                println!("[Rust Debug] Parsed float: {}", val);
+                                // println!("[Rust Debug] Parsed float: {}", val);
                                 val
                             },
                             Err(e) => {
