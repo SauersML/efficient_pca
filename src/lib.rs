@@ -97,7 +97,7 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         data_matrix -= &mean_vector;
 
-        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(1.0));
+        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
         self.scale = Some(std_dev_vector.clone());
         data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
@@ -244,7 +244,7 @@ impl PCA {
         x -= &mean;
     
         // Compute scale
-        let std_dev = x.map_axis(Axis(0), |v| v.std(1.0));
+        let std_dev = x.map_axis(Axis(0), |v| v.std(0.0));
         self.scale = Some(std_dev.clone());
         x /= &std_dev.mapv(|v| if v != 0. { v } else { 1. });
     
@@ -611,7 +611,7 @@ mod pca_tests {
     }
 
     #[test]
-    fn test_rpca_5x7_k3() {
+    fn test_rpca_5x7_k4() {
         let input = array![[0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
                            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
                            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
@@ -626,7 +626,7 @@ mod pca_tests {
             [-1.5165847256193956, 0.5632892860262578, 1.9899354098192064, -0.003813248593172669]
         ];
 
-        test_rpca(input, expected, 3, 0, None, 1e-6);
+        test_rpca(input, expected, 4, 0, None, 1e-6);
     }
 
     use ndarray::Array2;
