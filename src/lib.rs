@@ -510,6 +510,123 @@ mod genome_tests {
 
 #[cfg(test)]
 mod pca_tests {
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    use std::process::Command;
+
+    /// This function runs Python-based PCA as a reference and compares it to our Rust PCA.
+    /// It writes the input data to a temporary CSV file, invokes `tests/pca.py` with the specified
+    /// number of components (and, if `is_rpca` is true, uses rfit in Rust).
+    /// It then parses the Python-transformed output, compares it to the Rust-transformed output,
+    /// and fails the test if they differ beyond the given tolerance.
+    pub fn run_python_pca_test(
+        input: &ndarray::Array2<f64>,
+        n_components: usize,
+        is_rpca: bool,
+        oversamples: usize,
+        seed: Option<u64>,
+        tol: f64,
+        test_name: &str,
+    ) {
+        fn parse_transformed_csv_from_python(output_text: &str) -> ndarray::Array2<f64> {
+            let mut lines = Vec::new();
+            for line in output_text.lines() {
+                if line.starts_with("Transformed Data (CSV):") {
+                    continue;
+                }
+                if line.starts_with("Components (CSV):") {
+                    break;
+                }
+                if line.trim().is_empty() {
+                    continue;
+                }
+                lines.push(line.trim().to_string());
+            }
+            let row_count = lines.len();
+            if row_count == 0 {
+                return ndarray::Array2::<f64>::zeros((0, 0));
+            }
+            let col_count = lines[0].split(',').count();
+            let mut arr = ndarray::Array2::<f64>::zeros((row_count, col_count));
+            for (i, l) in lines.iter().enumerate() {
+                let nums: Vec<f64> = l.split(',').map(|x| x.parse::<f64>().unwrap()).collect();
+                for (j, val) in nums.iter().enumerate() {
+                    arr[[i, j]] = *val;
+                }
+            }
+            arr
+        }
+
+        fn compare_pca_outputs_allow_sign_flip(
+            rust_mat: &ndarray::Array2<f64>,
+            py_mat: &ndarray::Array2<f64>,
+            tol: f64
+        ) -> bool {
+            if rust_mat.shape() != py_mat.shape() {
+                return false;
+            }
+            let ncols = rust_mat.ncols();
+            for c in 0..ncols {
+                let col_r = rust_mat.column(c);
+                let col_p = py_mat.column(c);
+                let same_sign = col_r.iter().zip(col_p.iter())
+                    .all(|(&a, &b)| (a - b).abs() < tol);
+                let opp_sign = col_r.iter().zip(col_p.iter())
+                    .all(|(&a, &b)| (a + b).abs() < tol);
+                if !(same_sign || opp_sign) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        let mut file = NamedTempFile::new().unwrap();
+        {
+            let mut handle = file.as_file();
+            for row in input.rows() {
+                let line = row.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+                writeln!(handle, "{}", line).unwrap();
+            }
+        }
+
+        let comps_str = format!("{}", n_components);
+        let mut args_vec = vec![
+            "tests/pca.py",
+            "--data_csv",
+            file.path().to_str().unwrap(),
+            "--n_components",
+            &comps_str,
+        ];
+
+        let cmd_output = Command::new("python3")
+            .args(&args_vec)
+            .output()
+            .expect(&format!("Failed to run python script for {}", test_name));
+
+        assert!(
+            cmd_output.status.success(),
+            "Python script did not succeed in {}",
+            test_name
+        );
+
+        let stdout_text = String::from_utf8_lossy(&cmd_output.stdout).to_string();
+        let python_transformed = parse_transformed_csv_from_python(&stdout_text);
+
+        let mut pca = super::PCA::new();
+        if is_rpca {
+            pca.rfit(input.clone(), n_components, oversamples, seed, None).unwrap();
+        } else {
+            pca.fit(input.clone(), None).unwrap();
+        }
+        let rust_transformed = pca.transform(input.clone()).unwrap();
+
+        assert!(
+            compare_pca_outputs_allow_sign_flip(&rust_transformed, &python_transformed, tol),
+            "Comparison with Python PCA failed in {}",
+            test_name
+        );
+    }
+
 
     use ndarray::array;
     use ndarray_rand::rand_distr::Distribution;
@@ -560,16 +677,12 @@ mod pca_tests {
     }
 
     #[test]
-    fn test_pca_2x2() {
-        let input = array![[0.5855288, -0.1093033], 
+    fn test_rpca_2x2() {
+        let input = array![[0.5855288, -0.1093033],
                            [0.7094660, -0.4534972]];
-        let expected = array![
-            [-1.4142135623730951, 1.570092458683775e-16],
-            [1.414213562373095, 7.850462293418875e-17]
-        ];
-
-        test_pca(input, expected, None, 1e-6);
+        super::run_python_pca_test(&input, 2, true, 0, Some(1926), 1e-6, "test_rpca_2x2");
     }
+
 
     #[test]
     fn test_rpca_2x2() {
@@ -585,87 +698,66 @@ mod pca_tests {
 
     #[test]
     fn test_rpca_2x2_k1() {
-        let input = array![[0.5855288, -0.1093033], 
+        let input = array![[0.5855288, -0.1093033],
                            [0.7094660, -0.4534972]];
-        let expected = array![
-            [-1.4142135623730951, 1.570092458683775e-16],
-            [1.414213562373095, 7.850462293418875e-17]
+        super::run_python_pca_test(&input, 1, true, 0, Some(1926), 1e-6, "test_rpca_2x2_k1");
+    }
+    
+    #[test]
+    fn test_pca_2x2() {
+        let input = array![
+            [0.5855288, -0.1093033],
+            [0.7094660, -0.4534972]
         ];
-
-        test_rpca(input, expected, 1, 0, None, 1e-6);
+        super::run_python_pca_test(&input, 2, false, 0, None, 1e-6, "test_pca_2x2");
     }
 
     #[test]
     fn test_pca_3x5() {
-        let input = array![[0.5855288, -0.4534972, 0.6300986, -0.9193220, 0.3706279],
-                           [0.7094660, 0.6058875, -0.2761841, -0.1162478, 0.5202165],
-                           [-0.1093033, -1.8179560, -0.2841597, 1.8173120, -0.7505320]];
-        
-        let expected = array![
-            [-1.466097103788655,    1.2334252413160802,  1.0542040759876057],
-            [-1.3457143505667724,  -1.2691395419386293, -1.413977455342093],
-            [ 2.8118114543554276,   0.03571430062254949, 0.3597733793544872],
+        let input = array![
+            [0.5855288, -0.4534972, 0.6300986, -0.9193220, 0.3706279],
+            [0.7094660, 0.6058875, -0.2761841, -0.1162478, 0.5202165],
+            [-0.1093033, -1.8179560, -0.2841597, 1.8173120, -0.7505320]
         ];
-
-        test_pca(input, expected, None, 1e-6);
+        super::run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_3x5");
     }
 
-    #[test]  
+    #[test]
     fn test_pca_5x5() {
-        let input = array![[0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219],
-                           [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851],
-                           [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284],
-                           [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374],
-                           [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095]];
-
-        let expected = array![
-            [ 0.8924547720981095,  1.7746957251664874, -0.9061857550835375,  0.1456721294523486, -4.1264984434741727e-16],
-            [-3.1702319153274097,  0.1438620711978423, -0.04666344490066738, -0.24251928012361895,  1.0772174093733244e-15],
-            [-0.21622676101381347, -0.8253358034425419,  0.38989717958277204,  0.6971365162782206, -1.52295358927422e-15],
-            [ 1.2236015054197928, -1.7651931253617175, -0.6394422025146164, -0.309833229205612,   1.0363346198973303e-15],
-            [ 1.2704023988233204,  0.6719711324399298,  1.2023942229160494, -0.29045613640133827,  0.0],
+        let input = array![
+            [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219],
+            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851],
+            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284],
+            [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374],
+            [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095]
         ];
-
-        test_pca(input, expected, None, 1e-6);
+        super::run_python_pca_test(&input, 5, false, 0, None, 1e-6, "test_pca_5x5");
     }
 
     #[test]
     fn test_pca_5x7() {
-        let input = array![[0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
-                           [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
-                           [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
-                           [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
-                           [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]];
-        
-        let expected = array![
-            [-1.9661345451391994, 1.5235940878402228, -1.4176001267404987, 0.056450846490542175, 2.1279340587900357],
-            [3.442406005400961, 0.9133603733156728, 0.05960896166534588, 0.3101317205658903, -1.0073074131589084],
-            [0.653787103311252, -0.8955230509034748, -0.2857867940947385, -0.9350417897612334, -1.3487323800754758],
-            [-0.6134738379536179, -2.104720696278679, -0.3461574506493157, 0.5722724712979732, -0.5019279567337932],
-            [-1.5165847256193956, 0.5632892860262578, 1.9899354098192064, -0.003813248593172669, 0.7300336911781409]
+        let input = array![
+            [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
+            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
+            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
+            [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
+            [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
         ];
-
-        test_pca(input, expected, None, 1e-6);
+        super::run_python_pca_test(&input, 7, false, 0, None, 1e-6, "test_pca_5x7");
     }
 
     #[test]
     fn test_rpca_5x7_k4() {
-        let input = array![[0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
-                           [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
-                           [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
-                           [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
-                           [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]];
-        
-        let expected = array![
-            [-1.9661345451391994, 1.5235940878402228, -1.4176001267404987, 0.056450846490542175],
-            [3.442406005400961, 0.9133603733156728, 0.05960896166534588, 0.3101317205658903],
-            [0.653787103311252, -0.8955230509034748, -0.2857867940947385, -0.9350417897612334],
-            [-0.6134738379536179, -2.104720696278679, -0.3461574506493157, 0.5722724712979732],
-            [-1.5165847256193956, 0.5632892860262578, 1.9899354098192064, -0.003813248593172669]
+        let input = array![
+            [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
+            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
+            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
+            [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
+            [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
         ];
-
-        test_rpca(input, expected, 4, 0, None, 1e-6);
+        super::run_python_pca_test(&input, 4, true, 0, Some(1926), 1e-6, "test_rpca_5x7_k4");
     }
+
 
     use ndarray::Array2;
     use ndarray_rand::RandomExt; // for creating random arrays
