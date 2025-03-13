@@ -81,11 +81,12 @@ impl PCA {
         &mut self,
         mut data_matrix: Array2<f64>,
         tolerance: Option<f64>
-    ) -> Result<(), Box<dyn Error>> 
+    ) -> Result<(), Box<dyn std::error::Error>> 
     {
-        let num_samples = data_matrix.nrows();
+        let n_samples = data_matrix.nrows();
+        let n_features = data_matrix.ncols();
 
-        if num_samples < 2 {
+        if n_samples < 2 {
             return Err("Input matrix must have at least 2 rows.".into());
         }
 
@@ -100,84 +101,106 @@ impl PCA {
         self.scale = Some(std_dev_vector.clone());
         data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
 
-        // 2) Compute covariance-like matrix: shape (num_samples, num_samples)
-        //    We DO divide by (num_samples - 1) to match the original scaling.
-        let mut cov_matrix = data_matrix.dot(&data_matrix.t());
-        cov_matrix /= (num_samples - 1) as f64;
+        // Decide which covariance trick to use
+        //  - If p <= n, use the f×f covariance = (X^T X)/(n-1), then eigendecompose it
+        //  - If p > n, use the n×n Gram matrix = (X X^T)/(n-1), then map to feature space
+        if n_features <= n_samples {
+            // ================================
+            // (A) Standard f×f covariance
+            // ================================
+            let mut cov_matrix = data_matrix.t().dot(&data_matrix);
+            cov_matrix /= (n_samples - 1) as f64;
 
+            // Eigen-decomposition (p×p)
+            let (vals, vecs) = cov_matrix.eigh(UPLO::Upper)
+                .map_err(|_| "Eigen decomposition of covariance failed.")?;
 
-        // 3) Eigen-decomposition of this symmetric (n×n) matrix
-        let (eigenvalues, eigenvectors) = cov_matrix.eigh(UPLO::Upper)
-            .map_err(|_| "Eigen decomposition of covariance matrix failed.")?;
-        // shape of eigenvectors is (num_samples, num_samples)
-
-        // 4) Sort eigenvalues and eigenvectors in descending order of eigenvalue
-        //    (They may come in ascending or arbitrary order.)
-        let mut eigen_pairs: Vec<(f64, Array1<f64>)> = eigenvalues
-            .iter()
-            .cloned()
-            .zip(eigenvectors.columns().into_iter().map(|col| col.to_owned()))
-            .collect();
-
-        // Sort descending by eigenvalue
-        eigen_pairs.sort_by(|(val_a, _), (val_b, _)| val_b.partial_cmp(val_a).unwrap());
-
-        // 5) Apply tolerance if provided (skip any eigenvalues below threshold of largest)
-        //    For example, if tolerance=0.01, we exclude eigenvalues < 0.01 * largest_eigenvalue.
-        let largest_eigenvalue = eigen_pairs.get(0).map_or(0.0, |(val, _)| *val);
-        let rank_by_tolerance = if let Some(tol) = tolerance {
-            let threshold = largest_eigenvalue * tol;
-            eigen_pairs
+            // Sort descending by eigenvalue
+            let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
                 .iter()
-                .take_while(|(val, _)| *val > threshold)
-                .count()
-        } else {
-            eigen_pairs.len()
-        };
+                .cloned()
+                .zip(vecs.columns().into_iter().map(|col| col.to_owned()))
+                .collect();
+            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
 
-        // 6) Build the top subset of eigenvectors
-        //    We also can't exceed num_samples in rank.
-        let final_rank = std::cmp::min(rank_by_tolerance, num_samples);
-        let (top_eigenvalues, top_eigenvectors) = {
-            let mut values = Vec::with_capacity(final_rank);
-            let mut vectors = Vec::with_capacity(final_rank);
+            // Apply tolerance if needed
+            let largest = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
+            let rank_by_tol = if let Some(tol) = tolerance {
+                let thresh = largest * tol;
+                eig_pairs
+                    .iter()
+                    .take_while(|(val, _)| *val > thresh)
+                    .count()
+            } else {
+                eig_pairs.len()
+            };
+            let final_rank = std::cmp::min(rank_by_tol, n_features);
 
+            // Gather top components
+            let mut top_eigvecs = Vec::with_capacity(final_rank);
             for i in 0..final_rank {
-                let (eval, evec) = &eigen_pairs[i];
-                values.push(*eval);
-                vectors.push(evec.clone());
+                let (_, ref evec) = eig_pairs[i];
+                top_eigvecs.push(evec.clone());
             }
-            // shape the vectors as (num_samples, final_rank)
-            let stacked_vecs = ndarray::stack(
+            let top_eigvecs = ndarray::stack(
                 Axis(1),
-                &vectors.iter().map(|v| v.view()).collect::<Vec<_>>()
+                &top_eigvecs.iter().map(|v| v.view()).collect::<Vec<_>>()
             )?;
 
-            (values, stacked_vecs)
-        };
+            // These vectors are the principal axes in feature space
+            self.rotation = Some(top_eigvecs);
+        } else {
+            // ==========================================
+            // (B) Gram trick: n×n covariance
+            // ==========================================
+            let mut gram_matrix = data_matrix.dot(&data_matrix.t());
+            gram_matrix /= (n_samples - 1) as f64;
 
-        // 7) Map those eigenvectors back into feature space. 
-        //    This recovers the principal axes in shape (num_features, final_rank).
-        //    Formula: rotation = X^T * U / sqrt(eigenvalue) per column
-        //    We'll do it by:
-        //      (A) Multiply X^T * top_evecs, shape => (num_features, final_rank)
-        //      (B) Scale each column by 1/sqrt(eigenvalue)
-        let mut rotation_matrix = data_matrix.t().dot(&top_eigenvectors);
+            // Eigen-decompose (n×n)
+            let (vals, vecs) = gram_matrix.eigh(UPLO::Upper)
+                .map_err(|_| "Eigen decomposition of Gram matrix failed.")?;
 
-        // Normalize each principal axis by sqrt of its eigenvalue
-        for (col_index, &eig_val) in top_eigenvalues.iter().enumerate() {
-            // eigenvalue can be numerically near zero or negative (due to rounding),
-            // so ensure safe sqrt:
-            let scale_factor = if eig_val > 1e-12 {
-                eig_val.sqrt()
+            // Sort descending
+            let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
+                .iter()
+                .cloned()
+                .zip(vecs.columns().into_iter().map(|col| col.to_owned()))
+                .collect();
+            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+
+            // Tolerance
+            let largest = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
+            let rank_by_tol = if let Some(tol) = tolerance {
+                let thresh = largest * tol;
+                eig_pairs
+                    .iter()
+                    .take_while(|(val, _)| *val > thresh)
+                    .count()
             } else {
-                1e-12
+                eig_pairs.len()
             };
-            let mut column_mut = rotation_matrix.index_axis_mut(Axis(1), col_index);
-            column_mut.mapv_inplace(|val| val / scale_factor);
+            let final_rank = std::cmp::min(rank_by_tol, n_samples);
+
+            // Build the principal axes in feature space
+            // rotation_matrix has shape (p, final_rank)
+            let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
+
+            for i in 0..final_rank {
+                let (eigval, ref u_col) = eig_pairs[i];
+                // If eigenvalue is extremely small or negative (rounding), clamp:
+                let lam = if eigval > 1e-12 { eigval } else { 1e-12 };
+                // Feature-space vector = X^T * u / sqrt(lam)
+                // shape => (p,)
+                let mut axis_i = data_matrix.t().dot(u_col);
+                axis_i.mapv_inplace(|x| x / lam.sqrt());
+                // Put it as the i-th column in rotation_matrix
+                rotation_matrix
+                    .slice_mut(s![.., i])
+                    .assign(&axis_i);
+            }
+            self.rotation = Some(rotation_matrix);
         }
-        
-        self.rotation = Some(rotation_matrix);
+
         Ok(())
     }
 
