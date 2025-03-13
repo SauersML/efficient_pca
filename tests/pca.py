@@ -327,7 +327,7 @@ def compare_pca(X, n_components=None):
     print(f"  -> Transformed data similar (accounting for sign flips): {transformed_similar}")
     print(f"  -> Eigenvalues similar: {eigvals_similar}")
 
-   overall = transformed_similar and eigvals_similar
+    overall = transformed_similar and eigvals_similar
     print(f"[Comparison] Overall PCA match status: {overall}")
     
     # If comparison failed, print full matrices
