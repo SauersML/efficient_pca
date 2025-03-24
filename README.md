@@ -8,6 +8,8 @@ A Rust library providing **Principal Component Analysis (PCA)** functionality us
 1. A **covariance-based** eigen-decomposition (classical PCA). (Faster, less memory-efficient.)
 2. A **randomized SVD** approach (for large-scale or high-dimensional data). (Slower, more memory-efficient.)
 
+Instead of building a large covariance matrix based on the number of features, which takes a lot of time and memory when features are numerous, it can create a Gram matrix by multiplying the data matrix with its transpose and scaling it. Then, it find eigenvectors of the Gram matrix. Since PCA needs feature-based directions, it transforms these sample-based eigenvectors by multiplying them with the transposed data matrix and dividing by the square root of their eigenvalues, producing the same principal components as the standard method but with less computation because the Gram matrix can be smaller so easier to handle.
+
 This library supports:
 - Mean-centering and scaling of input data.
 - Automatic selection of PCA components via a user-defined tolerance or a fixed count.
