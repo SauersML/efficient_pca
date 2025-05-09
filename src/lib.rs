@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 use ndarray::{s, Array1, Array2, Axis};
-use ndarray_linalg::{Eigh, Qr, SVDInto, UPLO};
+use ndarray_linalg::{Eigh, QR, SVDInto, UPLO};
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
