@@ -217,6 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Memory Usage**:
    - The library copies data in some places to center and scale, and creates temporary matrices for covariance or Gram decompositions.
    - For very large datasets, consider using `rfit`.
+   - The randomized approach does not actually do streaming now, though it could.
   
 - **Use `rfit`** for high-dimensional, wide datasets where memory efficiency is crucial, even if that sometimes means a trade-off in runtime.
 
