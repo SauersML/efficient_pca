@@ -13,7 +13,7 @@ documentation = "https://github.com/SauersML/efficient_pca"
 
 [dependencies]
 float-cmp = "0.10.0"
-ndarray = { version = "0.16.1", features = ["serde-1"] } # Use your current ndarray version
+ndarray = { version = "0.16.1", features = ["serde"] } # Use your current ndarray version
 ndarray-linalg = { version = "0.17.0", features = ["openblas-static"] }
 ndarray-rand = "0.15.0"
 rand = "0.8.5"
