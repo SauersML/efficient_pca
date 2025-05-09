@@ -47,6 +47,7 @@ Or just `cargo add efficient_pca` to get the latest version.
 - **Easy Transformation**:
   - Once fitted, the same PCA instance can be used to transform new data into the principal-component space.
 
+(Note: tests require Python dependencies.)
 
 ## Usage
 ### Classical PCA (`fit`)
