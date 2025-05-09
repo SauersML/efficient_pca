@@ -3,16 +3,16 @@
 #![doc = include_str!("../README.md")]
 
 use ndarray::{s, Array1, Array2, Axis};
-use ndarray_linalg::eigh::Eigh;
-use ndarray_linalg::svd::SVD;
-use ndarray_linalg::QR;
-use ndarray_linalg::UPLO;
-use ndarray_linalg::SVDInto;
+use ndarray_linalg::{Eigh, Qr, SVDInto, UPLO};
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::Normal;
+use rand_distr::{Distribution, Normal};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 
 /// Principal component analysis (PCA) structure
 pub struct PCA {
