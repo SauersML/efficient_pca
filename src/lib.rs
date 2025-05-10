@@ -29,8 +29,11 @@ pub struct PCA {
     /// Mean vector of the original training data.
     /// Shape: (n_features)
     mean: Option<Array1<f64>>,
-    /// Sanitized scale vector (standard deviations) of the original training data.
-    /// Original standard deviations close to zero (abs() < 1e-9) are replaced with 1.0.
+    /// Sanitized scale vector, representing standard deviations of the original training data.
+    /// This vector is guaranteed to contain only positive values.
+    /// When set via `fit` or `rfit`, original standard deviations `s` where `s.abs() < 1e-9` are replaced by `1.0`.
+    /// When set via `with_model`, input `raw_standard_deviations` `s` where `!s.is_finite()` or `s <= 1e-9` are replaced by `1.0`.
+    /// Loaded models are also validated so scale factors are positive.
     /// Shape: (n_features)
     scale: Option<Array1<f64>>,
 }
@@ -71,15 +74,16 @@ impl PCA {
     /// * `rotation` - The rotation matrix (principal components), shape (d_features, k_components).
     /// * `mean` - The mean vector of the original data used to compute the PCA, shape (d_features).
     /// * `raw_standard_deviations` - The raw standard deviation vector of the original data,
-    ///                               shape (d_features). Values close to zero (abs < 1e-9)
-    ///                               will be treated as 1.0 for scaling. Non-finite values
-    ///                               will result in an error. If the original PCA did not
-    ///                               involve scaling (e.g., data was already standardized, or
-    ///                               only centering was desired), pass a vector of ones.
+    ///                               shape (d_features). Values that are not strictly positive
+    ///                               (i.e., `s <= 1e-9`, zero, negative), or are non-finite,
+    ///                               will be sanitized to `1.0` before being stored.
+    ///                               If the original PCA did not involve scaling (e.g., data was
+    ///                               already standardized, or only centering was desired),
+    ///                               pass a vector of ones.
     ///
     /// # Errors
     /// Returns an error if feature dimensions are inconsistent or if `raw_standard_deviations`
-    /// contains non-finite values.
+    /// contains non-finite values (this check is performed before sanitization).
     pub fn with_model(
         rotation: Array2<f64>,
         mean: Array1<f64>,
@@ -104,11 +108,16 @@ impl PCA {
         }
 
         if raw_standard_deviations.iter().any(|&val| !val.is_finite()) {
+            // Explicitly reject non-finite inputs early.
             return Err("raw_standard_deviations contains non-finite (NaN or infinity) values.".into());
         }
 
+        // Sanitize scale factors:
+        // All scale factors are positive. Values that are not strictly positive (<= 1e-9),
+        // or were non-finite (though checked above), are replaced with 1.0.
+        // This aligns `with_model`'s scale handling with `fit`/`rfit` and means `self.scale` is always positive.
         let sanitized_scale_vector = raw_standard_deviations
-            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
+            .mapv(|val| if val.is_finite() && val > 1e-9 { val } else { 1.0 });
 
         Ok(Self {
             rotation: Some(rotation),
@@ -244,22 +253,33 @@ impl PCA {
                 for i in 0..final_rank {
                     let (eigval, ref u_col) = eig_pairs[i];
                     // Eigenvalue from G = X'X'^T / (N-1)
-                    // V_k = (X'^T u_k) / sqrt(eigval_k * (N-1)) to make V_k unit norm
-                    // Note: lam_sqrt is sqrt(eigval_k)
-                    let lam_sqrt = if eigval > 1e-12 { eigval.sqrt() } else { continue }; 
+                    // V_k = (X'^T u_k) / sqrt(eigval_k_gram * (N-1)) should yield unit norm V_k.
+                    
+                    // Clamp eigenvalues to a small positive number to prevent division by zero or very small numbers,
+                    // and to avoid skipping components with `continue`.
+                    // Requested components are computed even if their variance contribution is tiny.
+                    let eigval_clamped = eigval.max(1e-12); // Use max so it's at least a small positive.
+                    let lam_sqrt = eigval_clamped.sqrt();
 
                     let mut axis_i = scaled_data_matrix.t().dot(u_col);
-                    axis_i.mapv_inplace(|x| x / (lam_sqrt * ((n_samples - 1) as f64).sqrt()));
                     
-                    // The above sequence should already normalize axis_i.
-                    // An explicit re-normalization can be added for safety if desired, but
-                    // the critic's analysis indicated this sequence is correct.
-                    // let norm_i = axis_i.dot(&axis_i).sqrt();
-                    // if norm_i > 1e-9 { 
-                    //     axis_i.mapv_inplace(|x| x / norm_i);
-                    // } else {
-                    //     axis_i.fill(0.0);
-                    // }
+                    // Denominator for scaling axis_i.
+                    // Since n_samples >= 2 and lam_sqrt >= sqrt(1e-12), denom will be non-zero.
+                    let denom = lam_sqrt * ((n_samples - 1) as f64).sqrt();
+                    axis_i.mapv_inplace(|x| x / denom);
+                    
+                    // Explicitly re-normalize the principal axis to unit length.
+                    // Clamping the eigenvalue might affect
+                    // the implicit normalization of the original formula for V_k.
+                    // Standard PCA components are unit vectors.
+                    let norm_val = axis_i.dot(&axis_i).sqrt();
+                    if norm_val > 1e-9 { // Avoid division by zero/small norm if axis_i is effectively zero
+                        axis_i.mapv_inplace(|x| x / norm_val);
+                    } else {
+                        // If the axis vector is effectively zero (e.g., u_col was orthogonal to all data,
+                        // or numerical precision resulted in a zero vector), represent it as such.
+                        axis_i.fill(0.0);
+                    }
                     rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
                 }
                 self.rotation = Some(rotation_matrix);
@@ -494,7 +514,8 @@ impl PCA {
     ///
     /// # Errors
     /// Returns an error if file I/O or deserialization fails, or if the
-    /// loaded model is found to be incomplete or internally inconsistent.
+    /// loaded model is found to be incomplete, internally inconsistent (e.g., mismatched dimensions),
+    /// or contains non-positive scale factors.
     pub fn load_model<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path.as_ref())
             .map_err(|e| format!("Failed to open file at {:?}: {}", path.as_ref(), e))?;
@@ -519,8 +540,10 @@ impl PCA {
                 ).into());
             }
         }
-        if scale.iter().any(|&val| !val.is_finite() || val == 0.0) {
-            return Err("Loaded PCA model's scale vector contains invalid (non-finite or zero) values. Scale values must be positive.".into());
+        // Validate that loaded scale factors are positive, aligning with the contract for self.scale.
+        // self.scale is expected to store sanitized, positive values (1.0 for original std devs <= 1e-9, else the std dev itself).
+        if scale.iter().any(|&val| !val.is_finite() || val <= 0.0) {
+            return Err("Loaded PCA model's scale vector contains invalid (non-finite, zero, or negative) values. Scale values must be positive.".into());
         }
         Ok(pca_model)
     }
