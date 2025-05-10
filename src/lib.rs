@@ -1192,6 +1192,7 @@ mod model_persistence_tests {
     use ndarray::{array, Array1, Array2};
     use tempfile::NamedTempFile;
     use std::error::Error;
+    use std::f64; // For f64::NAN
 
     const COMPARISON_TOLERANCE: f64 = 1e-12; // Tolerance for float comparisons
 
@@ -1427,10 +1428,10 @@ mod model_persistence_tests {
         ];
         // Expected projection for P1 ([1,0,1,0]):
         // PC1: 1*0.5 + 0*(-0.5) + 1*0.5 + 0*(-0.5) = 0.5 + 0.5 = 1.0
-        // PC2: 1*0.5 + 0*0.5   + 1*(-0.5)+ 0*(-0.5) = 0.5 - 0.5 = 0.0
+        // PC2: 1*0.5 + 0*0.5    + 1*(-0.5)+ 0*(-0.5) = 0.5 - 0.5 = 0.0
         // Expected projection for P2 ([0,1,0,1]):
         // PC1: 0*0.5 + 1*(-0.5) + 0*0.5 + 1*(-0.5) = -0.5 - 0.5 = -1.0
-        // PC2: 0*0.5 + 1*0.5   + 0*(-0.5)+ 1*(-0.5) =  0.5 - 0.5 =  0.0
+        // PC2: 0*0.5 + 1*0.5    + 0*(-0.5)+ 1*(-0.5) =  0.5 - 0.5 =  0.0
         let expected_transformed = array![[1.0, 0.0], [-1.0, 0.0]];
         
         let transformed_loaded = pca_loaded.transform(data_to_transform)?;
@@ -1458,7 +1459,7 @@ mod model_persistence_tests {
         // 1. Test loading non-existent file
         assert!(PCA::load_model("a_surely_non_existent_file.pca_model").is_err(), "Loading non-existent file should fail");
 
-        // 2. Test loading a file that is not a valid bincode PCA model (e.g., an empty file)
+        // 2. Test loading a file that is not a valid bincode PCA model
         let empty_temp_file = NamedTempFile::new()?;
         // File is empty, so deserialization should fail
         assert!(PCA::load_model(empty_temp_file.path()).is_err(), "Loading an empty file should fail deserialization");
@@ -1490,8 +1491,90 @@ mod model_persistence_tests {
         println!("`load_model` error condition tests passed.");
         Ok(())
     }
-}
 
+    #[test]
+    fn test_with_model_scale_sanitization() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: `with_model` Scale Sanitization ---");
+        let d_features = 5;
+        let k_components = 2;
+        let rotation = Array2::zeros((d_features, k_components)); // Dummy rotation
+        let mean = Array1::zeros(d_features); // Dummy mean
+        
+        // Test with various problematic finite values for raw_standard_deviations
+        let raw_stds_problematic_finite = array![-5.0, 0.0, 1e-10, 2.0, 0.5];
+        // Expected outcome: non-positive or very small values become 1.0, others are preserved.
+        let expected_sanitized_finite = array![1.0, 1.0, 1.0, 2.0, 0.5];
+        
+        let pca_model_finite = PCA::with_model(rotation.clone(), mean.clone(), raw_stds_problematic_finite.clone())?;
+        assert_optional_array1_equals(
+            Some(&expected_sanitized_finite), 
+            pca_model_finite.scale.as_ref(), 
+            "scale sanitization for problematic finite values in with_model"
+        );
+
+        // Test that an error is returned for non-finite values by the initial check in `with_model`.
+        let raw_stds_with_nan = array![1.0, f64::NAN, 2.0];
+        assert!(
+            PCA::with_model(rotation.clone(), mean.clone(), raw_stds_with_nan).is_err(),
+            "with_model should error on non-finite raw_standard_deviations due to the explicit check"
+        );
+
+        let raw_stds_with_inf = array![1.0, f64::INFINITY, 2.0];
+         assert!(
+            PCA::with_model(rotation.clone(), mean.clone(), raw_stds_with_inf).is_err(),
+            "with_model should error on non-finite (infinity) raw_standard_deviations due to the explicit check"
+        );
+
+        println!("`with_model` scale sanitization tests passed.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_model_rejects_non_positive_scale() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: `load_model` Rejects Non-Positive Scale ---");
+        let d_features = 3;
+        let k_components = 1;
+        // Use valid rotation and mean for constructing test PCA structs.
+        let rotation_valid = Array2::zeros((d_features, k_components));
+        let mean_valid = Array1::zeros(d_features);
+
+        // Case 1: Scale with a negative value.
+        // Such a PCA struct might be created if `with_model` was different or from an external source.
+        let scale_with_negative = array![-1.0, 1.0, 2.0];
+        let pca_negative_scale = PCA {
+            rotation: Some(rotation_valid.clone()),
+            mean: Some(mean_valid.clone()),
+            scale: Some(scale_with_negative),
+        };
+        let temp_file_neg_scale = NamedTempFile::new()?;
+        // Save this struct which has a negative scale.
+        // `save_model` itself doesn't validate the PCA internals, only that fields are Some.
+        pca_negative_scale.save_model(temp_file_neg_scale.path())?; 
+        // `load_model` should now reject this due to the `val <= 0.0` check.
+        assert!(
+            PCA::load_model(temp_file_neg_scale.path()).is_err(),
+            "Load should fail for a saved model with a negative value in its scale vector."
+        );
+        
+        // Case 2: Scale with zero (this scenario is also covered by test_load_model_error_conditions).
+        // Re-confirming that the `val <= 0.0` check correctly handles this.
+        let scale_with_zero = Array1::from_vec(vec![1.0, 0.0, 2.0]);
+        let pca_zero_scale = PCA {
+            rotation: Some(rotation_valid.clone()),
+            mean: Some(mean_valid.clone()),
+            scale: Some(scale_with_zero),
+        };
+        let temp_file_zero_scale = NamedTempFile::new()?;
+        pca_zero_scale.save_model(temp_file_zero_scale.path())?;
+         assert!(
+            PCA::load_model(temp_file_zero_scale.path()).is_err(),
+            "Load should fail for a saved model with a zero value in its scale vector."
+        );
+
+        println!("`load_model` rejection of non-positive scale tests passed.");
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod pca_tests {
