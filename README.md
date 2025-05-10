@@ -2,20 +2,12 @@
 
 Forked from https://github.com/ekg/pca. Modified from Erik Garrison's original implementation.
 
-Consider using this library if you have more features than samples.
+This Rust library provides Principal Component Analysis (PCA) using two main approaches:
+1.  **Exact PCA (`fit`)**: Uses eigen-decomposition of the covariance matrix. If the number of features exceeds the number of samples, it efficiently uses a Gram matrix computation (the "Gram trick").
+2.  **Randomized PCA (`rfit`)**: Employs a randomized SVD algorithm, suitable for approximating PCA on very large or high-dimensional datasets.
 
-A Rust library providing **Principal Component Analysis (PCA)** functionality using either:
-1. A **covariance-based** eigen-decomposition (classical PCA). (Faster, less memory-efficient.)
-2. A **randomized SVD** approach (for large-scale or high-dimensional data). (Slower, more memory-efficient.)
+All computed principal component vectors are normalized to unit length. The library handles mean-centering and ensures data is scaled by positive factors derived from standard deviations.
 
-Instead of building a large covariance matrix based on the number of features, which takes a lot of time and memory when features are numerous, it can create a Gram matrix by multiplying the data matrix with its transpose and scaling it. Then, it find eigenvectors of the Gram matrix. Since PCA needs feature-based directions, it transforms these sample-based eigenvectors by multiplying them with the transposed data matrix and dividing by the square root of their eigenvalues, producing the same principal components as the standard method but with less computation because the Gram matrix can be smaller so easier to handle.
-
-This library supports:
-- Mean-centering and scaling of input data.
-- Automatic selection of PCA components via a user-defined tolerance or a fixed count.
-- Both "standard" PCA for moderate dimensions and a "randomized SVD" routine for very large matrices.
-
-[The PCA is obtained via SVD](https://math.stackexchange.com/questions/3869/what-is-the-intuitive-relationship-between-svd-and-pca).
 
 ## Installation
 
@@ -23,210 +15,97 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-efficient_pca = "0.1.3"
+efficient_pca = "0.1.4"
 ```
 
-Or just `cargo add efficient_pca` to get the latest version.
+Or use `cargo add efficient_pca` to add the latest version.
 
+## Core Features
 
-## Features
+-   **Exact PCA (`fit`)**: Computes principal components via eigen-decomposition. Handles high-dimensional data (`n_features > n_samples`) efficiently using the Gram matrix method. Allows component selection based on an eigenvalue tolerance.
+-   **Randomized PCA (`rfit`)**: Approximates principal components using randomized SVD, designed for very large datasets. Users specify the target number of components and can optionally use a singular value tolerance.
+-   **Robust Data Scaling**: Input data is automatically centered. Scaling factors are derived from standard deviations and are always positive (values from original standard deviations `s` where `s.abs() < 1e-9` are sanitized to `1.0`; for `with_model`, inputs `s <= 1e-9` or non-finite also become `1.0`).
+-   **Model Persistence**: Fitted PCA models can be saved to and loaded from files. Loaded models are validated for consistency and positive scale factors.
+-   **Data Transformation**: Fitted models can transform new data into the principal component space.
 
-- **Standard PCA** via eigen-decomposition of the covariance matrix:
-  - Suitable for data where the number of features is not prohibitively large compared to samples.
-  - Automatically handles scaling and centering of your data.
-  - Allows a tolerance-based cutoff for the number of principal components.
-
-- **Randomized PCA** (`rfit`) via randomized SVD:
-  - Efficient for high-dimensional or very large datasets.
-  - Randomized SVD can approximate the principal components much faster if the dimensionality is very large.
-  - Allows specifying the number of components and an oversampling parameter to improve accuracy.
-
-- **Flexible Tolerances**:
-  - You can specify a fraction of the largest eigenvalue/singular value as a threshold to keep or reject components.
-
-- **Easy Transformation**:
-  - Once fitted, the same PCA instance can be used to transform new data into the principal-component space.
-
-(Note: tests require Python dependencies.)
+(Note: Some tests in the repository require Python and scikit-learn for comparison.)
 
 ## Usage
-### Classical PCA (`fit`)
 
-```
+### Basic Workflow (using `fit`)
+
+```rust
 use ndarray::array;
 use efficient_pca::PCA;
 
-fn main() {
-    // Suppose we have some 2D dataset (n_samples x n_features)
-    let data = array![
-        [1.0, 2.0],
-        [3.0, 4.0],
-        [5.0, 6.0]
-    ];
-
-    // Create a new PCA instance
-    let mut pca = PCA::new();
-
-    // Fit the model to the data using the classical covariance-based approach.
-    // (Optionally provide a tolerance, e.g., Some(0.01) to drop small components.)
-    pca.fit(data.clone(), None).unwrap();
-
-    // Transform the data into the new PCA space
-    let transformed = pca.transform(data).unwrap();
-    println!("PCA-transformed data:\n{:?}", transformed);
-}
-```
-
-### Randomized SVD PCA (`rfit`)
-
-```
-use ndarray::array;
-use efficient_pca::PCA;
-
-fn main() {
-    // Larger data matrix example (here just 2x2 for illustration)
-    let data = array![
-        [1.0, 2.0],
-        [3.0, 4.0]
-    ];
-
-    // Set up PCA
-    let mut pca = PCA::new();
-
-    // Use 'rfit' to perform randomized SVD
-    // - n_components: number of principal components you want
-    // - n_oversamples: oversample dimension
-    // - seed: optional for reproducibility
-    // - tol: optional variance-based cutoff
-    pca.rfit(data.clone(), 2, 10, Some(42), None).unwrap();
-
-    // Transform into PCA space
-    let transformed = pca.transform(data).unwrap();
-    println!("Randomized PCA result:\n{:?}", transformed);
-}
-```
-
-### Transforming Data
-
-Once the PCA is fitted (by either `fit` or `rfit`), you can transform new incoming data.  
-The PCA object internally stores the mean, scaling, and rotation matrix.  
-
-```
-use ndarray::array;
-use efficient_pca::PCA;
-
-fn main() {
-    let data_train = array![
-        [1.0, 2.0],
-        [3.0, 4.0],
-    ];
-    let data_test = array![
-        [2.0, 3.0],
-        [4.0, 5.0],
-    ];
-    
-    let mut pca = PCA::new();
-    pca.fit(data_train.clone(), Some(1e-3)).unwrap();
-    
-    // Transform both training data and new data
-    let train_pcs = pca.transform(data_train).unwrap();
-    let test_pcs = pca.transform(data_test).unwrap();
-    
-    println!("Train set in PCA space:\n{:?}", train_pcs);
-    println!("Test set in PCA space:\n{:?}", test_pcs);
-}
-```
-
-
-## API Overview
-
-### `PCA::new()`
-Creates a new, empty `PCA` struct. Before use, you must call either `fit` or `rfit`.  
-
-```
-use efficient_pca::PCA;
-let pca = PCA::new();
-```
-
-### `PCA::fit(...)`
-Fits PCA using the **covariance eigen-decomposition** approach.  
-- **Parameters**:
-  - `data_matrix`: Your data, shape (n_samples, n_features).
-  - `tolerance`: If `Some(tol)`, discard all components whose eigenvalue is below `tol * max_eigenvalue`.
-    Otherwise, keep all.  
-- **Returns**: `Result<(), Box<dyn Error>>`, but on success, stores internal rotation, mean, and scale.
-
-```
-use ndarray::array;
-use efficient_pca::PCA;
-let data = array![[1.0, 2.0],
-                  [3.0, 4.0]];
-let mut pca = PCA::new();
-pca.fit(data, Some(0.01)).unwrap();
-```
-
-### `PCA::rfit(...)`
-Fits PCA using **randomized SVD**.  
-- **Parameters**:
-  - `x`: The input data, shape (n_samples, n_features).
-  - `n_components`: Number of components to keep (upper bound).
-  - `n_oversamples`: Oversampling dimension for randomized SVD.
-  - `seed`: Optional RNG seed for reproducibility.
-  - `tol`: Optional fraction of the largest singular value used to drop components.  
-- **Returns**: Same as `fit`, but uses a different internal approach optimized for large dimensions.
-
-```
-use ndarray::array;
-use efficient_pca::PCA;
-let data = array![[1.0, 2.0],
-                  [3.0, 4.0]];
-let mut pca = PCA::new();
-pca.rfit(data, 10, 5, Some(42_u64), Some(0.01)).unwrap();
-```
-
-### `PCA::transform(...)`
-Transforms data using the previously fitted PCA’s rotation, mean, and scale.  
-- **Parameters**:
-  - `x`: A data matrix with the same number of features as the training data.
-- **Returns**: The matrix of shape (n_samples, n_components) in principal-component space.
-
-```
-use ndarray::array;
-use efficient_pca::PCA;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let data = array![[1.0, 2.0],
-                      [3.0, 4.0]];
+    let data = array![
+        [1.0, 2.0, 0.5],
+        [3.0, 4.0, 1.5],
+        [5.0, 6.0, 2.5],
+        [7.0, 8.0, 3.5]
+    ];
+
     let mut pca = PCA::new();
-    pca.fit(data.clone(), None).unwrap();
-    let projected = pca.transform(data)?;
-    println!("{:?}", projected);
+
+    // Fit the model (e.g., keep all components)
+    pca.fit(data.clone(), None)?;
+
+    // Transform data
+    let transformed_data = pca.transform(data)?;
+    println!("PCA-transformed data:\n{:?}", transformed_data);
+
+    // Example of saving and loading
+    let model_path = "pca_model.bin";
+    pca.save_model(model_path)?;
+    let loaded_pca = PCA::load_model(model_path)?;
+    let transformed_by_loaded = loaded_pca.transform(array![[0.0, 1.0, 2.0]])?;
+    println!("Transformed by loaded model:\n{:?}", transformed_by_loaded);
+    // std::fs::remove_file(model_path)?; // Clean up example file
+
     Ok(())
 }
 ```
 
-## Performance Considerations
+## API Overview
 
-**Standard PCA** (`fit`):
-   - Computes the covariance matrix `(p x p)` if `p <= n`, else a Gram matrix `(n x n)`.  
-   - Faster for smaller feature counts but can be expensive for extremely large `p`.
-   
-**Randomized SVD** (`rfit`):
-   - Best for very high dimensional datasets.
-   - You can tune `n_oversamples` to reduce approximation errors (at the cost of more computation).
-   - Internally, it uses a smaller SVD on a projected matrix, offering a big speed-up for large or tall/skinny/wide matrices.
+### `PCA::new()`
+Creates an empty `PCA` model.
 
-**Memory Usage**:
-   - The library copies data in some places to center and scale, and creates temporary matrices for covariance or Gram decompositions.
-   - For very large datasets, consider using `rfit`.
-   - The randomized approach does not actually do streaming now, though it could.
-  
-- **Use `rfit`** for high-dimensional, wide datasets where memory efficiency is crucial, even if that sometimes means a trade-off in runtime.
+### `PCA::with_model(rotation, mean, raw_standard_deviations)`
+Creates a `PCA` model from pre-computed components.
+-   `raw_standard_deviations`: Input standard deviations. Values `s` where `s.is_finite() == false` or `s <= 1e-9` are sanitized to `1.0`. Errors if non-finite values are present before this sanitization.
+
+### `PCA::fit(data_matrix, tolerance)`
+Fits PCA using an exact method (covariance or Gram matrix).
+-   `tolerance`: Optional `f64`. If `Some(tol)`, components with eigenvalue `< tol * max_eigenvalue` are discarded. `tol` is clamped to `[0.0, 1.0]`. If `None`, all components are kept.
+
+### `PCA::rfit(x, n_components, n_oversamples, seed, tol)`
+Fits PCA using randomized SVD.
+-   `n_components`: Target number of components (upper bound).
+-   `n_oversamples`: For randomized algorithm stability.
+-   `seed`: Optional `u64` for reproducibility.
+-   `tol`: Optional `f64`. If `Some(t_val)` where `0.0 < t_val <= 1.0`, further filters components based on singular values.
+
+### `PCA::transform(x)`
+Transforms input data `x` using the fitted model. Data is centered and scaled using stored positive scale factors.
+
+### `PCA::save_model(path)`
+Saves the fitted model to `path`.
+
+### `PCA::load_model(path)`
+Loads a model from `path`. Validates internal consistency and ensures scale factors are positive.
+
+## Performance Notes
+
+-   **`fit()`**: Generally preferred for exact results when the smaller dimension (`n_samples` or `n_features`) is manageable for eigen-decomposition. Uses Gram matrix for `n_features > n_samples`.
+-   **`rfit()`**: More efficient for very large datasets where an approximation is acceptable or exact computation is too costly.
 
 ## Authors
 
-- Erik Garrison <erik.garrison@gmail.com>. See original repository: https://github.com/ekg/pca
-- SauersML
+-   Erik Garrison <erik.garrison@gmail.com>. Original repository: https://github.com/ekg/pca
+-   SauersML
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the `LICENSE` file for details.
