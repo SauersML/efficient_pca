@@ -1,9 +1,6 @@
 // Principal component analysis (PCA)
 
 #![doc = include_str!("../README.md")]
-// Principal component analysis (PCA)
-
-#![doc = include_str!("../README.md")]
 
 use ndarray::{s, Array1, Array2, Axis, ArrayView1};
 use ndarray_linalg::{Eigh, QR, SVDInto, UPLO}; // QR is the trait for .qr()
