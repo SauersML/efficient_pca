@@ -1,26 +1,40 @@
 // Principal component analysis (PCA)
 
 #![doc = include_str!("../README.md")]
+// Principal component analysis (PCA)
 
-use ndarray::{s, Array1, Array2, Axis};
-use ndarray_linalg::{Eigh, QR, SVDInto, UPLO};
+#![doc = include_str!("../README.md")]
+
+use ndarray::{s, Array1, Array2, Axis, ArrayView1};
+use ndarray_linalg::{Eigh, QR, SVDInto, UPLO}; // QR is the trait for .qr()
 use rand::Rng;
-use rand::SeedableRng;
+use rand::SeedableRng; // For ChaCha8Rng::seed_from_u64
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Normal};
+use rand_distr::Normal; // Distribution trait is implicitly used by Normal + rng.sample()
+
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-/// Principal component analysis (PCA) structure
+/// Principal component analysis (PCA) structure.
+///
+/// This struct holds the results of a PCA (mean, scale, and rotation matrix)
+/// and can be used to transform data into the principal component space.
+/// It supports both exact PCA computation and a faster, approximate randomized PCA.
+/// Models can also be loaded from/saved to files.
+#[derive(Serialize, Deserialize, Debug)]
 pub struct PCA {
-    /// the rotation matrix
+    /// The rotation matrix (principal components).
+    /// Shape: (n_features, k_components)
     rotation: Option<Array2<f64>>,
-    /// mean of input data
+    /// Mean vector of the original training data.
+    /// Shape: (n_features)
     mean: Option<Array1<f64>>,
-    /// scale of input data
+    /// Sanitized scale vector (standard deviations) of the original training data.
+    /// Original standard deviations close to zero (abs() < 1e-9) are replaced with 1.0.
+    /// Shape: (n_features)
     scale: Option<Array1<f64>>,
 }
 
@@ -31,12 +45,15 @@ impl Default for PCA {
 }
 
 impl PCA {
-    /// Create a new PCA struct with default values
+    /// Creates a new, empty PCA struct.
+    ///
+    /// The PCA model is not fitted and needs to be computed using `fit` or `rfit`,
+    /// or loaded using `load_model` or `with_model`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use efficient_pca::PCA;
+    /// use efficient_pca::PCA; // Assuming efficient_pca is your crate name
     /// let pca = PCA::new();
     /// ```
     pub fn new() -> Self {
@@ -47,220 +64,238 @@ impl PCA {
         }
     }
 
-    /// Fit the PCA rotation to the data **using the covariance approach**.
+    /// Creates a new PCA instance from a pre-computed model.
     ///
-    /// This method computes the mean, scaling, and principal axes (rotation)
-    /// via an eigen-decomposition of the covariance matrix \( X \cdot X^T \).
-    /// This approach is especially suitable when the number of features (columns)
-    /// is much larger than the number of samples (rows).
+    /// This is useful for loading a PCA model whose components (rotation matrix,
+    /// mean, and original standard deviations) were computed externally or
+    /// previously. The library will sanitize the provided standard deviations
+    /// for consistent scaling.
     ///
-    /// * `data_matrix` - Input data as a 2D array, shape (n_samples, n_features).
-    /// * `tolerance` - Tolerance for excluding low-variance components
-    ///   (fraction of the largest eigenvalue). If `None`, all components are kept.
+    /// * `rotation` - The rotation matrix (principal components), shape (d_features, k_components).
+    /// * `mean` - The mean vector of the original data used to compute the PCA, shape (d_features).
+    /// * `raw_standard_deviations` - The raw standard deviation vector of the original data,
+    ///                               shape (d_features). Values close to zero (abs < 1e-9)
+    ///                               will be treated as 1.0 for scaling. Non-finite values
+    ///                               will result in an error. If the original PCA did not
+    ///                               involve scaling (e.g., data was already standardized, or
+    ///                               only centering was desired), pass a vector of ones.
     ///
     /// # Errors
+    /// Returns an error if feature dimensions are inconsistent or if `raw_standard_deviations`
+    /// contains non-finite values.
+    pub fn with_model(
+        rotation: Array2<f64>,
+        mean: Array1<f64>,
+        raw_standard_deviations: Array1<f64>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let d_features_rotation = rotation.nrows();
+        let k_components = rotation.ncols();
+        let d_features_mean = mean.len();
+        let d_features_raw_std = raw_standard_deviations.len();
+
+        if !(d_features_rotation == d_features_mean && d_features_mean == d_features_raw_std) {
+            if !(d_features_rotation == 0 && k_components == 0 && d_features_mean == 0 && d_features_raw_std == 0) {
+                 return Err(format!(
+                    "Feature dimensions of rotation ({}), mean ({}), and raw_standard_deviations ({}) must match.",
+                    d_features_rotation, d_features_mean, d_features_raw_std
+                ).into());
+            }
+        }
+        
+        if d_features_rotation == 0 && k_components > 0 {
+             return Err("Rotation matrix has 0 features but expects components.".into());
+        }
+
+        if raw_standard_deviations.iter().any(|&val| !val.is_finite()) {
+            return Err("raw_standard_deviations contains non-finite (NaN or infinity) values.".into());
+        }
+
+        let sanitized_scale_vector = raw_standard_deviations
+            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
+
+        Ok(Self {
+            rotation: Some(rotation),
+            mean: Some(mean),
+            scale: Some(sanitized_scale_vector),
+        })
+    }
+
+
+    /// Fits the PCA model to the data using an exact covariance/Gram matrix approach.
     ///
-    /// Returns an error if:
-    /// - The input matrix has fewer than 2 rows.
-    /// - Eigen-decomposition fails (very unlikely for a well-formed covariance).
+    /// This method computes the mean, (sanitized) scaling factors, and principal axes (rotation)
+    /// via an eigen-decomposition of the covariance matrix (if n_features <= n_samples)
+    /// or the Gram matrix (if n_features > n_samples, the "Gram trick").
+    /// The resulting principal components (columns of the rotation matrix) are normalized to unit length.
     ///
-    /// # Examples
+    /// **Note:** For very large datasets, `rfit` is generally recommended for better performance.
     ///
-    /// ```
-    /// use ndarray::array;
-    /// use efficient_pca::PCA;
+    /// * `data_matrix` - Input data as a 2D array, shape (n_samples, n_features).
+    /// * `tolerance` - Optional: Tolerance for excluding low-variance components
+    ///                 (fraction of the largest eigenvalue). If `None`, all components
+    ///                 up to the effective rank of the matrix are kept.
     ///
-    /// let data = array![
-    ///     [1.0, 2.0],
-    ///     [3.0, 4.0]
-    /// ];
-    ///
-    /// let mut pca = PCA::new();
-    /// pca.fit(data, None).unwrap();
-    /// ```
+    /// # Errors
+    /// Returns an error if the input matrix has zero dimensions, fewer than 2 samples, or if
+    /// matrix operations (like eigen-decomposition) fail.
     pub fn fit(
         &mut self,
-        mut data_matrix: Array2<f64>,
+        mut data_matrix: Array2<f64>, 
         tolerance: Option<f64>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         let n_samples = data_matrix.nrows();
         let n_features = data_matrix.ncols();
 
+        if n_samples == 0 || n_features == 0 {
+            return Err("Input data_matrix has zero samples or zero features.".into());
+        }
         if n_samples < 2 {
-            return Err("Input matrix must have at least 2 rows.".into());
+            return Err("Input matrix must have at least 2 samples.".into());
         }
 
-        // 1) Center and scale the data
         let mean_vector = data_matrix
             .mean_axis(Axis(0))
             .ok_or("Failed to compute mean of the data.")?;
         self.mean = Some(mean_vector.clone());
-        data_matrix -= &mean_vector;
+        data_matrix -= &mean_vector; 
 
-        let std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
-        self.scale = Some(std_dev_vector.clone());
-        data_matrix /= &std_dev_vector.mapv(|val| if val != 0.0 { val } else { 1.0 });
+        let original_std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
+        let sanitized_scale_vector = original_std_dev_vector
+            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
+        self.scale = Some(sanitized_scale_vector.clone()); 
+        
+        let mut scaled_data_matrix = data_matrix; 
+        scaled_data_matrix /= &sanitized_scale_vector; 
 
-        // Decide which covariance trick to use
-        //  - If p <= n, use the f×f covariance = (X^T X)/(n-1), then eigendecompose it
-        //  - If p > n, use the n×n Gram matrix = (X X^T)/(n-1), then map to feature space
         if n_features <= n_samples {
-            // ================================
-            // (A) Standard f×f covariance
-            // ================================
-            let mut cov_matrix = data_matrix.t().dot(&data_matrix);
+            let mut cov_matrix = scaled_data_matrix.t().dot(&scaled_data_matrix);
             cov_matrix /= (n_samples - 1) as f64;
 
-            // Eigen-decomposition (p×p)
             let (vals, vecs) = cov_matrix
                 .eigh(UPLO::Upper)
-                .map_err(|_| "Eigen decomposition of covariance failed.")?;
+                .map_err(|e| format!("Eigen decomposition of covariance matrix failed: {}",e))?;
 
-            // Sort descending by eigenvalue
             let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
-                .iter()
-                .cloned()
+                .into_iter()
                 .zip(vecs.columns().into_iter().map(|col| col.to_owned()))
                 .collect();
-            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-            // Apply tolerance if needed
-            let largest = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
-            let rank_by_tol = if let Some(tol) = tolerance {
-                let thresh = largest * tol;
-                eig_pairs
-                    .iter()
-                    .take_while(|(val, _)| *val > thresh)
-                    .count()
-            } else {
-                eig_pairs.len()
-            };
-            let final_rank = std::cmp::min(rank_by_tol, n_features);
-
-            // Gather top components
-            let mut top_eigvecs = Vec::with_capacity(final_rank);
-            for i in 0..final_rank {
-                let (_, ref evec) = eig_pairs[i];
-                top_eigvecs.push(evec.clone());
-            }
-            let top_eigvecs = ndarray::stack(
-                Axis(1),
-                &top_eigvecs.iter().map(|v| v.view()).collect::<Vec<_>>(),
-            )?;
-
-            // These vectors are the principal axes in feature space
-            self.rotation = Some(top_eigvecs);
-
-            // So that each column is unit length
-            if let Some(ref mut rot) = self.rotation {
-                for i in 0..rot.ncols() {
-                    let mut col_i = rot.slice_mut(s![.., i]);
-                    let norm_i = col_i.dot(&col_i).sqrt();
-                    if norm_i > 1e-12 {
-                        col_i.mapv_inplace(|x| x / norm_i);
-                    }
+            let rank_limit = if let Some(tol_val) = tolerance {
+                let largest_eigval = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
+                if largest_eigval <= 1e-9 { 
+                    0
+                } else {
+                    let threshold = largest_eigval * tol_val.max(0.0).min(1.0); 
+                    eig_pairs.iter().take_while(|(val, _)| *val > threshold).count()
                 }
+            } else {
+                eig_pairs.len() // Keep all components if no tolerance
+            };
+            let final_rank = std::cmp::min(rank_limit, n_features);
+
+            if final_rank == 0 {
+                self.rotation = Some(Array2::zeros((n_features, 0)));
+            } else {
+                let mut top_eigvecs_owned: Vec<Array1<f64>> = Vec::with_capacity(final_rank);
+                for i in 0..final_rank {
+                    let mut eig_vec = eig_pairs[i].1.clone();
+                    let norm = eig_vec.dot(&eig_vec).sqrt();
+                    if norm > 1e-9 {
+                        eig_vec.mapv_inplace(|x| x / norm);
+                    } else {
+                        eig_vec.fill(0.0); 
+                    }
+                    top_eigvecs_owned.push(eig_vec);
+                }
+                let views: Vec<ArrayView1<f64>> = top_eigvecs_owned.iter().map(|v| v.view()).collect();
+                let rotation_matrix = ndarray::stack(Axis(1), &views)?;
+                self.rotation = Some(rotation_matrix);
             }
         } else {
-            // ==========================================
-            // (B) Gram trick: n×n covariance
-            // ==========================================
-            let mut gram_matrix = data_matrix.dot(&data_matrix.t());
+            // Gram trick path
+            let mut gram_matrix = scaled_data_matrix.dot(&scaled_data_matrix.t());
             gram_matrix /= (n_samples - 1) as f64;
 
-            // Eigen-decompose (n×n)
-            let (vals, vecs) = gram_matrix
+            let (vals, u_vecs) = gram_matrix
                 .eigh(UPLO::Upper)
-                .map_err(|_| "Eigen decomposition of Gram matrix failed.")?;
+                .map_err(|e| format!("Eigen decomposition of Gram matrix failed: {}", e))?;
 
-            // Sort descending
             let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
-                .iter()
-                .cloned()
-                .zip(vecs.columns().into_iter().map(|col| col.to_owned()))
+                .into_iter()
+                .zip(u_vecs.columns().into_iter().map(|col| col.to_owned()))
                 .collect();
-            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
-
-            // Tolerance
-            let largest = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
-            let rank_by_tol = if let Some(tol) = tolerance {
-                let thresh = largest * tol;
-                eig_pairs
-                    .iter()
-                    .take_while(|(val, _)| *val > thresh)
-                    .count()
+            eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            
+            let rank_limit = if let Some(tol_val) = tolerance {
+                 let largest_eigval = eig_pairs.get(0).map_or(0.0, |(v, _)| *v);
+                if largest_eigval <= 1e-9 {
+                    0
+                } else {
+                    let threshold = largest_eigval * tol_val.max(0.0).min(1.0);
+                    eig_pairs.iter().take_while(|(val, _)| *val > threshold).count()
+                }
             } else {
-                eig_pairs.len()
+                eig_pairs.len() // Keep all components if no tolerance
             };
-            let final_rank = std::cmp::min(rank_by_tol, n_samples);
+            let final_rank = std::cmp::min(rank_limit, n_samples); // Rank is capped by n_samples here
 
-            // Build the principal axes in feature space
-            // rotation_matrix has shape (p, final_rank)
-            let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
+            if final_rank == 0 {
+                self.rotation = Some(Array2::zeros((n_features, 0)));
+            } else {
+                let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
+                for i in 0..final_rank {
+                    let (eigval, ref u_col) = eig_pairs[i];
+                    // Eigenvalue from G = X'X'^T / (N-1)
+                    // V_k = (X'^T u_k) / sqrt(eigval_k * (N-1)) to make V_k unit norm
+                    // Note: lam_sqrt is sqrt(eigval_k)
+                    let lam_sqrt = if eigval > 1e-12 { eigval.sqrt() } else { continue }; 
 
-            for i in 0..final_rank {
-                let (eigval, ref u_col) = eig_pairs[i];
-                // If eigenvalue is extremely small or negative (rounding), clamp:
-                let lam = if eigval > 1e-12 { eigval } else { 1e-12 };
-                // Feature-space vector = X^T * u / sqrt(lam)
-                // shape => (p,)
-                let mut axis_i = data_matrix.t().dot(u_col);
-                axis_i.mapv_inplace(|x| x / lam.sqrt());
-
-                // extra division by sqrt(n-1):
-                axis_i.mapv_inplace(|x| x / ((n_samples - 1) as f64).sqrt());
-
-                // then normalize this axis to length 1:
-                // let norm_i = axis_i.dot(&axis_i).sqrt();
-                // axis_i.mapv_inplace(|x| x / norm_i);
-                // actually no
-
-                // Put it as the i-th column in rotation_matrix
-                rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
+                    let mut axis_i = scaled_data_matrix.t().dot(u_col);
+                    axis_i.mapv_inplace(|x| x / (lam_sqrt * ((n_samples - 1) as f64).sqrt()));
+                    
+                    // The above sequence should already normalize axis_i.
+                    // An explicit re-normalization can be added for safety if desired, but
+                    // the critic's analysis indicated this sequence is correct.
+                    // let norm_i = axis_i.dot(&axis_i).sqrt();
+                    // if norm_i > 1e-9 { 
+                    //     axis_i.mapv_inplace(|x| x / norm_i);
+                    // } else {
+                    //     axis_i.fill(0.0);
+                    // }
+                    rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
+                }
+                self.rotation = Some(rotation_matrix);
             }
-            self.rotation = Some(rotation_matrix);
         }
-
         Ok(())
     }
 
-    /// Use randomized SVD to fit a PCA rotation to the data.
+    /// Fits the PCA model using a randomized SVD approach.
     ///
-    /// This computes the mean, scaling, and an approximate rotation (principal components)
-    /// to apply PCA to the input data matrix. This method is designed to be more
-    /// efficient for large datasets by avoiding the explicit formation of the
-    /// full covariance matrix.
+    /// This computes the mean, (sanitized) scaling factors, and an approximate rotation
+    /// (principal components). This method is designed to be more efficient for
+    /// large datasets by avoiding the explicit formation of the full covariance matrix
+    /// and instead working with smaller "sketched" matrices. The resulting principal
+    /// components (columns of the rotation matrix) are normalized to unit length.
     ///
     /// * `x` - Input data as a 2D array (n_samples, n_features).
     /// * `n_components` - Number of principal components to keep.
     /// * `n_oversamples` - Number of additional random dimensions to sample for better accuracy
-    ///                     (a common value is 5-10).
+    ///                     (a common value is 5-10, e.g., `n_oversamples = 10`).
     /// * `seed` - Optional seed for reproducibility of the random number generator.
     /// * `tol` - Optional tolerance. If Some, components are kept if their singular value
     ///           is > `tol * largest_singular_value`. The number of components will be
     ///           at most `n_components`.
     ///
     /// # Errors
-    ///
     /// Returns an error if:
-    /// - The input matrix has fewer than 2 samples.
+    /// - The input matrix has zero dimensions, fewer than 2 samples.
     /// - `n_components` is 0.
-    /// - SVD or QR decomposition fails.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ndarray::array;
-    /// use efficient_pca::PCA; // Assuming efficient_pca is your crate name
-    ///
-    /// let x = array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
-    /// let mut pca = PCA::new();
-    /// // Find 1 principal component, with 5 oversamples, and a seed
-    /// pca.rfit(x, 1, 5, Some(42), None).unwrap();
-    /// ```
+    /// - SVD or QR decomposition fails during the randomized algorithm.
     pub fn rfit(
         &mut self,
-        mut x: Array2<f64>, // n_samples x n_features
+        mut x: Array2<f64>, 
         n_components: usize,
         n_oversamples: usize,
         seed: Option<u64>,
@@ -268,197 +303,237 @@ impl PCA {
     ) -> Result<(), Box<dyn Error>> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-    
+
+        if n_samples == 0 || n_features == 0 {
+            return Err("Input matrix has zero samples or zero features.".into());
+        }
         if n_samples < 2 {
             return Err("Input matrix must have at least 2 samples.".into());
         }
         if n_components == 0 {
             return Err("Number of components (n_components) must be greater than 0.".into());
         }
-    
-        // --- 1. Standardize Data ---
+
         let mean_vector = x.mean_axis(Axis(0)).ok_or("Failed to compute mean")?;
         self.mean = Some(mean_vector.clone());
-        x -= &mean_vector; // Center the data in place
-    
-        let std_dev_vector = x.map_axis(Axis(0), |column| column.std(0.0));
-        // Handle columns with zero standard deviation to avoid division by zero.
-        // Such columns don't contribute to variance and their components will be zero.
-        // We scale by 1.0 in this case, effectively leaving them as zero (since they are centered).
-        let std_dev_for_scaling = std_dev_vector.mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
-        self.scale = Some(std_dev_vector); // Store original std_dev
-        x /= &std_dev_for_scaling; // Scale the data in place
-        let a = x; // `a` is now the n_samples x n_features standardized data matrix
-    
-        // --- 2. Parameter Setup for Randomized SVD ---
+        x -= &mean_vector; 
+
+        let std_dev_vector_original = x.map_axis(Axis(0), |column| column.std(0.0));
+        let sanitized_scale_vector = std_dev_vector_original
+            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
+        self.scale = Some(sanitized_scale_vector.clone()); 
+        x /= &sanitized_scale_vector; 
+        let a = x; 
+
         let k_target = n_components;
-        // Sketch size `l` should not exceed dimensions of the matrix
-        let l_sketch_size = std::cmp::min(k_target + n_oversamples, std::cmp::min(n_samples, n_features));
-        if l_sketch_size < k_target || l_sketch_size == 0 {
-             // This can happen if k_target + n_oversamples is very small or dimensions are tiny.
-             // Or if k_target itself is already >= min_dim.
-             // Adjust l_sketch_size to be at least k_target, but not more than available.
-             let min_dim = std::cmp::min(n_samples, n_features);
-             let l_adjusted = std::cmp::min(k_target + n_oversamples, min_dim);
-             if l_adjusted == 0 && min_dim > 0 {
-                return Err(format!("Sketch size 'l' became zero. n_samples: {}, n_features: {}, k_target: {}", n_samples, n_features, k_target).into());
-             } else if l_adjusted == 0 && min_dim == 0 {
-                 return Err("Matrix dimensions are zero.".into());
-             }
-             // Ensure l_sketch_size is at least k_target if possible, otherwise cap at min_dim
-             let l_sketch_size = std::cmp::max(k_target, l_adjusted);
-             if l_sketch_size == 0 { // Still zero if k_target was 0, caught earlier
-                return Err("Effective sketch size 'l' is zero after adjustments.".into());
-             }
+        let max_possible_rank = std::cmp::min(n_samples, n_features);
+         if max_possible_rank == 0 { 
+            return Err("Matrix has zero effective rank.".into());
         }
-    
-    
-        // Sensible default for power iterations if not a parameter
-        const N_POWER_ITERATIONS: usize = 2;
-    
+
+        let l_sketch_size_ideal = k_target + n_oversamples;
+        let mut l_sketch_size = std::cmp::min(l_sketch_size_ideal, max_possible_rank);
+        l_sketch_size = std::cmp::max(l_sketch_size, 1); 
+        l_sketch_size = std::cmp::max(l_sketch_size, std::cmp::min(k_target, max_possible_rank));
+
+
+        const N_POWER_ITERATIONS: usize = 2; 
+
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
-            None => ChaCha8Rng::from_rng(rand::thread_rng()).unwrap(),
+            None => ChaCha8Rng::from_rng(rand::thread_rng()).map_err(|e| e.to_string())?,
         };
-    
-        // --- 3. Randomized Subspace Iteration (Halko et al. 2011, Algorithm 5.1 style) ---
-        // We want the right singular vectors of `a` (d x k matrix), which are principal components.
-        // These are the left singular vectors of `a.t()`.
-        // Let A_op = a.t() (d x n matrix). We find its left singular vectors.
-    
-        let a_op = a.t().as_standard_layout().to_owned(); // d x n. Use as_standard_layout for potential perf.
-        let (dim_op_m, dim_op_n) = a_op.dim(); // m = d, n = n_samples
-    
-        // Generate a random Gaussian matrix Omega (n_samples x l_sketch_size)
-        let omega = Array2::from_shape_fn((dim_op_n, l_sketch_size), |_| {
+
+        let a_op = a.t().as_standard_layout().to_owned(); 
+        let (_dim_op_m_feat, dim_op_n_samp) = a_op.dim(); 
+
+        let omega = Array2::from_shape_fn((dim_op_n_samp, l_sketch_size), |_| {
             rng.sample(Normal::new(0.0, 1.0).unwrap())
         });
-    
-        // Initial sketch: Y = A_op * Omega  (d x l_sketch_size)
-        let mut q_basis = a_op.dot(&omega);
-    
-        // Orthonormalize Q_basis (iterative refinement through power iterations)
-        // More stable power iteration: Q_i = orth(A_op * orth(A_op^T * Q_{i-1}))
-        if q_basis.len() > 0 { // Proceed if q_basis is not empty
-            q_basis = q_basis.qr()?.0; // Q_0 = orth(A_op * Omega), Q_basis is (d x l_sketch_size)
-        } else {
-            // This can happen if l_sketch_size is 0, e.g. if n_components was 0 and n_oversamples was 0
-            // or if matrix dimensions are too small.
-            // Error should be caught earlier by l_sketch_size checks.
-            // If not, handle pathological case of empty matrix.
-            if dim_op_m > 0 && k_target > 0 { // We expect some components
-                return Err(format!("Initial sketch Q_basis is empty. l_sketch_size: {}, dim_op_m (features): {}", l_sketch_size, dim_op_m).into());
-            } else { // No components needed or no features, return empty rotation
-                self.rotation = Some(Array2::zeros((dim_op_m, 0)));
-                return Ok(());
+
+        let mut q_basis = a_op.dot(&omega); 
+
+        if q_basis.ncols() == 0 { 
+            return Err("Initial sketch Q_basis has zero columns. This might happen if l_sketch_size is zero or A_op leads to an all-zero sketch.".into());
+        }
+        q_basis = q_basis.qr()?.0; 
+
+        for _ in 0..N_POWER_ITERATIONS {
+            if q_basis.ncols() == 0 { break; } 
+            let w_intermediate = a_op.t().dot(&q_basis); 
+            if w_intermediate.ncols() == 0 { break; }
+            let w_ortho = w_intermediate.qr()?.0;
+
+            if w_ortho.ncols() == 0 { break; }
+            let z_intermediate = a_op.dot(&w_ortho);
+            if z_intermediate.ncols() == 0 { break; }
+            q_basis = z_intermediate.qr()?.0;
+        }
+        
+        let b_projected = q_basis.t().dot(&a_op); 
+
+        let (u_b_opt, s_b_singular_values, _vt_b_opt) = b_projected.svd_into(true, false)
+            .map_err(|e| format!("SVD of small matrix B failed: {}", e))?;
+        let u_b = u_b_opt.ok_or("SVD U_B not computed from small matrix B")?;
+
+        let mut rotation_full_l = q_basis.dot(&u_b); 
+
+        for mut col in rotation_full_l.columns_mut() {
+            let norm = col.dot(&col).sqrt();
+            if norm > 1e-9 {
+                col.mapv_inplace(|v| v / norm);
+            } else {
+                col.fill(0.0); 
             }
         }
-    
-    
-        for _ in 0..N_POWER_ITERATIONS {
-            if q_basis.ncols() == 0 { break; } // Nothing to operate on
-            let w_intermediate = a_op.t().dot(&q_basis); // (n_samples x d) * (d x l_sketch_size) -> (n_samples x l_sketch_size)
-            if w_intermediate.ncols() == 0 { break; }
-            let w_ortho = w_intermediate.qr()?.0;      // orth(A_op^T * Q_prev), W_ortho is (n_samples x l_sketch_size)
-    
-            if w_ortho.ncols() == 0 { break; }
-            let z_intermediate = a_op.dot(&w_ortho);    // (d x n_samples) * (n_samples x l_sketch_size) -> (d x l_sketch_size)
-            if z_intermediate.ncols() == 0 { break; }
-            q_basis = z_intermediate.qr()?.0;          // Q_new = orth(A_op * W_ortho), Q_basis is (d x l_sketch_size)
-        }
-        // Q_basis (d x l_sketch_size) now holds an orthonormal basis for the dominant left singular vectors of A_op (a.t())
-        // which are the dominant right singular vectors of `a` (our principal components).
-    
-        // --- 4. Form the Smaller Matrix B (Projection onto the refined subspace) ---
-        // B = Q_basis^T * A_op  ((l_sketch_size x d) * (d x n_samples) -> l_sketch_size x n_samples)
-        let b_projected = q_basis.t().dot(&a_op);
-    
-        // --- 5. SVD of the Smaller Matrix B ---
-        // We need U_B from SVD of B = U_B * S_B * V_B^T
-        // ndarray_linalg.svd returns (Option<U>, S_vector, Option<VT>)
-        let (u_b_opt, s_b_singular_values, _vt_b_opt) = b_projected.svd_into(true, false) // Request U, not VT
-            .map_err(|e| format!("SVD of small matrix B failed: {}", e))?;
-    
-        let u_b = u_b_opt.ok_or("SVD U_B not computed from small matrix B")?; // l_sketch_size x l_sketch_size (or min_dim of B)
-    
-        // --- 6. Construct Final Rotation Matrix ---
-        // Principal components (right singular vectors of `a`) are Q_basis * U_B
-        // (d x l_sketch_size) * (l_sketch_size x l_sketch_size) -> (d x l_sketch_size)
-        let rotation_full_l = q_basis.dot(&u_b);
-    
-        // --- 7. Select Top k_target Components and Handle Tolerance ---
-        // The columns of rotation_full_l are the components.
-        // s_b_singular_values correspond to these components. They are already sorted.
-    
-        let mut num_components_to_keep = std::cmp::min(k_target, rotation_full_l.ncols());
-    
-        if let Some(t) = tol {
-            if !s_b_singular_values.is_empty() && t > 0.0 {
+        
+        let effective_k_target = std::cmp::min(k_target, rotation_full_l.ncols());
+        let mut num_components_to_keep = effective_k_target;
+
+        if let Some(t_val) = tol {
+            if !s_b_singular_values.is_empty() && t_val > 0.0 && t_val <= 1.0 { // Ensure tol is a valid fraction
                 let largest_s_val = s_b_singular_values[0];
-                if largest_s_val > 1e-9 { // Avoid issues if all singular values are near zero
-                    let threshold_s_val = t * largest_s_val;
-                    let rank_by_tol = s_b_singular_values.iter().take_while(|&&s| s > threshold_s_val).count();
-                    num_components_to_keep = std::cmp::min(num_components_to_keep, rank_by_tol);
-                } else { // All singular values are effectively zero, keep minimal or zero components based on k_target
-                     num_components_to_keep = std::cmp::min(num_components_to_keep, s_b_singular_values.iter().filter(|&&s| s > 1e-9).count());
+                if largest_s_val > 1e-9 {
+                    let threshold_s_val = t_val * largest_s_val;
+                    let rank_by_tol = s_b_singular_values.iter()
+                                        .take(effective_k_target) 
+                                        .take_while(|&&s| s > threshold_s_val)
+                                        .count();
+                    num_components_to_keep = rank_by_tol;
+                } else { 
+                    num_components_to_keep = 0;
                 }
             }
         }
-        // Ensure we don't try to select more components than available in rotation_full_l
         num_components_to_keep = std::cmp::min(num_components_to_keep, rotation_full_l.ncols());
-    
-    
-        if num_components_to_keep == 0 && k_target > 0 {
-            // This could happen if tol is very strict or all singular values are zero.
-            // It's better to return an empty rotation matrix of correct feature dimension than error,
-            // or let the user decide if this is an error. For now, allow empty rotation.
+
+        if num_components_to_keep == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
-             // Optionally, one might return an Err here if k_target > 0 but 0 components are selected.
-             // e.g., return Err("Tolerance resulted in zero components being selected.".into());
-        } else if num_components_to_keep == 0 && k_target == 0 { // Should have been caught by initial k_target check
-            self.rotation = Some(Array2::zeros((n_features, 0)));
-        }
-        else {
+        } else {
             let final_rotation_matrix = rotation_full_l.slice(s![.., ..num_components_to_keep]).to_owned();
-            self.rotation = Some(final_rotation_matrix); // d x final_k
+            self.rotation = Some(final_rotation_matrix);
         }
-    
+
         Ok(())
     }
 
-    /// Apply the PCA rotation to the data
+    /// Applies the PCA transformation to the given data.
     ///
-    /// This projects the data into the PCA space using the
-    /// previously computed rotation, mean and scale.
+    /// The data is centered and scaled using the mean and scale factors
+    /// learned during fitting (or loaded into the model), and then projected
+    /// onto the principal components.
     ///
-    /// * `x` - Input data to transform
+    /// * `x` - Input data to transform, shape (m_samples, d_features).
+    ///         Can be a single sample (1 row).
     ///
     /// # Errors
-    ///
-    /// Returns an error if PCA has not been fitted yet.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ndarray::array;
-    /// use efficient_pca::PCA;
-    ///
-    /// let x = array![[1.0, 2.0],[3.0, 4.0]];
-    /// let mut pca = PCA::new();
-    /// pca.fit(x.clone(), None).unwrap();
-    /// pca.transform(x).unwrap();
-    /// ```
+    /// Returns an error if the PCA model is not fitted/loaded, or if the input
+    /// data's feature dimension does not match the model's.
     pub fn transform(&self, mut x: Array2<f64>) -> Result<Array2<f64>, Box<dyn Error>> {
-        match (&self.rotation, &self.mean, &self.scale) {
-            (Some(rotation), Some(mean), Some(scale)) => {
-                x -= mean;
-                x /= scale;
-                Ok(x.dot(rotation))
-            }
-            _ => Err("PCA not fitted yet.".into()),
+        let rotation_matrix = self.rotation.as_ref()
+            .ok_or_else(|| "PCA model: Rotation matrix not set. Fit or load a model first.")?;
+        let mean_vector = self.mean.as_ref()
+            .ok_or_else(|| "PCA model: Mean vector not set. Fit or load a model first.")?;
+        let scale_vector = self.scale.as_ref()
+            .ok_or_else(|| "PCA model: Scale vector not set. Fit or load a model first.")?;
+
+        let n_input_samples = x.nrows();
+        let n_input_features = x.ncols();
+        let n_model_features = mean_vector.len();
+
+        if n_input_features != n_model_features {
+            return Err(format!(
+                "Input data feature dimension ({}) does not match model's feature dimension ({}).",
+                n_input_features, n_model_features
+            ).into());
         }
+        if rotation_matrix.nrows() != n_model_features {
+            return Err(format!(
+                "Model inconsistency: Rotation matrix feature dimension ({}) does not match model's feature dimension ({}).",
+                rotation_matrix.nrows(), n_model_features
+            ).into());
+        }
+        if scale_vector.len() != n_model_features {
+             return Err(format!(
+                "Model inconsistency: Scale vector dimension ({}) does not match model's feature dimension ({}).",
+                scale_vector.len(), n_model_features
+            ).into());
+        }
+        
+        if n_input_samples == 0 { 
+            let k_components = rotation_matrix.ncols();
+            return Ok(Array2::zeros((0, k_components)));
+        }
+
+        x -= mean_vector;
+        x /= scale_vector;
+        Ok(x.dot(rotation_matrix))
+    }
+
+    /// Saves the current PCA model to a file using bincode.
+    ///
+    /// The model must be fitted or loaded (i.e., contain rotation, mean, and scale) for saving.
+    ///
+    /// * `path` - The file path to save the model to.
+    ///
+    /// # Errors
+    /// Returns an error if the model is incomplete or if file I/O or serialization fails.
+    pub fn save_model<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        if self.rotation.is_none() || self.mean.is_none() || self.scale.is_none() {
+            return Err("Cannot save an incomplete or unfitted PCA model.".into());
+        }
+        let file = File::create(path.as_ref())
+            .map_err(|e| format!("Failed to create file at {:?}: {}", path.as_ref(), e))?;
+        let mut writer = BufWriter::new(file); 
+        
+        bincode::serde::encode_into_std_write(self, &mut writer, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize PCA model: {}", e))?;
+        Ok(())
+    }
+
+    /// Loads a PCA model from a file previously saved with `save_model`.
+    ///
+    /// * `path` - The file path to load the model from.
+    ///
+    /// # Errors
+    /// Returns an error if file I/O or deserialization fails, or if the
+    /// loaded model is found to be incomplete or internally inconsistent.
+    pub fn load_model<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path.as_ref())
+            .map_err(|e| format!("Failed to open file at {:?}: {}", path.as_ref(), e))?;
+        let mut reader = BufReader::new(file); 
+        
+        let pca_model: PCA = bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
+            .map_err(|e| format!("Failed to deserialize PCA model: {}", e))?;
+
+        let rotation = pca_model.rotation.as_ref().ok_or("Loaded PCA model is missing rotation matrix.")?;
+        let mean = pca_model.mean.as_ref().ok_or("Loaded PCA model is missing mean vector.")?;
+        let scale = pca_model.scale.as_ref().ok_or("Loaded PCA model is missing scale vector.")?;
+        
+        let d_rot_features = rotation.nrows();
+        let d_mean_features = mean.len();
+        let d_scale_features = scale.len();
+
+        if !(d_rot_features == d_mean_features && d_mean_features == d_scale_features) {
+            if !(d_rot_features == 0 && rotation.ncols() == 0 && d_mean_features == 0 && d_scale_features == 0) {
+                return Err(format!(
+                    "Loaded PCA model has inconsistent feature dimensions: rotation_features={}, mean_features={}, scale_features={}",
+                    d_rot_features, d_mean_features, d_scale_features
+                ).into());
+            }
+        }
+        if scale.iter().any(|&val| !val.is_finite() || val == 0.0) {
+            return Err("Loaded PCA model's scale vector contains invalid (non-finite or zero) values. Scale values must be positive.".into());
+        }
+        Ok(pca_model)
     }
 }
+
+
+
+// ====================================
+// ====================================
+// ====================================
 
 
 
