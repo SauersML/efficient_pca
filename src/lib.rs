@@ -1167,6 +1167,313 @@ mod genome_tests {
 }
 
 #[cfg(test)]
+mod model_persistence_tests {
+    use super::*;
+    use ndarray::{array, Array1, Array2};
+    use tempfile::NamedTempFile;
+    use std::error::Error;
+
+    const COMPARISON_TOLERANCE: f64 = 1e-12; // Tolerance for float comparisons
+
+    // Helper function to compare Option<Array1<f64>>
+    fn assert_optional_array1_equals(
+        arr1_opt: Option<&Array1<f64>>,
+        arr2_opt: Option<&Array1<f64>>,
+        context_msg: &str,
+    ) {
+        match (arr1_opt, arr2_opt) {
+            (Some(a1), Some(a2)) => {
+                assert_eq!(a1.dim(), a2.dim(), "Dimension mismatch for {} Array1", context_msg);
+                for (i, (v1, v2)) in a1.iter().zip(a2.iter()).enumerate() {
+                    assert!(
+                        (v1 - v2).abs() < COMPARISON_TOLERANCE,
+                        "Value mismatch at index {} for {}: {} vs {}",
+                        i, context_msg, v1, v2
+                    );
+                }
+            }
+            (None, None) => { /* Both are None, which is considered equal in this context */ }
+            _ => panic!(
+                "Optional Array1 mismatch for {}: one is Some, other is None. Arr1: {:?}, Arr2: {:?}",
+                context_msg, arr1_opt.is_some(), arr2_opt.is_some()
+            ),
+        }
+    }
+
+    // Helper function to compare Option<Array2<f64>>
+    fn assert_optional_array2_equals(
+        arr1_opt: Option<&Array2<f64>>,
+        arr2_opt: Option<&Array2<f64>>,
+        context_msg: &str,
+    ) {
+        match (arr1_opt, arr2_opt) {
+            (Some(a1), Some(a2)) => {
+                assert_eq!(a1.dim(), a2.dim(), "Dimension mismatch for {} Array2", context_msg);
+                for (idx, (v1, v2)) in a1.iter().zip(a2.iter()).enumerate() {
+                    assert!(
+                        (v1 - v2).abs() < COMPARISON_TOLERANCE,
+                        "Value mismatch at flat index {} for {}: {} vs {}",
+                        idx, context_msg, v1, v2
+                    );
+                }
+            }
+            (None, None) => { /* Both are None, considered equal */ }
+            _ => panic!(
+                "Optional Array2 mismatch for {}: one is Some, other is None. Arr1: {:?}, Arr2: {:?}",
+                context_msg, arr1_opt.is_some(), arr2_opt.is_some()
+            ),
+        }
+    }
+
+    #[test]
+    fn test_save_load_after_exact_fit() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: Save/Load after Exact Fit ---");
+        let data = array![
+            [1.0, 2.0, 3.0, 4.5, 5.0],
+            [5.0, 6.0, 7.0, 8.5, 9.0],
+            [9.0, 10.0, 11.0, 12.5, 13.0],
+            [13.0, 14.0, 15.0, 16.5, 17.0],
+            [17.0, 18.0, 19.0, 20.5, 21.0]
+        ];
+        let n_samples = data.nrows();
+        let n_features = data.ncols();
+        // When tolerance is None, fit should determine the max possible components
+        let expected_components = std::cmp::min(n_samples, n_features);
+
+        let mut pca_original = PCA::new();
+        pca_original.fit(data.clone(), None)?; // Fit with exact PCA
+
+        // Pre-save assertions
+        assert!(pca_original.rotation.is_some(), "Original (exact) model rotation should be Some");
+        assert!(pca_original.mean.is_some(), "Original (exact) model mean should be Some");
+        assert!(pca_original.scale.is_some(), "Original (exact) model scale should be Some");
+        assert_eq!(pca_original.rotation.as_ref().unwrap().ncols(), expected_components, "Original (exact) model component count mismatch");
+
+        let temp_file = NamedTempFile::new()?;
+        let file_path = temp_file.path();
+
+        pca_original.save_model(file_path)?;
+        println!("Exact model saved to: {:?}", file_path);
+
+        let pca_loaded = PCA::load_model(file_path)?;
+        println!("Exact model loaded successfully.");
+
+        // 1. Verify loaded model parameters are identical
+        assert_optional_array2_equals(pca_original.rotation.as_ref(), pca_loaded.rotation.as_ref(), "rotation matrix (exact fit)");
+        assert_optional_array1_equals(pca_original.mean.as_ref(), pca_loaded.mean.as_ref(), "mean vector (exact fit)");
+        assert_optional_array1_equals(pca_original.scale.as_ref(), pca_loaded.scale.as_ref(), "scale vector (exact fit)");
+
+        // 2. Verify transformation results are identical
+        let data_to_transform = array![
+            [2.0, 3.0, 4.0, 5.5, 6.0],
+            [6.0, 7.0, 8.0, 9.5, 10.0]
+        ];
+        let transformed_original = pca_original.transform(data_to_transform.clone())?;
+        let transformed_loaded = pca_loaded.transform(data_to_transform.clone())?;
+
+        assert_eq!(transformed_original.dim(), transformed_loaded.dim(), "Transformed data dimension mismatch (exact fit)");
+        for (val_orig, val_load) in transformed_original.iter().zip(transformed_loaded.iter()) {
+            assert!((val_orig - val_load).abs() < COMPARISON_TOLERANCE, "Mismatch in transformed data after load (exact fit): {} vs {}", val_orig, val_load);
+        }
+        println!("Save/Load test for exact fit passed.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_load_after_randomized_fit() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: Save/Load after Randomized Fit ---");
+        let data = array![
+            [1.5, 2.5, 3.5, 4.0, 0.5],
+            [5.5, 6.5, 7.5, 8.0, 1.0],
+            [9.5, 10.5, 11.5, 12.0, 1.5],
+            [13.5, 14.5, 15.5, 16.0, 2.0],
+            [17.5, 18.5, 19.5, 20.0, 2.5]
+        ];
+        let n_components_to_fit = 3;
+
+        let mut pca_original = PCA::new();
+        pca_original.rfit(data.clone(), n_components_to_fit, 10, Some(123), None)?; // Using more oversamples
+
+        // Pre-save assertions
+        assert!(pca_original.rotation.is_some(), "Original (randomized) model rotation should be Some");
+        assert_eq!(pca_original.rotation.as_ref().unwrap().ncols(), n_components_to_fit, "Original (randomized) model component count mismatch");
+
+        let temp_file = NamedTempFile::new()?;
+        let file_path = temp_file.path();
+        pca_original.save_model(file_path)?;
+        println!("Randomized model saved to: {:?}", file_path);
+
+        let pca_loaded = PCA::load_model(file_path)?;
+        println!("Randomized model loaded successfully.");
+
+        // 1. Verify loaded model parameters
+        assert_optional_array2_equals(pca_original.rotation.as_ref(), pca_loaded.rotation.as_ref(), "rotation matrix (randomized fit)");
+        assert_optional_array1_equals(pca_original.mean.as_ref(), pca_loaded.mean.as_ref(), "mean vector (randomized fit)");
+        assert_optional_array1_equals(pca_original.scale.as_ref(), pca_loaded.scale.as_ref(), "scale vector (randomized fit)");
+
+        // 2. Verify transformation results
+        let data_to_transform = array![
+            [2.5, 3.5, 4.5, 5.0, 0.0],
+            [6.5, 7.5, 8.5, 9.0, 1.0]
+        ];
+        let transformed_original = pca_original.transform(data_to_transform.clone())?;
+        let transformed_loaded = pca_loaded.transform(data_to_transform.clone())?;
+
+        assert_eq!(transformed_original.dim(), transformed_loaded.dim(), "Transformed data dimension mismatch (randomized fit)");
+        for (val_orig, val_load) in transformed_original.iter().zip(transformed_loaded.iter()) {
+            assert!((val_orig - val_load).abs() < COMPARISON_TOLERANCE, "Mismatch in transformed data after load (randomized fit): {} vs {}", val_orig, val_load);
+        }
+        println!("Save/Load test for randomized fit passed.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_load_model_with_zero_components() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: Save/Load Model with Zero Components ---");
+        let data = array![ // Data that will likely result in 0 components with high tolerance
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0]
+        ];
+
+        let mut pca_original = PCA::new();
+        // Use a very high tolerance that should mean no components are kept
+        pca_original.fit(data.clone(), Some(0.999999999))?; 
+
+        assert!(pca_original.rotation.is_some(), "Original model (zero components) rotation should be Some");
+        assert_eq!(pca_original.rotation.as_ref().unwrap().ncols(), 0, "Model with no significant variance should have 0 components");
+
+        let temp_file = NamedTempFile::new()?;
+        let file_path = temp_file.path();
+        pca_original.save_model(file_path)?;
+        println!("Zero-component model saved to: {:?}", file_path);
+
+        let pca_loaded = PCA::load_model(file_path)?;
+        println!("Zero-component model loaded successfully.");
+
+        assert_optional_array2_equals(pca_original.rotation.as_ref(), pca_loaded.rotation.as_ref(), "rotation (zero components)");
+        assert_eq!(pca_loaded.rotation.as_ref().unwrap().ncols(), 0, "Loaded model should have 0 components");
+
+        let data_to_transform = array![[1.1, 1.1, 1.1], [2.2, 2.2, 2.2]];
+        let transformed_original = pca_original.transform(data_to_transform.clone())?;
+        let transformed_loaded = pca_loaded.transform(data_to_transform.clone())?;
+        
+        assert_eq!(transformed_original.ncols(), 0, "Original transform output should have 0 columns");
+        assert_eq!(transformed_loaded.ncols(), 0, "Loaded transform output should have 0 columns");
+        assert_eq!(transformed_original.nrows(), data_to_transform.nrows());
+        assert_eq!(transformed_loaded.nrows(), data_to_transform.nrows());
+        
+        println!("Save/Load test for zero-component model passed.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_model_constructor_and_persistence() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: `with_model` Constructor and Persistence ---");
+        let d_features = 4;
+        let k_components = 2;
+        let rotation = Array2::from_shape_vec((d_features, k_components), vec![
+            0.5, 0.5, 
+            -0.5, 0.5, 
+            0.5, -0.5,
+            -0.5, -0.5
+        ])?; // Example orthonormal columns
+        let mean = Array1::from(vec![10.0, 20.0, 30.0, 40.0]);
+        let raw_std_devs = Array1::from(vec![1.0, 0.0000000001, 2.0, 0.0]); // One near-zero, one zero
+
+        let pca_original = PCA::with_model(rotation.clone(), mean.clone(), raw_std_devs.clone())?;
+
+        // Verify internal sanitization of scale
+        let expected_sanitized_scale = array![1.0, 1.0, 2.0, 1.0];
+        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_original.scale.as_ref(), "sanitized scale in with_model");
+
+        let temp_file = NamedTempFile::new()?;
+        let file_path = temp_file.path();
+        pca_original.save_model(file_path)?;
+        println!("Model created with `with_model` saved to: {:?}", file_path);
+        
+        let pca_loaded = PCA::load_model(file_path)?;
+        println!("Model loaded successfully.");
+
+        assert_optional_array2_equals(pca_original.rotation.as_ref(), pca_loaded.rotation.as_ref(), "rotation (with_model)");
+        assert_optional_array1_equals(pca_original.mean.as_ref(), pca_loaded.mean.as_ref(), "mean (with_model)");
+        assert_optional_array1_equals(pca_original.scale.as_ref(), pca_loaded.scale.as_ref(), "scale (with_model, should be sanitized)");
+        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_loaded.scale.as_ref(), "loaded scale should match expected sanitized");
+
+
+        let data_to_transform = array![
+            [11.0, 20.0, 32.0, 40.0], // Orig: [1,0,2,0], Centered: [1,0,2,0], Scaled by [1,1,2,1]: [1,0,1,0]
+            [10.0, 21.0, 30.0, 41.0]  // Orig: [0,1,0,1], Centered: [0,1,0,1], Scaled by [1,1,2,1]: [0,1,0,1]
+        ];
+        // Expected projection for P1 ([1,0,1,0]):
+        // PC1: 1*0.5 + 0*(-0.5) + 1*0.5 + 0*(-0.5) = 0.5 + 0.5 = 1.0
+        // PC2: 1*0.5 + 0*0.5   + 1*(-0.5)+ 0*(-0.5) = 0.5 - 0.5 = 0.0
+        // Expected projection for P2 ([0,1,0,1]):
+        // PC1: 0*0.5 + 1*(-0.5) + 0*0.5 + 1*(-0.5) = -0.5 - 0.5 = -1.0
+        // PC2: 0*0.5 + 1*0.5   + 0*(-0.5)+ 1*(-0.5) =  0.5 - 0.5 =  0.0
+        let expected_transformed = array![[1.0, 0.0], [-1.0, 0.0]];
+        
+        let transformed_loaded = pca_loaded.transform(data_to_transform)?;
+        
+        assert_eq!(transformed_loaded.dim(), (2, k_components), "Transformed data dimension mismatch (with_model)");
+        for r in 0..transformed_loaded.nrows() {
+            for c in 0..transformed_loaded.ncols() {
+                assert!((transformed_loaded[[r,c]] - expected_transformed[[r,c]]).abs() < COMPARISON_TOLERANCE,
+                    "Mismatch at [{},{}] (with_model): {} vs {}", r,c, transformed_loaded[[r,c]], expected_transformed[[r,c]]);
+            }
+        }
+        println!("`with_model` constructor, persistence, and transform test passed.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_model_error_conditions() -> Result<(), Box<dyn Error>> {
+        println!("--- Test: `load_model` Error Conditions ---");
+        let d_features = 3;
+        let k_components = 2;
+        let rotation_valid = Array2::zeros((d_features, k_components));
+        let mean_valid = Array1::zeros(d_features);
+        let scale_valid_sanitized = Array1::ones(d_features);
+
+        // 1. Test loading non-existent file
+        assert!(PCA::load_model("a_surely_non_existent_file.pca_model").is_err(), "Loading non-existent file should fail");
+
+        // 2. Test loading a file that is not a valid bincode PCA model (e.g., an empty file)
+        let empty_temp_file = NamedTempFile::new()?;
+        // File is empty, so deserialization should fail
+        assert!(PCA::load_model(empty_temp_file.path()).is_err(), "Loading an empty file should fail deserialization");
+
+        // 3. Test loading a model with inconsistent dimensions (crafted struct, then saved)
+        let rotation_bad_dim = Array2::zeros((d_features + 1, k_components)); // Mismatched feature count
+        let bad_dim_pca_struct = PCA {
+            rotation: Some(rotation_bad_dim),
+            mean: Some(mean_valid.clone()),
+            scale: Some(scale_valid_sanitized.clone()),
+        };
+        let temp_file_bad_dim = NamedTempFile::new()?;
+        bad_dim_pca_struct.save_model(temp_file_bad_dim.path())?;
+        assert!(PCA::load_model(temp_file_bad_dim.path()).is_err(), "Load should fail for inconsistent dimensions in saved model");
+
+        // 4. Test loading a model with invalid scale vector (e.g., containing zero after it should have been sanitized)
+        // To test load_model's check, we construct a PCA struct with a non-sanitized scale (containing zero)
+        // and save it. load_model should then detect the zero in the scale upon loading.
+        let scale_with_zero = Array1::from_vec(vec![1.0, 0.0, 2.0]);
+        let zero_scale_pca_struct = PCA {
+            rotation: Some(rotation_valid.clone()),
+            mean: Some(mean_valid.clone()),
+            scale: Some(scale_with_zero), // This scale contains a zero
+        };
+        let temp_file_zero_scale = NamedTempFile::new()?;
+        zero_scale_pca_struct.save_model(temp_file_zero_scale.path())?;
+        assert!(PCA::load_model(temp_file_zero_scale.path()).is_err(), "Load should fail for scale vector with zero");
+        
+        println!("`load_model` error condition tests passed.");
+        Ok(())
+    }
+}
+
+
+#[cfg(test)]
 mod pca_tests {
     use std::io::Write;
     use std::process::Command;
