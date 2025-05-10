@@ -9,7 +9,7 @@ repository = "https://github.com/SauersML/efficient_pca"
 readme = "README.md"
 keywords = [
     "pca",
-    "dimensionality-reduction",
+    "genomics",
     "svd",
     "bioinformatics",
     "machine-learning",
