@@ -1535,6 +1535,7 @@ mod model_persistence_tests {
             rotation: Some(rotation_bad_dim),
             mean: Some(mean_valid.clone()),
             scale: Some(scale_valid_sanitized.clone()),
+            explained_variance: None,
         };
         let temp_file_bad_dim = NamedTempFile::new()?;
         bad_dim_pca_struct.save_model(temp_file_bad_dim.path())?;
@@ -1548,6 +1549,7 @@ mod model_persistence_tests {
             rotation: Some(rotation_valid.clone()),
             mean: Some(mean_valid.clone()),
             scale: Some(scale_with_zero), // This scale contains a zero
+            explained_variance: None,
         };
         let temp_file_zero_scale = NamedTempFile::new()?;
         zero_scale_pca_struct.save_model(temp_file_zero_scale.path())?;
@@ -1610,6 +1612,7 @@ mod model_persistence_tests {
             rotation: Some(rotation_valid.clone()),
             mean: Some(mean_valid.clone()),
             scale: Some(scale_with_negative),
+            explained_variance: None,
         };
         let temp_file_neg_scale = NamedTempFile::new()?;
         // Save this struct which has a negative scale.
@@ -1628,6 +1631,7 @@ mod model_persistence_tests {
             rotation: Some(rotation_valid.clone()),
             mean: Some(mean_valid.clone()),
             scale: Some(scale_with_zero),
+            explained_variance: None,
         };
         let temp_file_zero_scale = NamedTempFile::new()?;
         pca_zero_scale.save_model(temp_file_zero_scale.path())?;
