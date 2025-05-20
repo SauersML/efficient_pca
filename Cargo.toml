@@ -1,6 +1,6 @@
 [package]
 name = "efficient_pca"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Erik Garrison <erik.garrison@gmail.com>, SauersML"]
 edition = "2021"
 description = "Principal component computation using SVD and covariance matrix trick"
