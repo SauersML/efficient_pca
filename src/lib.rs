@@ -532,16 +532,23 @@ impl PCA {
 
     /// Saves the current PCA model to a file using bincode.
     ///
-    /// The model must be fitted or loaded (i.e., contain rotation, mean, and scale) for saving.
+    /// The model must contain rotation, mean, and scale components for saving.
+    /// The `explained_variance` field can be `None` (e.g., if the model was created
+    /// via `with_model` and eigenvalues were not supplied).
     ///
     /// * `path` - The file path to save the model to.
     ///
     /// # Errors
-    /// Returns an error if the model is incomplete or if file I/O or serialization fails.
+    /// Returns an error if essential model components (rotation, mean, scale) are missing,
+    /// or if file I/O or serialization fails.
     pub fn save_model<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
-        if self.rotation.is_none() || self.mean.is_none() || self.scale.is_none() || self.explained_variance.is_none() {
-            return Err("Cannot save an incomplete or unfitted PCA model (missing rotation, mean, scale, or explained_variance).".into());
+        // Rotation, mean, and scale are essential for a model to be usable for transformation.
+        if self.rotation.is_none() || self.mean.is_none() || self.scale.is_none() {
+            return Err("Cannot save a PCA model that is missing essential components (rotation, mean, or scale).".into());
         }
+        // explained_variance being None is acceptable, for example, if the model was created
+        // using `with_model` and eigenvalues were not provided or computed.
+        // `load_model` contains further validation for consistency if explained_variance is Some.
         let file = File::create(path.as_ref())
             .map_err(|e| format!("Failed to create file at {:?}: {}", path.as_ref(), e))?;
         let mut writer = BufWriter::new(file); 
