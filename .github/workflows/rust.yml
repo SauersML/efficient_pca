@@ -18,7 +18,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
+        id: install_rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ''
+
+      - name: Get Rust compiler version
+        id: rust_version
+        run: echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
+
+      # Cache for Cargo's downloaded dependencies (registry index, crate files, git repos)
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        id: cache-cargo-deps
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-deps-
+
+      # Cache for the build artifacts (target directory)
+      # This cache is invalidated if Rust version, Cargo.toml, or any Rust source files change.
+      - name: Cache Rust target directory
+        uses: actions/cache@v4
+        id: cache-rust-target
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-
+            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-
+            ${{ runner.os }}-target-
 
       - name: Build
         # Builds the project in release mode with verbose output
