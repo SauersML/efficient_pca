@@ -611,11 +611,10 @@ impl PCA {
             if ev.iter().any(|&val| !val.is_finite() || val < 0.0) { // Variances cannot be negative
                 return Err("Loaded PCA model's explained_variance vector contains invalid (non-finite or negative) values.".into());
             }
-        } else if pca_model.rotation.as_ref().map_or(false, |r| r.ncols() > 0) {
-            // If rotation is present and has components, but explained_variance is None.
-            return Err("Loaded PCA model has rotation components but is missing the corresponding explained_variance data.".into());
         }
-        // If rotation itself is None or has no components (ncols == 0), then explained_variance being None is consistent.
+        // If rotation is Some and has components, but explained_variance is None (e.g. model from `with_model`),
+        // this is an acceptable state. The `explained_variance()` accessor will simply return None.
+        // If rotation itself is None or has no components (ncols == 0), then explained_variance being None is also consistent.
 
         Ok(pca_model)
     }
