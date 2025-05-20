@@ -36,6 +36,9 @@ pub struct PCA {
     /// Loaded models are also validated so scale factors are positive.
     /// Shape: (n_features)
     scale: Option<Array1<f64>>,
+    /// Explained variance for each principal component (eigenvalues of the covariance matrix).
+    /// Shape: (k_components)
+    explained_variance: Option<Array1<f64>>,
 }
 
 impl Default for PCA {
@@ -61,6 +64,7 @@ impl PCA {
             rotation: None,
             mean: None,
             scale: None,
+            explained_variance: None,
         }
     }
 
@@ -123,9 +127,27 @@ impl PCA {
             rotation: Some(rotation),
             mean: Some(mean),
             scale: Some(sanitized_scale_vector),
+            explained_variance: None, // Explained variance is not provided by this constructor directly
         })
     }
 
+    /// Returns a reference to the rotation matrix (principal components), if computed.
+    ///
+    /// The rotation matrix has dimensions (n_features, k_components).
+    /// Returns `None` if the PCA model has not been fitted, or if the rotation matrix
+    /// is not available (e.g., if fitting resulted in zero components).
+    pub fn rotation(&self) -> Option<&Array2<f64>> {
+        self.rotation.as_ref()
+    }
+
+    /// Returns a reference to the explained variance for each principal component.
+    ///
+    /// These are the eigenvalues of the covariance matrix of the scaled data,
+    /// ordered from largest to smallest.
+    /// Returns `None` if the PCA model has not been fitted or if variances are not available.
+    pub fn explained_variance(&self) -> Option<&Array1<f64>> {
+        self.explained_variance.as_ref()
+    }
 
     /// Fits the PCA model to the data using an exact covariance/Gram matrix approach.
     ///
@@ -202,10 +224,13 @@ impl PCA {
 
             if final_rank == 0 {
                 self.rotation = Some(Array2::zeros((n_features, 0)));
+                self.explained_variance = Some(Array1::zeros(0));
             } else {
                 let mut top_eigvecs_owned: Vec<Array1<f64>> = Vec::with_capacity(final_rank);
+                let mut sorted_eigenvalues: Vec<f64> = Vec::with_capacity(final_rank);
                 for i in 0..final_rank {
-                    let mut eig_vec = eig_pairs[i].1.clone();
+                    let (eig_val, mut eig_vec) = (eig_pairs[i].0, eig_pairs[i].1.clone());
+                    sorted_eigenvalues.push(eig_val.max(0.0)); // non-negative eigenvalues
                     let norm = eig_vec.dot(&eig_vec).sqrt();
                     if norm > 1e-9 {
                         eig_vec.mapv_inplace(|x| x / norm);
@@ -217,6 +242,7 @@ impl PCA {
                 let views: Vec<ArrayView1<f64>> = top_eigvecs_owned.iter().map(|v| v.view()).collect();
                 let rotation_matrix = ndarray::stack(Axis(1), &views)?;
                 self.rotation = Some(rotation_matrix);
+                self.explained_variance = Some(Array1::from(sorted_eigenvalues));
             }
         } else {
             // Gram trick path
@@ -248,41 +274,44 @@ impl PCA {
 
             if final_rank == 0 {
                 self.rotation = Some(Array2::zeros((n_features, 0)));
+                self.explained_variance = Some(Array1::zeros(0));
             } else {
                 let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
+                let mut sorted_eigenvalues: Vec<f64> = Vec::with_capacity(final_rank);
                 for i in 0..final_rank {
                     let (eigval, ref u_col) = eig_pairs[i];
+                    sorted_eigenvalues.push(eigval.max(0.0)); // Store the eigenvalue (variance)
                     // Eigenvalue from G = X'X'^T / (N-1)
                     // V_k = (X'^T u_k) / sqrt(eigval_k_gram * (N-1)) should yield unit norm V_k.
                     
-                    // Clamp eigenvalues to a small positive number to prevent division by zero or very small numbers,
-                    // and to avoid skipping components with `continue`.
-                    // Requested components are computed even if their variance contribution is tiny.
-                    let eigval_clamped = eigval.max(1e-12); // Use max so it's at least a small positive.
-                    let lam_sqrt = eigval_clamped.sqrt();
+                    // Clamp eigenvalues to a small positive number for calculations to prevent division by zero or very small numbers.
+                    let eigval_clamped_for_calc = eigval.max(1e-12);
+                    let lam_sqrt = eigval_clamped_for_calc.sqrt();
 
                     let mut axis_i = scaled_data_matrix.t().dot(u_col);
                     
                     // Denominator for scaling axis_i.
                     // Since n_samples >= 2 and lam_sqrt >= sqrt(1e-12), denom will be non-zero.
                     let denom = lam_sqrt * ((n_samples - 1) as f64).sqrt();
-                    axis_i.mapv_inplace(|x| x / denom);
+                    if denom.abs() > 1e-9 { // Avoid division by zero if lam_sqrt is extremely small
+                        axis_i.mapv_inplace(|x| x / denom);
+                    } else {
+                        axis_i.fill(0.0); // If denominator is zero, axis is likely zero or ill-defined
+                    }
                     
                     // Explicitly re-normalize the principal axis to unit length.
-                    // Clamping the eigenvalue might affect
-                    // the implicit normalization of the original formula for V_k.
                     // Standard PCA components are unit vectors.
                     let norm_val = axis_i.dot(&axis_i).sqrt();
                     if norm_val > 1e-9 { // Avoid division by zero/small norm if axis_i is effectively zero
                         axis_i.mapv_inplace(|x| x / norm_val);
                     } else {
-                        // If the axis vector is effectively zero (e.g., u_col was orthogonal to all data,
-                        // or numerical precision resulted in a zero vector), represent it as such.
+                        // If the axis vector is effectively zero, represent it as such.
                         axis_i.fill(0.0);
                     }
                     rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
                 }
                 self.rotation = Some(rotation_matrix);
+                self.explained_variance = Some(Array1::from(sorted_eigenvalues));
             }
         }
         Ok(())
@@ -408,7 +437,7 @@ impl PCA {
         let mut num_components_to_keep = effective_k_target;
 
         if let Some(t_val) = tol {
-            if !s_b_singular_values.is_empty() && t_val > 0.0 && t_val <= 1.0 { // Ensure tol is a valid fraction
+            if !s_b_singular_values.is_empty() && t_val > 0.0 && t_val <= 1.0 { // tol is a valid fraction
                 let largest_s_val = s_b_singular_values[0];
                 if largest_s_val > 1e-9 {
                     let threshold_s_val = t_val * largest_s_val;
@@ -426,9 +455,23 @@ impl PCA {
 
         if num_components_to_keep == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
+            self.explained_variance = Some(Array1::zeros(0));
         } else {
             let final_rotation_matrix = rotation_full_l.slice(s![.., ..num_components_to_keep]).to_owned();
             self.rotation = Some(final_rotation_matrix);
+
+            // Calculate explained variance from the singular values
+            // Eigenvalues of covariance matrix are s_i^2 / (N-1)
+            // s_b_singular_values are already sorted in descending order by ndarray_linalg::SVDInto
+            if n_samples > 1 {
+                let variances: Array1<f64> = s_b_singular_values
+                    .slice(s![..num_components_to_keep])
+                    .mapv(|s| s.powi(2) / ((n_samples - 1) as f64));
+                self.explained_variance = Some(variances);
+            } else {
+                // n_samples should be >= 2 due to earlier checks, but handle defensively for variance calculation
+                self.explained_variance = Some(Array1::from_elem(num_components_to_keep, f64::NAN));
+            }
         }
 
         Ok(())
@@ -496,8 +539,8 @@ impl PCA {
     /// # Errors
     /// Returns an error if the model is incomplete or if file I/O or serialization fails.
     pub fn save_model<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
-        if self.rotation.is_none() || self.mean.is_none() || self.scale.is_none() {
-            return Err("Cannot save an incomplete or unfitted PCA model.".into());
+        if self.rotation.is_none() || self.mean.is_none() || self.scale.is_none() || self.explained_variance.is_none() {
+            return Err("Cannot save an incomplete or unfitted PCA model (missing rotation, mean, scale, or explained_variance).".into());
         }
         let file = File::create(path.as_ref())
             .map_err(|e| format!("Failed to create file at {:?}: {}", path.as_ref(), e))?;
@@ -545,6 +588,26 @@ impl PCA {
         if scale.iter().any(|&val| !val.is_finite() || val <= 0.0) {
             return Err("Loaded PCA model's scale vector contains invalid (non-finite, zero, or negative) values. Scale values must be positive.".into());
         }
+
+        // Validate explained_variance if present
+        if let Some(ev) = pca_model.explained_variance.as_ref() {
+            if let Some(rot) = pca_model.rotation.as_ref() {
+                if ev.len() != rot.ncols() {
+                    return Err(format!(
+                        "Loaded PCA model has inconsistent dimensions: explained_variance length ({}) does not match rotation matrix number of components ({}).",
+                        ev.len(), rot.ncols()
+                    ).into());
+                }
+            } else { // Should not happen if rotation is required for a valid model
+                 return Err("Loaded PCA model has explained_variance but no rotation matrix.".into());
+            }
+            if ev.iter().any(|&val| !val.is_finite() || val < 0.0) { // Variances cannot be negative
+                return Err("Loaded PCA model's explained_variance vector contains invalid (non-finite or negative) values.".into());
+            }
+        } else if pca_model.rotation.is_some() && pca_model.rotation.as_ref().map_or(false, |r| r.ncols() > 0) {
+            // ???
+        }
+
         Ok(pca_model)
     }
 }
@@ -2268,7 +2331,7 @@ mod hgdp_1kgp_data_pca_tests {
             // Check if this entry's filename is one we're looking to extract
             if files_needing_extraction_from_tar.contains(&entry_filename.as_str()) {
                 let final_extraction_path = extraction_dir.join(&entry_filename);
-                // Unpack even if it exists, to ensure it's from the current archive version if logic implies overwrite
+                // Unpack even if it exists, so that it's from the current archive version if logic implies overwrite
                 // Or, add a check here: if !final_extraction_path.exists()
                 if !final_extraction_path.exists() {
                     if let Some(parent_dir) = final_extraction_path.parent() {
@@ -2284,7 +2347,7 @@ mod hgdp_1kgp_data_pca_tests {
             }
         }
         
-        // Rebuild paths_to_return to ensure it only contains paths to files that now exist
+        // Rebuild paths_to_return so it only contains paths to files that now exist
         paths_to_return.clear();
         for target_filename_in_archive in target_files_in_archive {
             let expected_output_path = extraction_dir.join(target_filename_in_archive);
