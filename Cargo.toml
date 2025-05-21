@@ -1,6 +1,6 @@
 [package]
 name = "efficient_pca"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Erik Garrison <erik.garrison@gmail.com>, SauersML"]
 edition = "2021"
 description = "Principal component computation using SVD and covariance matrix trick"
@@ -32,7 +32,7 @@ rand = "0.8.5"
 rand_chacha = "0.3.1"
 sysinfo = "0.33.1"
 rand_distr = "0.4.3"
-tempfile = "3.19.1"
+tempfile = "3.20.0"
 bincode = { version = "2.0.1", features = ["serde"] }
 serde = { version = "1.0.219", features = ["derive"] }
 
