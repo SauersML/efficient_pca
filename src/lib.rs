@@ -317,164 +317,301 @@ impl PCA {
         Ok(())
     }
 
-    /// Fits the PCA model using a randomized SVD approach.
+    /// Fits the PCA model using a randomized SVD approach and returns the transformed data.
     ///
-    /// This computes the mean, (sanitized) scaling factors, and an approximate rotation
-    /// (principal components). This method is designed to be more efficient for
-    /// large datasets by avoiding the explicit formation of the full covariance matrix
-    /// and instead working with smaller "sketched" matrices. The resulting principal
-    /// components (columns of the rotation matrix) are normalized to unit length.
+    /// This method computes the mean, (sanitized) scaling factors, and an approximate rotation
+    /// (principal components matrix). It's designed for efficiency with large datasets
+    /// by working with smaller "sketched" matrices rather than forming the full covariance matrix.
     ///
-    /// * `x` - Input data as a 2D array (n_samples, n_features).
-    /// * `n_components` - Number of principal components to keep.
-    /// * `n_oversamples` - Number of additional random dimensions to sample for better accuracy
-    ///                     (a common value is 5-10, e.g., `n_oversamples = 10`).
-    /// * `seed` - Optional seed for reproducibility of the random number generator.
-    /// * `tol` - Optional tolerance. If Some, components are kept if their singular value
-    ///           is > `tol * largest_singular_value`. The number of components will be
-    ///           at most `n_components`.
+    /// The randomized SVD adaptively chooses its sketching strategy:
+    /// - If `n_features <= n_samples`, it sketches the input matrix `A` directly.
+    /// - If `n_features > n_samples`, it sketches the transpose `A^T`.
+    /// This is an internal SVD step operates on a matrix of dimensions `l x min(n_samples, n_features)`,
+    /// where `l` is the sketch size, analogous to the Gram trick in exact PCA.
+    ///
+    /// The resulting principal components (columns of the rotation matrix stored in `self.rotation`)
+    /// are normalized to unit length.
+    ///
+    /// * `x` - Input data as a 2D array with shape (n_samples, n_features). This matrix will be
+    ///         consumed and modified in place (centered and scaled).
+    /// * `n_components_requested` - The target number of principal components to keep.
+    /// * `n_oversamples` - Number of additional random dimensions to sample for improved accuracy
+    ///                     of the randomized SVD (e.g., 10).
+    /// * `seed` - Optional seed for the random number generator for reproducibility.
+    /// * `tol` - Optional tolerance (0.0 to 1.0). If `Some(t_val)`, components are kept if their
+    ///           corresponding singular value `s_i` satisfies `s_i > t_val * s_max`, where `s_max`
+    ///           is the largest singular value. The number of components kept will be at most
+    ///           `n_components_requested`. If `None`, tolerance-based filtering is skipped.
+    ///
+    /// # Returns
+    /// A `Result` containing:
+    /// - `Ok(Array2<f64>)`: The transformed data (principal component scores) of shape
+    ///                       (n_samples, k_components_kept), where `k_components_kept` is the
+    ///                       actual number of components retained after filtering.
+    /// - `Err(Box<dyn Error>)`: If an error occurs (e.g., input validation, matrix decomposition).
     ///
     /// # Errors
     /// Returns an error if:
-    /// - The input matrix has zero dimensions, fewer than 2 samples.
-    /// - `n_components` is 0.
-    /// - SVD or QR decomposition fails during the randomized algorithm.
+    /// - The input matrix `x` has zero samples or zero features.
+    /// - `n_samples < 2`.
+    /// - `n_components_requested` is 0.
+    /// - Internal SVD or QR decomposition fails.
     pub fn rfit(
         &mut self,
-        mut x: Array2<f64>, 
-        n_components: usize,
+        mut x_input_data: Array2<f64>, // N x D (n_samples x n_features)
+        n_components_requested: usize,
         n_oversamples: usize,
         seed: Option<u64>,
         tol: Option<f64>,
-    ) -> Result<(), Box<dyn Error>> {
-        let n_samples = x.nrows();
-        let n_features = x.ncols();
+    ) -> Result<Array2<f64>, Box<dyn Error>> {
+        let n_samples = x_input_data.nrows();
+        let n_features = x_input_data.ncols();
 
+        // --- 1. Input Validations ---
         if n_samples == 0 || n_features == 0 {
             return Err("Input matrix has zero samples or zero features.".into());
         }
         if n_samples < 2 {
-            return Err("Input matrix must have at least 2 samples.".into());
+            return Err("Input matrix must have at least 2 samples for PCA.".into());
         }
-        if n_components == 0 {
-            return Err("Number of components (n_components) must be greater than 0.".into());
+        if n_components_requested == 0 {
+            return Err("Number of requested components (n_components_requested) must be greater than 0.".into());
         }
 
-        let mean_vector = x.mean_axis(Axis(0)).ok_or("Failed to compute mean")?;
+        // --- 2. Mean Centering and Scaling ---
+        // Calculate and store the mean vector for each feature.
+        let mean_vector = x_input_data.mean_axis(Axis(0)).ok_or("Failed to compute mean vector.")?;
         self.mean = Some(mean_vector.clone());
-        x -= &mean_vector; 
+        x_input_data -= &mean_vector; // Center data in place.
 
-        let std_dev_vector_original = x.map_axis(Axis(0), |column| column.std(0.0));
+        // Calculate and store the sanitized standard deviation for each feature.
+        let std_dev_vector_original = x_input_data.map_axis(Axis(0), |column| column.std(0.0));
         let sanitized_scale_vector = std_dev_vector_original
-            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
-        self.scale = Some(sanitized_scale_vector.clone()); 
-        x /= &sanitized_scale_vector; 
-        let a = x; 
+            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val }); // Avoid division by zero/small std devs.
+        self.scale = Some(sanitized_scale_vector.clone());
+        x_input_data /= &sanitized_scale_vector; // Scale data in place.
 
-        let k_target = n_components;
+        // `centered_scaled_data_a` is the N x D matrix A used for randomized SVD.
+        let centered_scaled_data_a = x_input_data;
+
+        // --- 3. Determine Target Components and Sketch Size ---
+        // `k_target_components` is the maximum number of components we aim for before tolerance filtering.
+        let k_target_components = n_components_requested;
         let max_possible_rank = std::cmp::min(n_samples, n_features);
-         if max_possible_rank == 0 { 
-            return Err("Matrix has zero effective rank.".into());
+
+        if max_possible_rank == 0 {
+            // This case implies n_features or n_samples is 0, should have been caught.
+            self.rotation = Some(Array2::zeros((n_features, 0)));
+            self.explained_variance = Some(Array1::zeros(0));
+            return Ok(Array2::zeros((n_samples, 0))); // N x 0 PC scores
         }
 
-        let l_sketch_size_ideal = k_target + n_oversamples;
-        let mut l_sketch_size = std::cmp::min(l_sketch_size_ideal, max_possible_rank);
-        l_sketch_size = std::cmp::max(l_sketch_size, 1); 
-        l_sketch_size = std::cmp::max(l_sketch_size, std::cmp::min(k_target, max_possible_rank));
+        // `l_sketch_components` is the number of components in the sketch (k_target + oversamples).
+        // It's capped by `max_possible_rank`.
+        let l_sketch_components_ideal = k_target_components + n_oversamples;
+        let mut l_sketch_components = std::cmp::min(l_sketch_components_ideal, max_possible_rank);
+        l_sketch_components = std::cmp::max(l_sketch_components, 1); // Must be at least 1.
+        // Also make sure sketch size is at least k_target (if k_target <= max_possible_rank).
+        l_sketch_components = std::cmp::max(l_sketch_components, std::cmp::min(k_target_components, max_possible_rank));
+        
+        if l_sketch_components == 0 { // Should not happen if k_target_components > 0
+            self.rotation = Some(Array2::zeros((n_features, 0)));
+            self.explained_variance = Some(Array1::zeros(0));
+            return Ok(Array2::zeros((n_samples, 0)));
+        }
 
-
-        const N_POWER_ITERATIONS: usize = 2; 
-
+        // --- 4. Initialize RNG ---
+        const N_POWER_ITERATIONS: usize = 2; // Number of power iterations for sketch refinement.
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
-            None => ChaCha8Rng::from_rng(rand::thread_rng()).map_err(|e| e.to_string())?,
+            None => ChaCha8Rng::from_rng(rand::thread_rng()).map_err(|e| format!("Failed to initialize RNG: {}", e))?,
         };
 
-        let a_op = a.t().as_standard_layout().to_owned(); 
-        let (_dim_op_m_feat, dim_op_n_samp) = a_op.dim(); 
+        // --- 5. Adaptive Randomized SVD Core ---
+        // These will store the results from either sketching strategy.
+        let sketched_rotation_matrix_d_x_l: Array2<f64>; // Shape: (n_features, l_effective_components)
+        let singular_values_from_projected_b: Array1<f64>; // Singular values of the projected matrix B or B'
 
-        let omega = Array2::from_shape_fn((dim_op_n_samp, l_sketch_size), |_| {
-            rng.sample(Normal::new(0.0, 1.0).unwrap())
-        });
+        if n_features <= n_samples {
+            // --- Strategy 1: D <= N (Fewer features than samples, or D=N) ---
+            // Sketch A (centered_scaled_data_a, N x D) directly.
+            // Random projection matrix Omega' will be D x l_sketch_components.
+            let omega_prime_shape = (n_features, l_sketch_components);
+            let omega_prime_random_matrix = Array2::from_shape_fn(omega_prime_shape, |_| {
+                rng.sample(Normal::new(0.0, 1.0).unwrap())
+            });
 
-        let mut q_basis = a_op.dot(&omega); 
+            // Q_prime_basis = A * Omega' (N x l_sketch_components)
+            let mut q_prime_basis = centered_scaled_data_a.dot(&omega_prime_random_matrix);
+            if q_prime_basis.ncols() == 0 {
+                return Err("Sketch Q'_basis (from A) has zero columns before QR.".into());
+            }
+            q_prime_basis = q_prime_basis.qr().map_err(|e| format!("QR decomposition of Q' failed: {}", e))?.0;
 
-        if q_basis.ncols() == 0 { 
-            return Err("Initial sketch Q_basis has zero columns. This might happen if l_sketch_size is zero or A_op leads to an all-zero sketch.".into());
+            // Power iterations for refining Q'
+            for _ in 0..N_POWER_ITERATIONS {
+                if q_prime_basis.ncols() == 0 { break; } // Sketch might have collapsed
+                // W_prime = A^T * Q' (D x l_sketch_components)
+                let w_prime_intermediate = centered_scaled_data_a.t().dot(&q_prime_basis);
+                if w_prime_intermediate.ncols() == 0 { break; }
+                let w_prime_ortho_basis = w_prime_intermediate.qr().map_err(|e| format!("QR decomposition of W' failed: {}", e))?.0;
+
+                if w_prime_ortho_basis.ncols() == 0 { break; }
+                // Z_prime = A * W'_ortho (N x l_sketch_components)
+                let z_prime_intermediate = centered_scaled_data_a.dot(&w_prime_ortho_basis);
+                if z_prime_intermediate.ncols() == 0 { break; }
+                q_prime_basis = z_prime_intermediate.qr().map_err(|e| format!("QR decomposition of Z' failed: {}", e))?.0;
+            }
+            
+            if q_prime_basis.ncols() == 0 {
+                return Err("Refined sketch Q'_basis (from A) has zero columns after power iterations.".into());
+            }
+
+            // B_prime_projected = (Q')^T * A (l_sketch_components x D)
+            let b_prime_projected = q_prime_basis.t().dot(&centered_scaled_data_a);
+
+            // SVD of B_prime_projected: B' = U_B' * S_B' * (V_B')^T
+            // We need V_B' (D x k_effective_l), whose columns are the principal axes.
+            let svd_result_b_prime = b_prime_projected.svd_into(false, true) // compute_u=false, compute_v=true
+                .map_err(|e| format!("SVD of B' (from A sketch) failed: {}", e))?;
+            
+            singular_values_from_projected_b = svd_result_b_prime.1; // These are S_B'
+            let vt_b_prime_matrix = svd_result_b_prime.2.ok_or("SVD V_B'^T not computed from B' (A sketch)")?;
+            
+            // rotation is V_B'
+            sketched_rotation_matrix_d_x_l = vt_b_prime_matrix.t().to_owned();
+
+        } else {
+            // --- Strategy 2: D > N (More features than samples) ---
+            // Sketch A^T (current method in original code).
+            // A_transposed is D x N.
+            let a_transposed = centered_scaled_data_a.t().as_standard_layout().to_owned();
+
+            // Random projection matrix Omega is N x l_sketch_components.
+            let omega_shape = (n_samples, l_sketch_components);
+            let omega_random_matrix = Array2::from_shape_fn(omega_shape, |_| {
+                rng.sample(Normal::new(0.0, 1.0).unwrap())
+            });
+
+            // Q_basis = A^T * Omega (D x l_sketch_components)
+            let mut q_basis = a_transposed.dot(&omega_random_matrix);
+             if q_basis.ncols() == 0 {
+                return Err("Initial sketch Q_basis (from A^T) has zero columns before QR.".into());
+            }
+            q_basis = q_basis.qr().map_err(|e| format!("QR decomposition of Q (A^T sketch) failed: {}", e))?.0;
+
+            // Power iterations for refining Q
+            for _ in 0..N_POWER_ITERATIONS {
+                if q_basis.ncols() == 0 { break; } // Sketch might have collapsed
+                // W_basis = (A^T)^T * Q_basis = A * Q_basis (N x l_sketch_components)
+                let w_intermediate = a_transposed.t().dot(&q_basis);
+                if w_intermediate.ncols() == 0 { break; }
+                let w_ortho_basis = w_intermediate.qr().map_err(|e| format!("QR decomposition of W (A^T sketch) failed: {}", e))?.0;
+
+                if w_ortho_basis.ncols() == 0 { break; }
+                // Z_intermediate = A^T * W_ortho_basis (D x l_sketch_components)
+                let z_intermediate = a_transposed.dot(&w_ortho_basis);
+                if z_intermediate.ncols() == 0 { break; }
+                q_basis = z_intermediate.qr().map_err(|e| format!("QR decomposition of Z (A^T sketch) failed: {}", e))?.0;
+            }
+
+            if q_basis.ncols() == 0 {
+                return Err("Refined sketch Q_basis (from A^T) has zero columns after power iterations.".into());
+            }
+
+            // B_projected = Q_basis^T * A^T (l_sketch_components x N)
+            let b_projected = q_basis.t().dot(&a_transposed);
+
+            // SVD of B_projected: B = U_B * S_B * (V_B)^T
+            // We need U_B (l_sketch_components x k_effective_l).
+            let svd_result_b = b_projected.svd_into(true, false) // compute_u=true, compute_v=false
+                .map_err(|e| format!("SVD of B (from A^T sketch) failed: {}", e))?;
+
+            singular_values_from_projected_b = svd_result_b.1; // These are S_B
+            let u_b_matrix = svd_result_b.0.ok_or("SVD U_B not computed from B (A^T sketch)")?;
+            
+            // Principal components are Q_basis * U_B_matrix
+            sketched_rotation_matrix_d_x_l = q_basis.dot(&u_b_matrix);
         }
-        q_basis = q_basis.qr()?.0; 
 
-        for _ in 0..N_POWER_ITERATIONS {
-            if q_basis.ncols() == 0 { break; } 
-            let w_intermediate = a_op.t().dot(&q_basis); 
-            if w_intermediate.ncols() == 0 { break; }
-            let w_ortho = w_intermediate.qr()?.0;
-
-            if w_ortho.ncols() == 0 { break; }
-            let z_intermediate = a_op.dot(&w_ortho);
-            if z_intermediate.ncols() == 0 { break; }
-            q_basis = z_intermediate.qr()?.0;
-        }
+        // --- 6. Post-Sketching: Normalize, Select Components, Update Model ---
+        let mut rotation_matrix_normalized_d_x_l = sketched_rotation_matrix_d_x_l;
         
-        let b_projected = q_basis.t().dot(&a_op); 
+        // we have columns to work with
+        if rotation_matrix_normalized_d_x_l.ncols() == 0 {
+            self.rotation = Some(Array2::zeros((n_features, 0)));
+            self.explained_variance = Some(Array1::zeros(0));
+            return Ok(Array2::zeros((n_samples, 0)));
+        }
 
-        let (u_b_opt, s_b_singular_values, _vt_b_opt) = b_projected.svd_into(true, false)
-            .map_err(|e| format!("SVD of small matrix B failed: {}", e))?;
-        let u_b = u_b_opt.ok_or("SVD U_B not computed from small matrix B")?;
-
-        let mut rotation_full_l = q_basis.dot(&u_b); 
-
-        for mut col in rotation_full_l.columns_mut() {
-            let norm = col.dot(&col).sqrt();
-            if norm > 1e-9 {
-                col.mapv_inplace(|v| v / norm);
+        // Normalize columns of the D x l (or D x k_eff_l) rotation matrix
+        for mut column_vec in rotation_matrix_normalized_d_x_l.columns_mut() {
+            let norm_value = column_vec.dot(&column_vec).sqrt();
+            if norm_value > 1e-9 {
+                column_vec.mapv_inplace(|val| val / norm_value);
             } else {
-                col.fill(0.0); 
+                column_vec.fill(0.0); // Zero out columns with no magnitude (e.g. if k_eff_l < l_sketch_components)
             }
         }
-        
-        let effective_k_target = std::cmp::min(k_target, rotation_full_l.ncols());
-        let mut num_components_to_keep = effective_k_target;
 
-        if let Some(t_val) = tol {
-            if !s_b_singular_values.is_empty() && t_val > 0.0 && t_val <= 1.0 { // tol is a valid fraction
-                let largest_s_val = s_b_singular_values[0];
-                if largest_s_val > 1e-9 {
-                    let threshold_s_val = t_val * largest_s_val;
-                    let rank_by_tol = s_b_singular_values.iter()
-                                        .take(effective_k_target) 
-                                        .take_while(|&&s| s > threshold_s_val)
-                                        .count();
-                    num_components_to_keep = rank_by_tol;
-                } else { 
-                    num_components_to_keep = 0;
+        // Determine the final number of components to keep based on k_target and tolerance
+        let effective_l_dim_from_svd = rotation_matrix_normalized_d_x_l.ncols();
+        let mut n_components_to_keep = std::cmp::min(k_target_components, effective_l_dim_from_svd);
+
+        if let Some(tolerance_value) = tol {
+            // Apply tolerance filtering only if singular values are available and tol is valid (0.0 < t <= 1.0)
+            if !singular_values_from_projected_b.is_empty() && tolerance_value > 0.0 && tolerance_value <= 1.0 {
+                let largest_singular_value = singular_values_from_projected_b[0]; // SVD means they are sorted
+                if largest_singular_value > 1e-9 {
+                    let singular_value_threshold = tolerance_value * largest_singular_value;
+                    let rank_by_tolerance = singular_values_from_projected_b.iter()
+                        .take(effective_l_dim_from_svd) // Consider only up to available components
+                        .take_while(|&&s_val| s_val > singular_value_threshold)
+                        .count();
+                    n_components_to_keep = std::cmp::min(n_components_to_keep, rank_by_tolerance);
+                } else {
+                    n_components_to_keep = 0; // All singular values are effectively zero
                 }
             }
+            // If tol is Some but invalid (e.g. <0 or >1), we currently don't change n_components_to_keep further.
+            // It remains capped by k_target_components and effective_l_dim_from_svd.
         }
-        num_components_to_keep = std::cmp::min(num_components_to_keep, rotation_full_l.ncols());
+        // Final cap by number of available sketched components after SVD
+        n_components_to_keep = std::cmp::min(n_components_to_keep, effective_l_dim_from_svd);
 
-        if num_components_to_keep == 0 {
+
+        // Update the PCA model (self)
+        if n_components_to_keep == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
         } else {
-            let final_rotation_matrix = rotation_full_l.slice(s![.., ..num_components_to_keep]).to_owned();
-            self.rotation = Some(final_rotation_matrix);
+            let final_rotation_matrix_d_x_k = rotation_matrix_normalized_d_x_l
+                .slice(s![.., ..n_components_to_keep])
+                .to_owned();
+            self.rotation = Some(final_rotation_matrix_d_x_k);
 
-            // Calculate explained variance from the singular values
-            // Eigenvalues of covariance matrix are s_i^2 / (N-1)
-            // s_b_singular_values are already sorted in descending order by ndarray_linalg::SVDInto
+            // Calculate and store explained variance
             if n_samples > 1 {
-                let variances: Array1<f64> = s_b_singular_values
-                    .slice(s![..num_components_to_keep])
-                    .mapv(|s| s.powi(2) / ((n_samples - 1) as f64));
+                let selected_singular_values = singular_values_from_projected_b.slice(s![..n_components_to_keep]);
+                let variances = selected_singular_values.mapv(|s_val| s_val.powi(2) / ((n_samples - 1) as f64));
                 self.explained_variance = Some(variances);
             } else {
-                // n_samples should be >= 2 due to earlier checks, but handle defensively for variance calculation
-                self.explained_variance = Some(Array1::from_elem(num_components_to_keep, f64::NAN));
+                // This case should be caught by earlier n_samples < 2 validation
+                self.explained_variance = Some(Array1::from_elem(n_components_to_keep, f64::NAN));
             }
         }
 
-        Ok(())
+        // --- 7. Calculate and Return Principal Component Scores for the Input Data ---
+        // self.rotation is now Some(D x k_final_matrix) or Some(D x 0 matrix)
+        let rotation_matrix_for_transform = self.rotation.as_ref()
+            .expect("Internal error: self.rotation should be Some at this point.");
+
+        // centered_scaled_data_a is N x D
+        // rotation_matrix_for_transform is D x k_components_to_keep
+        // transformed_principal_components will be N x k_components_to_keep
+        let transformed_principal_components = centered_scaled_data_a.dot(rotation_matrix_for_transform);
+
+        Ok(transformed_principal_components)
     }
 
     /// Applies the PCA transformation to the given data.
