@@ -882,40 +882,36 @@ mod genome_tests {
         let mut pca = PCA::new();
         
         match pca.rfit(
-            data_matrix.clone(),
-            n_components,
-            5, // oversampling parameter
-            Some(42), // seed
-            None, // no variance tolerance
-        ) {
-            Ok(()) => {
-                println!("PCA computation successful");
-                
-                // Transform data to get PC coordinates
-                let transformed = match pca.transform(data_matrix.clone()) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        panic!("PCA transformation failed: {}", e);
-                    }
-                };
-                
-                // Check for NaN values
-                let nan_count_unfiltered = transformed.iter().filter(|&&x| x.is_nan()).count();
-                let total_values = transformed.nrows() * transformed.ncols();
-                
-                println!("NaN check: {}/{} values are NaN ({:.2}%)", 
-                         nan_count_unfiltered, total_values, 
-                         100.0 * nan_count_unfiltered as f64 / total_values as f64);
-                
-                // Print first few PC values for inspection
-                println!("First 3 rows of PC values:");
-                for i in 0..3 {
-                    print!("Row {}: ", i);
-                    for j in 0..n_components {
-                        print!("{:.6} ", transformed[[i, j]]);
-                    }
-                    println!();
-                }
+            data_matrix.clone(), // data_matrix is consumed by rfit
+            n_components,
+            5, // oversampling parameter
+            Some(42), // seed
+            None, // no variance tolerance
+        ) {
+            Ok(transformed) => { // rfit now returns the transformed principal components directly
+                println!("PCA rfit computation successful, transformed PCs obtained.");
+                
+                // The `transformed` variable now holds the PC coordinates.
+                // The subsequent explicit call to pca.transform for this data is no longer needed.
+                
+                // Check for NaN values
+                let nan_count_unfiltered = transformed.iter().filter(|&&x| x.is_nan()).count();
+                let total_values = transformed.nrows() * transformed.ncols();
+                
+                println!("NaN check: {}/{} values are NaN ({:.2}%)", 
+                         nan_count_unfiltered, total_values, 
+                         100.0 * nan_count_unfiltered as f64 / total_values as f64);
+                
+                // Print first few PC values for inspection
+                println!("First 3 rows of PC values:");
+                // Ensure we don't panic if less than 3 rows or less than n_components are available
+                for i in 0..std::cmp::min(3, transformed.nrows()) {
+                    print!("Row {}: ", i);
+                    for j in 0..std::cmp::min(n_components, transformed.ncols()) {
+                        print!("{:.6} ", transformed[[i, j]]);
+                    }
+                    println!();
+                }
 
                 
                 // Try the process with filtering rare variants
@@ -948,32 +944,33 @@ mod genome_tests {
                     }
                     
                     // Run PCA on filtered data
-                    let mut pca_filtered = PCA::new();
-                    match pca_filtered.rfit(
-                        filtered_matrix.clone(),
-                        n_components,
-                        5,
-                        Some(42),
-                        None,
-                    ) {
-                        Ok(()) => {
-                            let transformed_filtered = pca_filtered.transform(filtered_matrix).unwrap();
-                            let nan_count_filtered = transformed_filtered.iter().filter(|&&x| x.is_nan()).count();
-                            println!("Filtered PCA NaN check: {}/{} values are NaN", 
-                                    nan_count_filtered, transformed_filtered.len());
-                            
-                            // Print the first 3 rows of filtered PC values to demonstrate they are valid
-                            println!("First 3 rows of FILTERED PC values:");
-                            for i in 0..3 {
-                                print!("Row {}: ", i);
-                                for j in 0..n_components {
-                                    print!("{:.6} ", transformed_filtered[[i, j]]);
-                                }
-                                println!();
-                            }
-                            
-                            assert_eq!(nan_count_filtered, 0, "Filtered PCA produced NaN values");
-                        },
+                    let mut pca_filtered = PCA::new();
+                    match pca_filtered.rfit(
+                        filtered_matrix, // filtered_matrix is consumed by rfit
+                        n_components,
+                        5,
+                        Some(42),
+                        None,
+                    ) {
+                        Ok(transformed_filtered) => { // rfit now returns transformed PCs
+                            // let transformed_filtered = pca_filtered.transform(filtered_matrix).unwrap(); // This is now redundant
+                            let nan_count_filtered = transformed_filtered.iter().filter(|&&x| x.is_nan()).count();
+                            println!("Filtered PCA NaN check: {}/{} values are NaN", 
+                                    nan_count_filtered, transformed_filtered.len());
+                            
+                            // Print the first 3 rows of filtered PC values to demonstrate they are valid
+                            println!("First 3 rows of FILTERED PC values:");
+                                // Ensure we don't panic if less than 3 rows or less than n_components are available
+                            for i in 0..std::cmp::min(3, transformed_filtered.nrows()) {
+                                print!("Row {}: ", i);
+                                for j in 0..std::cmp::min(n_components, transformed_filtered.ncols()) {
+                                    print!("{:.6} ", transformed_filtered[[i, j]]);
+                                }
+                                println!();
+                            }
+                            
+                            assert_eq!(nan_count_filtered, 0, "Filtered PCA produced NaN values");
+                        },
                         Err(e) => {
                             panic!("Filtered PCA computation failed: {}", e);
                         }
@@ -1032,17 +1029,12 @@ mod genome_tests {
         let n_oversamples = 5;
         let seed = Some(42_u64);
 
-        // Fit PCA with rfit
-        let start_pca = Instant::now();
-        pca.rfit(data.clone(), n_components, n_oversamples, seed, None)?;
-        let pca_duration = start_pca.elapsed();
-        println!("Randomized PCA fit completed in {:.2?}", pca_duration);
-
-        // Apply PCA transformation
-        let start_transform = Instant::now();
-        let transformed = pca.transform(data)?;
-        let transform_duration = start_transform.elapsed();
-        println!("PCA transform completed in {:.2?}", transform_duration);
+        // Fit PCA with rfit and get transformed data
+        let start_pca_rfit = Instant::now();
+        // rfit consumes the input data matrix.
+        let transformed = pca.rfit(data, n_components, n_oversamples, seed, None)?;
+        let pca_rfit_duration = start_pca_rfit.elapsed();
+        println!("Randomized PCA rfit (which now includes transformation) completed in {:.2?}", pca_rfit_duration);
 
         // Basic dimensional checks
         assert_eq!(
@@ -1264,9 +1256,10 @@ mod genome_tests {
         );
 
         // Now the rfit method
-        let mut rust_pca_rfit = PCA::new();
-        rust_pca_rfit.rfit(data.clone(), n_components, 5, Some(42_u64), None)?;
-        let rust_transformed_rfit = rust_pca_rfit.transform(data.clone())?;
+        let mut rust_pca_rfit = PCA::new();
+        // rfit consumes data and returns the transformed PCs.
+        // Since `data` is used for both fit and rfit tests, we must clone it for rfit.
+        let rust_transformed_rfit = rust_pca_rfit.rfit(data.clone(), n_components, 5, Some(42_u64), None)?;
 
         println!("\nCorrelations for rfit method:");
         println!("Component | Correlation | Required | Status");
@@ -1521,7 +1514,9 @@ mod model_persistence_tests {
         let n_components_to_fit = 3;
 
         let mut pca_original = PCA::new();
-        pca_original.rfit(data.clone(), n_components_to_fit, 10, Some(123), None)?; // Using more oversamples
+        // rfit now returns the transformed PCs, but we only need to fit the model here.
+        // The data is cloned as it's used to populate pca_original.
+        let _ = pca_original.rfit(data.clone(), n_components_to_fit, 10, Some(123), None)?; // Using more oversamples
 
         // Pre-save assertions
         assert!(pca_original.rotation.is_some(), "Original (randomized) model rotation should be Some");
@@ -1946,13 +1941,15 @@ mod pca_tests {
         let python_transformed = parse_transformed_csv_from_python(&stdout_text);
 
         let mut pca = super::PCA::new();
-        if is_rpca {
-            pca.rfit(input.clone(), n_components, oversamples, seed, None)
-                .unwrap();
-        } else {
-            pca.fit(input.clone(), None).unwrap();
-        }
-        let rust_transformed = pca.transform(input.clone()).unwrap();
+        let rust_transformed = if is_rpca {
+            // rfit consumes the input and returns the transformed PCs.
+            // Input is cloned as it was originally cloned for rfit then again for transform.
+            pca.rfit(input.clone(), n_components, oversamples, seed, None).unwrap()
+        } else {
+            pca.fit(input.clone(), None).unwrap(); // fit does not return PCs
+            // so, transform is still needed after fit.
+            pca.transform(input.clone()).unwrap()
+        };
 
         if !compare_pca_outputs_allow_sign_flip(&rust_transformed, &python_transformed, tol) {
             eprintln!("[Test: {}] => PCA mismatch with Python", test_name);
@@ -2217,16 +2214,25 @@ mod pca_bench_tests {
         let start_time = Instant::now();
 
         let mut pca = PCA::new();
-        if use_rfit {
-            pca.rfit(data.clone(), n_components, n_oversamples, Some(seed), None)
-                .expect("rfit failed");
-        } else {
-            pca.fit(data.clone(), None).expect("fit failed");
-        }
+        let transformed_data: Array2<f64>;
 
-        // Also transform the data so the entire pipeline is included
-        let transformed = pca.transform(data.clone()).expect("transform failed");
-        assert_eq!(transformed.nrows(), data.nrows());
+        if use_rfit {
+            // rfit consumes data and returns transformed PCs.
+            // The timing from start_time includes this combined operation.
+            transformed_data = pca.rfit(data.clone(), n_components, n_oversamples, Some(seed), None)
+                .expect("rfit failed");
+        } else {
+            pca.fit(data.clone(), None).expect("fit failed");
+            // For 'fit', we still need to call 'transform' to get PCs.
+            // The timing from start_time includes both fit and this transform.
+            transformed_data = pca.transform(data.clone()).expect("transform failed");
+        }
+
+        // Assertions on the transformed data.
+        assert_eq!(transformed_data.nrows(), data.nrows(), "Transformed data should have same number of rows as input.");
+        let actual_components = pca.rotation().map_or(0, |r| r.ncols());
+        assert_eq!(transformed_data.ncols(), actual_components, "Transformed data column count should match actual components in the model.");
+
 
         // Stop timing
         let duration = start_time.elapsed().as_secs_f64();
