@@ -73,10 +73,9 @@ Loads a PCA model from a file previously saved with `save_model`. The loaded mod
 ---
 ## Authors and Acknowledgements
 
-* This library is a fork and modification of the original `pca` crate by Erik Garrison (`erik.garrison@gmail.com`, original repository: <https://github.com/ekg/pca>).
+* This library is a fork and modification of the original `pca` crate by Erik Garrison (original repository: <https://github.com/ekg/pca>).
 * Extended by SauersML.
 ---
 ## License
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
-```
+This project is licensed under the MIT License.
