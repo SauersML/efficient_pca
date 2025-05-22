@@ -433,7 +433,7 @@ impl PCA {
         };
 
         // --- 5. Adaptive Randomized SVD Core ---
-        let mut final_rotation_sketch: Array2<f64>; // Will store D x k_eff_l final rotation basis
+        let final_rotation_sketch: Array2<f64>; // Will store D x k_eff_l final rotation basis
         let singular_values_from_projected_b: Array1<f64>;
 
         if n_features <= n_samples {
