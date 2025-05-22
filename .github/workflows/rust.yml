@@ -27,20 +27,34 @@ jobs:
         id: rust_version
         run: echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
 
+      # ------------------------- Python Setup -------------------------
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Python dependencies 📦
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn scipy
+      # ----------------------------------------------------------------
+
       # Cache for Cargo's downloaded dependencies (registry index, crate files, git repos)
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
         id: cache-cargo-deps
         with:
           path: |
+            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
+          # Use Cargo.toml if Cargo.lock is not in the repo
           key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-deps-
 
-      # Cache for the build artifacts (target directory)
+      # Cache for the Rust build artifacts (target directory)
       # This cache is invalidated if Rust version, Cargo.toml, or any Rust source files change.
       - name: Cache Rust target directory
         uses: actions/cache@v4
@@ -53,10 +67,12 @@ jobs:
             ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-
             ${{ runner.os }}-target-
 
-      - name: Build
+      - name: Build 🛠️
         # Builds the project in release mode with verbose output
         run: cargo build --verbose --release
 
-      - name: Run tests
+      - name: Run tests 🧪
         # Runs all tests with verbose output
         run: cargo test --verbose
+        env:
+          RUST_BACKTRACE: 1
