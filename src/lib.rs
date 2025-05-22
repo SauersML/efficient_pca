@@ -156,7 +156,7 @@ impl PCA {
     /// or the Gram matrix (if n_features > n_samples, the "Gram trick").
     /// The resulting principal components (columns of the rotation matrix) are normalized to unit length.
     ///
-    /// **Note:** For very large datasets, `rfit` is generally recommended for better performance.
+    /// Note: For very large datasets, `rfit` is generally recommended for better performance.
     ///
     /// * `data_matrix` - Input data as a 2D array, shape (n_samples, n_features).
     /// * `tolerance` - Optional: Tolerance for excluding low-variance components
@@ -317,45 +317,82 @@ impl PCA {
         Ok(())
     }
 
-    /// Fits the PCA model using a randomized SVD approach and returns the transformed data.
+    /// Fits the PCA model using a memory-efficient randomized SVD approach and returns the
+    /// transformed principal component scores.
     ///
-    /// This method computes the mean, (sanitized) scaling factors, and an approximate rotation
-    /// (principal components matrix). It's designed for efficiency with large datasets
-    /// by working with smaller "sketched" matrices rather than forming the full covariance matrix.
+    /// This method computes the mean of the input data, (sanitized) feature-wise scaling factors
+    /// (standard deviations), and an approximate rotation matrix (principal components).
+    /// It is specifically designed for computational efficiency and reduced memory footprint
+    /// when working with large datasets, particularly those with a very large number of features,
+    /// as it avoids forming the full covariance matrix.
     ///
-    /// The randomized SVD adaptively chooses its sketching strategy:
-    /// - If `n_features <= n_samples`, it sketches the input matrix `A` directly.
-    /// - If `n_features > n_samples`, it sketches the transpose `A^T`.
-    /// This is an internal SVD step operates on a matrix of dimensions `l x min(n_samples, n_features)`,
-    /// where `l` is the sketch size, analogous to the Gram trick in exact PCA.
+    /// The core of this method is a randomized SVD algorithm that constructs a low-rank
+    /// approximation of the input data. It adaptively chooses its sketching strategy based
+    /// on the dimensions of the input data matrix `A` (n_samples × n_features, after
+    /// centering and scaling):
     ///
-    /// The resulting principal components (columns of the rotation matrix stored in `self.rotation`)
-    /// are normalized to unit length.
+    /// - If `n_features <= n_samples` (data matrix is tall or square):
+    ///   The algorithm directly sketches the input matrix `A` by forming `Y = AΩ'`, where `Ω'`
+    ///   is a random Gaussian matrix of shape (n_features × l_sketch_components).
+    ///   An orthonormal basis `Q'` for the range of `Y` is found (N × l_sketch_components).
+    ///   The data is then projected onto this basis: `B' = (Q')^T A` (l_sketch_components × n_features).
     ///
-    /// * `x` - Input data as a 2D array with shape (n_samples, n_features). This matrix will be
-    ///         consumed and modified in place (centered and scaled).
-    /// * `n_components_requested` - The target number of principal components to keep.
-    /// * `n_oversamples` - Number of additional random dimensions to sample for improved accuracy
-    ///                     of the randomized SVD (e.g., 10).
-    /// * `seed` - Optional seed for the random number generator for reproducibility.
-    /// * `tol` - Optional tolerance (0.0 to 1.0). If `Some(t_val)`, components are kept if their
-    ///           corresponding singular value `s_i` satisfies `s_i > t_val * s_max`, where `s_max`
-    ///           is the largest singular value. The number of components kept will be at most
-    ///           `n_components_requested`. If `None`, tolerance-based filtering is skipped.
+    /// - If `n_features > n_samples` (data matrix is wide, D > N):
+    ///   To handle a large number of features efficiently, the algorithm sketches the
+    ///   transpose `A^T`. It computes `Y = A^T Ω` (n_features × l_sketch_components),
+    ///   where `Ω` is a random Gaussian matrix (n_samples × l_sketch_components).
+    ///   An orthonormal basis `Q` for the range of `Y` is found (n_features × l_sketch_components).
+    ///   The data is then projected: `B = Q^T A^T = (AQ)^T` (l_sketch_components × n_samples).
+    ///   *Note: The formation of `Y` (and subsequent refinement of `Q`) is performed
+    ///   memory-efficiently by leveraging BLAS capabilities for transposed operations
+    ///   on `A` without explicit large-scale copying of `A^T`.*
+    ///
+    /// In both cases, power iterations are used to refine the orthonormal basis (`Q'` or `Q`)
+    /// for improved accuracy.
+    ///
+    /// An SVD is then performed on the smaller projected matrix (`B'` or `B`), which has dimensions
+    /// (l_sketch_components × n_features) or (l_sketch_components × n_samples) respectively.
+    /// This step is analogous to the "Gram trick" in exact PCA, significantly reducing
+    /// computational cost.
+    ///
+    /// The principal components (columns of the rotation matrix, stored in `self.rotation`)
+    /// are derived from this SVD and are normalized to unit length.
+    /// The number of components kept can be influenced by the `tol` (tolerance) parameter.
+    ///
+    /// The method stores the computed `mean`, `scale` (sanitized standard deviations),
+    /// `rotation` matrix, and `explained_variance` within the `PCA` struct instance.
+    ///
+    /// * `x_input_data` - Input data as a 2D array with shape (n_samples, n_features).
+    ///   This matrix will be consumed and its data modified in place for mean centering
+    ///   and scaling.
+    /// * `n_components_requested` - The target number of principal components to compute and keep.
+    ///   The actual number of components kept may be less if the data's effective rank is lower
+    ///   or if `tol` filters out components.
+    /// * `n_oversamples` - Number of additional random dimensions to sample during the sketching
+    ///   phase. This helps improve the accuracy of the randomized SVD. A typical value is 10-20.
+    /// * `seed` - Optional `u64` seed for the random number generator used in sketching, allowing
+    ///   for reproducible results. If `None`, a random seed is used.
+    /// * `tol` - Optional tolerance (a float between 0.0 and 1.0, exclusive of 0.0 if used for filtering).
+    ///   If `Some(t_val)`, components are kept if their corresponding singular value `s_i` from the
+    ///   internal SVD satisfies `s_i > t_val * s_max`, where `s_max` is the largest singular value.
+    ///   The number of components kept will be at most `n_components_requested`.
+    ///   If `None`, tolerance-based filtering based on singular value ratios is skipped, and up to
+    ///   `n_components_requested` components (or the effective rank) are kept.
     ///
     /// # Returns
     /// A `Result` containing:
     /// - `Ok(Array2<f64>)`: The transformed data (principal component scores) of shape
-    ///                       (n_samples, k_components_kept), where `k_components_kept` is the
-    ///                       actual number of components retained after filtering.
-    /// - `Err(Box<dyn Error>)`: If an error occurs (e.g., input validation, matrix decomposition).
+    ///   (n_samples, k_components_kept), where `k_components_kept` is the
+    ///   actual number of principal components retained after all filtering and rank considerations.
+    /// - `Err(Box<dyn Error>)`: If an error occurs during the process.
     ///
     /// # Errors
     /// Returns an error if:
-    /// - The input matrix `x` has zero samples or zero features.
-    /// - `n_samples < 2`.
+    /// - The input matrix `x_input_data` has zero samples or zero features.
+    /// - The number of samples `n_samples` is less than 2.
     /// - `n_components_requested` is 0.
-    /// - Internal SVD or QR decomposition fails.
+    /// - Internal matrix operations (like QR decomposition or SVD) fail.
+    /// - Random number generation fails.
     pub fn rfit(
         &mut self,
         mut x_input_data: Array2<f64>, // N x D (n_samples x n_features)
