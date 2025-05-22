@@ -19,7 +19,7 @@ This Rust library provides Principal Component Analysis (PCA), both exact and fa
 
 Add `efficient_pca` to your `Cargo.toml` dependencies.
 
-```
+```sh
 cargo add efficient_pca
 ```
 
