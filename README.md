@@ -1,111 +1,83 @@
-# Principal component analysis (PCA)
+# Efficient Principal Component Analysis (PCA) in Rust
 
-Forked from https://github.com/ekg/pca. Modified from Erik Garrison's original implementation.
+This Rust library provides Principal Component Analysis (PCA), both exact and fast approximate methods. It is a modified version of the original work by Erik Garrison. Forked from https://github.com/ekg/pca.
 
-This Rust library provides Principal Component Analysis (PCA) using two main approaches:
-1.  **Exact PCA (`fit`)**: Uses eigen-decomposition of the covariance matrix. If the number of features exceeds the number of samples, it efficiently uses a Gram matrix computation (the "Gram trick").
-2.  **Randomized PCA (`rfit`)**: Employs a randomized SVD algorithm, suitable for approximating PCA on very large or high-dimensional datasets.
-
-All computed principal component vectors are normalized to unit length. The library handles mean-centering and ensures data is scaled by positive factors derived from standard deviations.
-
-
-## Installation
-
-Add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-efficient_pca = "0.1.4"
-```
-
-Or use `cargo add efficient_pca` to add the latest version.
-
+---
 ## Core Features
 
--   **Exact PCA (`fit`)**: Computes principal components via eigen-decomposition. Handles high-dimensional data (`n_features > n_samples`) efficiently using the Gram matrix method. Allows component selection based on an eigenvalue tolerance.
--   **Randomized PCA (`rfit`)**: Approximates principal components using randomized SVD, designed for very large datasets. Users specify the target number of components and can optionally use a singular value tolerance.
--   **Robust Data Scaling**: Input data is automatically centered. Scaling factors are derived from standard deviations and are always positive (values from original standard deviations `s` where `s.abs() < 1e-9` are sanitized to `1.0`; for `with_model`, inputs `s <= 1e-9` or non-finite also become `1.0`).
--   **Model Persistence**: Fitted PCA models can be saved to and loaded from files. Loaded models are validated for consistency and positive scale factors.
--   **Data Transformation**: Fitted models can transform new data into the principal component space.
+* ✨ **Exact PCA (`fit`)**: Computes principal components via eigen-decomposition of the covariance matrix. For datasets where the number of features is greater than the number of samples (`n_features > n_samples`), it uses the Gram matrix method (the "Gram trick"). Allows for component selection based on an eigenvalue tolerance.
+* ⚡ **Randomized PCA (`rfit`)**: Employs a memory-efficient randomized SVD algorithm to approximate principal components.
+* 🛡️ **Data Handling**:
+    * Input data is automatically mean-centered.
+    * Feature scaling is applied using standard deviations. Scale factors are sanitized to always be positive.
+    * Computed principal component vectors are normalized to unit length.
+* 💾 **Model Persistence**: Fitted PCA models (including mean, scale factors, and rotation matrix) can be saved to and loaded from files using `bincode` serialization.
+* 🔄 **Data Transformation**: Once a PCA model is fitted or loaded, it can be used to transform new data into the principal component space. This transformation also applies the learned centering and scaling.
 
-(Note: Some tests in the repository require Python and scikit-learn for comparison.)
+---
+## Installation
 
-## Usage
+Add `efficient_pca` to your `Cargo.toml` dependencies.
 
-### Basic Workflow (using `fit`)
-
-```rust
-use ndarray::array;
-use efficient_pca::PCA;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let data = array![
-        [1.0, 2.0, 0.5],
-        [3.0, 4.0, 1.5],
-        [5.0, 6.0, 2.5],
-        [7.0, 8.0, 3.5]
-    ];
-
-    let mut pca = PCA::new();
-
-    // Fit the model (e.g., keep all components)
-    pca.fit(data.clone(), None)?;
-
-    // Transform data
-    let transformed_data = pca.transform(data)?;
-    println!("PCA-transformed data:\n{:?}", transformed_data);
-
-    // Example of saving and loading
-    let model_path = "pca_model.bin";
-    pca.save_model(model_path)?;
-    let loaded_pca = PCA::load_model(model_path)?;
-    let transformed_by_loaded = loaded_pca.transform(array![[0.0, 1.0, 2.0]])?;
-    println!("Transformed by loaded model:\n{:?}", transformed_by_loaded);
-    // std::fs::remove_file(model_path)?; // Clean up example file
-
-    Ok(())
-}
+```
+cargo add efficient_pca
 ```
 
+---
 ## API Overview
 
 ### `PCA::new()`
-Creates an empty `PCA` model.
+Creates a new, empty `PCA` struct. The model is not fitted and needs to be computed using `fit` or `rfit`, or loaded.
 
 ### `PCA::with_model(rotation, mean, raw_standard_deviations)`
-Creates a `PCA` model from pre-computed components.
--   `raw_standard_deviations`: Input standard deviations. Values `s` where `s.is_finite() == false` or `s <= 1e-9` are sanitized to `1.0`. Errors if non-finite values are present before this sanitization.
+Creates a `PCA` instance from pre-computed components (rotation matrix, mean vector, and raw standard deviations).
+* `raw_standard_deviations`: Input standard deviations for each feature. Values `s` that are non-finite or where `s <= 1e-9` are sanitized to `1.0` before being stored. This makes sure the internal scale factors are always positive and finite. An error is returned if input `raw_standard_deviations` initially contains non-finite values.
 
-### `PCA::fit(data_matrix, tolerance)`
-Fits PCA using an exact method (covariance or Gram matrix).
--   `tolerance`: Optional `f64`. If `Some(tol)`, components with eigenvalue `< tol * max_eigenvalue` are discarded. `tol` is clamped to `[0.0, 1.0]`. If `None`, all components are kept.
+### `PCA::fit(&mut self, data_matrix, tolerance)`
+Computes the PCA model using an exact method.
+* `data_matrix`: The input data (`n_samples` x `n_features`).
+* `tolerance`: Optional `f64`. If `Some(tol_val)`, principal components corresponding to eigenvalues less than `tol_val * max_eigenvalue` are discarded. `tol_val` is clamped to `[0.0, 1.0]`. If `None`, all components up to the matrix rank are retained.
 
-### `PCA::rfit(x, n_components, n_oversamples, seed, tol)`
-Fits PCA using randomized SVD.
--   `n_components`: Target number of components (upper bound).
--   `n_oversamples`: For randomized algorithm stability.
--   `seed`: Optional `u64` for reproducibility.
--   `tol`: Optional `f64`. If `Some(t_val)` where `0.0 < t_val <= 1.0`, further filters components based on singular values.
+### `PCA::rfit(&mut self, x_input_data, n_components_requested, n_oversamples, seed, tol)`
+Computes an approximate PCA model using a memory-efficient randomized SVD algorithm and returns the transformed principal component scores for `x_input_data`.
+* `x_input_data`: The input data (`n_samples` x `n_features`). This matrix is modified in place for centering and scaling.
+* `n_components_requested`: The target number of principal components to compute and keep.
+* `n_oversamples`: Number of additional random dimensions (`p`) to sample for the sketch (`l = k + p`).
+    * If `0`, an adaptive default for `p` is used (typically 10% of `n_components_requested`, clamped between 5 and 20).
+    * If positive, this value is used, but an internal minimum is enforced for robustness. Recommended explicit values: 5-20.
+* `seed`: Optional `u64` for the random number generator.
+* `tol`: Optional `f64` (typically between 0.0 and 1.0, exclusive). If `Some(t_val)` where `0.0 < t_val < 1.0`, components are further filtered if their corresponding singular value `s_i` from the internal SVD of the projected sketch satisfies `s_i <= t_val * s_max`.
 
-### `PCA::transform(x)`
-Transforms input data `x` using the fitted model. Data is centered and scaled using stored positive scale factors.
+### `PCA::transform(&self, x)`
+Applies the learned PCA transformation (centering, scaling, and rotation) to new data `x`.
+* `x`: Input data to transform (`m_samples` x `d_features`). This matrix is modified in place during centering and scaling.
 
-### `PCA::save_model(path)`
-Saves the fitted model to `path`.
+### `PCA::rotation(&self)`
+Returns an `Option<&Array2<f64>>` to the rotation matrix (principal components), if computed. Shape: (`n_features`, `k_components`).
+
+### `PCA::explained_variance(&self)`
+Returns an `Option<&Array1<f64>>` to the explained variance for each principal component, if computed.
+
+### `PCA::save_model(&self, path)`
+Saves the current PCA model (rotation, mean, scale, and optionally explained_variance) to the specified file path using `bincode` serialization.
 
 ### `PCA::load_model(path)`
-Loads a model from `path`. Validates internal consistency and ensures scale factors are positive.
+Loads a PCA model from a file previously saved with `save_model`. The loaded model is validated for completeness and internal consistency (e.g., matching dimensions, positive scale factors).
 
-## Performance Notes
+---
+## Performance Considerations
 
--   **`fit()`**: Generally preferred for exact results when the smaller dimension (`n_samples` or `n_features`) is manageable for eigen-decomposition. Uses Gram matrix for `n_features > n_samples`.
--   **`rfit()`**: More efficient for very large datasets where an approximation is acceptable or exact computation is too costly.
+* **`fit()`**: Provides exact PCA. It's generally suitable for datasets where the smaller dimension (either samples or features) is not excessively large, allowing for direct eigen-decomposition. It automatically uses the Gram matrix optimization if `n_features > n_samples`.
+* **`rfit()`**: A significant speed-up and reduced memory footprint for very large or high-dimensional datasets where an approximation of PCA is acceptable. The accuracy is typically good.
 
-## Authors
+---
+## Authors and Acknowledgements
 
--   Erik Garrison <erik.garrison@gmail.com>. Original repository: https://github.com/ekg/pca
--   SauersML
+* This library is a fork and modification of the original `pca` crate by Erik Garrison (`erik.garrison@gmail.com`, original repository: <https://github.com/ekg/pca>).
+* Extended by SauersML.
 
+---
 ## License
 
 This project is licensed under the MIT License - see the `LICENSE` file for details.
+```
