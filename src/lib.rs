@@ -375,241 +375,257 @@ impl PCA {
             return Err("Input matrix must have at least 2 samples for PCA.".into());
         }
         if n_components_requested == 0 {
-            return Err("Number of requested components (n_components_requested) must be greater than 0.".into());
+            return Err(
+                "Number of requested components (n_components_requested) must be greater than 0."
+                    .into(),
+            );
         }
 
         // --- 2. Mean Centering and Scaling ---
-        // Calculate and store the mean vector for each feature.
-        let mean_vector = x_input_data.mean_axis(Axis(0)).ok_or("Failed to compute mean vector.")?;
+        let mean_vector = x_input_data
+            .mean_axis(Axis(0))
+            .ok_or("Failed to compute mean vector.")?;
         self.mean = Some(mean_vector.clone());
         x_input_data -= &mean_vector; // Center data in place.
 
-        // Calculate and store the sanitized standard deviation for each feature.
         let std_dev_vector_original = x_input_data.map_axis(Axis(0), |column| column.std(0.0));
         let sanitized_scale_vector = std_dev_vector_original
-            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val }); // Avoid division by zero/small std devs.
+            .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
         self.scale = Some(sanitized_scale_vector.clone());
         x_input_data /= &sanitized_scale_vector; // Scale data in place.
 
-        // `centered_scaled_data_a` is the N x D matrix A used for randomized SVD.
-        let centered_scaled_data_a = x_input_data;
+        let centered_scaled_data_a = x_input_data; // N x D
 
         // --- 3. Determine Target Components and Sketch Size ---
-        // `k_target_components` is the maximum number of components we aim for before tolerance filtering.
-        let k_target_components = n_components_requested;
+        // k_target_components is the n_components_requested, capped by data dimensions later if needed.
         let max_possible_rank = std::cmp::min(n_samples, n_features);
 
         if max_possible_rank == 0 {
-            // This case implies n_features or n_samples is 0, should have been caught.
-            self.rotation = Some(Array2::zeros((n_features, 0)));
-            self.explained_variance = Some(Array1::zeros(0));
-            return Ok(Array2::zeros((n_samples, 0))); // N x 0 PC scores
-        }
-
-        // `l_sketch_components` is the number of components in the sketch (k_target + oversamples).
-        // It's capped by `max_possible_rank`.
-        let l_sketch_components_ideal = k_target_components + n_oversamples;
-        let mut l_sketch_components = std::cmp::min(l_sketch_components_ideal, max_possible_rank);
-        l_sketch_components = std::cmp::max(l_sketch_components, 1); // Must be at least 1.
-        // Also make sure sketch size is at least k_target (if k_target <= max_possible_rank).
-        l_sketch_components = std::cmp::max(l_sketch_components, std::cmp::min(k_target_components, max_possible_rank));
-        
-        if l_sketch_components == 0 { // Should not happen if k_target_components > 0
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
             return Ok(Array2::zeros((n_samples, 0)));
         }
 
+        let l_sketch_components_ideal = n_components_requested + n_oversamples;
+        let mut l_sketch_components = std::cmp::min(l_sketch_components_ideal, max_possible_rank);
+        l_sketch_components = std::cmp::max(l_sketch_components, 1);
+        // sketch size is at least the number of requested components (if possible)
+        l_sketch_components = std::cmp::max(
+            l_sketch_components,
+            std::cmp::min(n_components_requested, max_possible_rank),
+        );
+        
+        // If after all adjustments, l_sketch_components ended up being 0 (e.g. if n_components_requested was 0 and max_possible_rank also 0)
+        // though n_components_requested > 0 is checked earlier, and max_possible_rank > 0 is also checked.
+        if l_sketch_components == 0 { 
+            self.rotation = Some(Array2::zeros((n_features, 0)));
+            self.explained_variance = Some(Array1::zeros(0));
+            return Ok(Array2::zeros((n_samples, 0)));
+        }
+
+
         // --- 4. Initialize RNG ---
-        const N_POWER_ITERATIONS: usize = 2; // Number of power iterations for sketch refinement.
+        const N_POWER_ITERATIONS: usize = 2;
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
-            None => ChaCha8Rng::from_rng(rand::thread_rng()).map_err(|e| format!("Failed to initialize RNG: {}", e))?,
+            None => ChaCha8Rng::from_rng(rand::thread_rng())
+                .map_err(|e| format!("Failed to initialize RNG: {}", e))?,
         };
 
         // --- 5. Adaptive Randomized SVD Core ---
-        // These will store the results from either sketching strategy.
-        let sketched_rotation_matrix_d_x_l: Array2<f64>; // Shape: (n_features, l_effective_components)
-        let singular_values_from_projected_b: Array1<f64>; // Singular values of the projected matrix B or B'
+        let mut final_rotation_sketch: Array2<f64>; // Will store D x k_eff_l final rotation basis
+        let singular_values_from_projected_b: Array1<f64>;
 
         if n_features <= n_samples {
             // --- Strategy 1: D <= N (Fewer features than samples, or D=N) ---
-            // Sketch A (centered_scaled_data_a, N x D) directly.
-            // Random projection matrix Omega' will be D x l_sketch_components.
-            let omega_prime_shape = (n_features, l_sketch_components);
-            let omega_prime_random_matrix = Array2::from_shape_fn(omega_prime_shape, |_| {
-                rng.sample(Normal::new(0.0, 1.0).unwrap())
-            });
+            let omega_prime_shape = (n_features, l_sketch_components); // D x L
+            let omega_prime_random_matrix =
+                Array2::from_shape_fn(omega_prime_shape, |_| {
+                    rng.sample(Normal::new(0.0, 1.0).unwrap())
+                });
 
-            // Q_prime_basis = A * Omega' (N x l_sketch_components)
-            let mut q_prime_basis = centered_scaled_data_a.dot(&omega_prime_random_matrix);
+            let mut q_prime_basis = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) . (D x L) -> N x L
             if q_prime_basis.ncols() == 0 {
                 return Err("Sketch Q'_basis (from A) has zero columns before QR.".into());
             }
-            q_prime_basis = q_prime_basis.qr().map_err(|e| format!("QR decomposition of Q' failed: {}", e))?.0;
+            q_prime_basis = q_prime_basis
+                .qr()
+                .map_err(|e| format!("QR decomposition of Q' failed: {}", e))?
+                .0; // N x L (Q factor)
 
-            // Power iterations for refining Q'
             for _ in 0..N_POWER_ITERATIONS {
-                if q_prime_basis.ncols() == 0 { break; } // Sketch might have collapsed
-                // W_prime = A^T * Q' (D x l_sketch_components)
-                let w_prime_intermediate = centered_scaled_data_a.t().dot(&q_prime_basis);
+                if q_prime_basis.ncols() == 0 { break; }
+                let w_prime_intermediate = centered_scaled_data_a.t().dot(&q_prime_basis); // (D x N view) . (N x L) -> D x L
                 if w_prime_intermediate.ncols() == 0 { break; }
-                let w_prime_ortho_basis = w_prime_intermediate.qr().map_err(|e| format!("QR decomposition of W' failed: {}", e))?.0;
+                let w_prime_ortho_basis = w_prime_intermediate
+                    .qr()
+                    .map_err(|e| format!("QR decomposition of W' failed: {}", e))?
+                    .0; // D x L
 
                 if w_prime_ortho_basis.ncols() == 0 { break; }
-                // Z_prime = A * W'_ortho (N x l_sketch_components)
-                let z_prime_intermediate = centered_scaled_data_a.dot(&w_prime_ortho_basis);
+                let z_prime_intermediate = centered_scaled_data_a.dot(&w_prime_ortho_basis); // (N x D) . (D x L) -> N x L
                 if z_prime_intermediate.ncols() == 0 { break; }
-                q_prime_basis = z_prime_intermediate.qr().map_err(|e| format!("QR decomposition of Z' failed: {}", e))?.0;
+                q_prime_basis = z_prime_intermediate
+                    .qr()
+                    .map_err(|e| format!("QR decomposition of Z' failed: {}", e))?
+                    .0; // N x L
             }
-            
+
             if q_prime_basis.ncols() == 0 {
-                return Err("Refined sketch Q'_basis (from A) has zero columns after power iterations.".into());
+                return Err(
+                    "Refined sketch Q'_basis (from A) has zero columns after power iterations."
+                        .into(),
+                );
             }
 
-            // B_prime_projected = (Q')^T * A (l_sketch_components x D)
-            let b_prime_projected = q_prime_basis.t().dot(&centered_scaled_data_a);
-
-            // SVD of B_prime_projected: B' = U_B' * S_B' * (V_B')^T
-            // We need V_B' (D x k_effective_l), whose columns are the principal axes.
-            let svd_result_b_prime = b_prime_projected.svd_into(false, true) // compute_u=false, compute_v=true
+            let b_prime_projected = q_prime_basis.t().dot(&centered_scaled_data_a); // (L x N view) . (N x D) -> L x D
+            let svd_result_b_prime = b_prime_projected
+                .svd_into(false, true) 
                 .map_err(|e| format!("SVD of B' (from A sketch) failed: {}", e))?;
-            
-            singular_values_from_projected_b = svd_result_b_prime.1; // These are S_B'
-            let vt_b_prime_matrix = svd_result_b_prime.2.ok_or("SVD V_B'^T not computed from B' (A sketch)")?;
-            
-            // rotation is V_B'
-            sketched_rotation_matrix_d_x_l = vt_b_prime_matrix.t().to_owned();
 
+            singular_values_from_projected_b = svd_result_b_prime.1;
+            let vt_b_prime_matrix = svd_result_b_prime
+                .2
+                .ok_or("SVD V_B'^T not computed from B' (A sketch)")?; // k_eff_l x D (or L_actual x D)
+
+            final_rotation_sketch = vt_b_prime_matrix.t().into_owned(); // D x k_eff_l
         } else {
             // --- Strategy 2: D > N (More features than samples) ---
-            // Sketch A^T (current method in original code).
-            // A_transposed is D x N.
-            let a_transposed = centered_scaled_data_a.t().as_standard_layout().to_owned();
+            // centered_scaled_data_a (A_orig) is N x D.
+            let omega_shape = (n_samples, l_sketch_components); // N x L
+            let omega_random_matrix =
+                Array2::from_shape_fn(omega_shape, |_| {
+                    rng.sample(Normal::new(0.0, 1.0).unwrap())
+                });
 
-            // Random projection matrix Omega is N x l_sketch_components.
-            let omega_shape = (n_samples, l_sketch_components);
-            let omega_random_matrix = Array2::from_shape_fn(omega_shape, |_| {
-                rng.sample(Normal::new(0.0, 1.0).unwrap())
-            });
-
-            // Q_basis = A^T * Omega (D x l_sketch_components)
-            let mut q_basis = a_transposed.dot(&omega_random_matrix);
-             if q_basis.ncols() == 0 {
-                return Err("Initial sketch Q_basis (from A^T) has zero columns before QR.".into());
+            // Q_basis = A_orig^T * Omega (D x L)
+            let mut q_basis = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N view) . (N x L) -> D x L
+            if q_basis.ncols() == 0 {
+                return Err(
+                    "Initial sketch Q_basis (from A_orig^T) has zero columns before QR.".into(),
+                );
             }
-            q_basis = q_basis.qr().map_err(|e| format!("QR decomposition of Q (A^T sketch) failed: {}", e))?.0;
+            q_basis = q_basis
+                .qr()
+                .map_err(|e| format!("QR decomposition of Q (A_orig^T sketch) failed: {}", e))?
+                .0; // D x L (Q factor)
 
-            // Power iterations for refining Q
             for _ in 0..N_POWER_ITERATIONS {
-                if q_basis.ncols() == 0 { break; } // Sketch might have collapsed
-                // W_basis = (A^T)^T * Q_basis = A * Q_basis (N x l_sketch_components)
-                let w_intermediate = a_transposed.t().dot(&q_basis);
+                if q_basis.ncols() == 0 { break; }
+                // W_intermediate = A_orig * Q_basis (N x L)
+                let w_intermediate = centered_scaled_data_a.dot(&q_basis); // (N x D) . (D x L) -> N x L
                 if w_intermediate.ncols() == 0 { break; }
-                let w_ortho_basis = w_intermediate.qr().map_err(|e| format!("QR decomposition of W (A^T sketch) failed: {}", e))?.0;
+                let w_ortho_basis = w_intermediate
+                    .qr()
+                    .map_err(|e| format!("QR decomposition of W (A_orig^T sketch) failed: {}", e))?
+                    .0; // N x L
 
                 if w_ortho_basis.ncols() == 0 { break; }
-                // Z_intermediate = A^T * W_ortho_basis (D x l_sketch_components)
-                let z_intermediate = a_transposed.dot(&w_ortho_basis);
+                // Z_intermediate = A_orig^T * W_ortho_basis (D x L)
+                let z_intermediate = centered_scaled_data_a.t().dot(&w_ortho_basis); // (D x N view) . (N x L) -> D x L
                 if z_intermediate.ncols() == 0 { break; }
-                q_basis = z_intermediate.qr().map_err(|e| format!("QR decomposition of Z (A^T sketch) failed: {}", e))?.0;
+                q_basis = z_intermediate
+                    .qr()
+                    .map_err(|e| format!("QR decomposition of Z (A_orig^T sketch) failed: {}", e))?
+                    .0; // D x L
             }
 
             if q_basis.ncols() == 0 {
-                return Err("Refined sketch Q_basis (from A^T) has zero columns after power iterations.".into());
+                return Err(
+                    "Refined sketch Q_basis (from A_orig^T) has zero columns after power iterations."
+                        .into(),
+                );
             }
-
-            // B_projected = Q_basis^T * A^T (l_sketch_components x N)
-            let b_projected = q_basis.t().dot(&a_transposed);
-
-            // SVD of B_projected: B = U_B * S_B * (V_B)^T
-            // We need U_B (l_sketch_components x k_effective_l).
-            let svd_result_b = b_projected.svd_into(true, false) // compute_u=true, compute_v=false
-                .map_err(|e| format!("SVD of B (from A^T sketch) failed: {}", e))?;
-
-            singular_values_from_projected_b = svd_result_b.1; // These are S_B
-            let u_b_matrix = svd_result_b.0.ok_or("SVD U_B not computed from B (A^T sketch)")?;
             
-            // Principal components are Q_basis * U_B_matrix
-            sketched_rotation_matrix_d_x_l = q_basis.dot(&u_b_matrix);
+            // B_projected^T = A_orig * Q_basis (N x L)
+            let b_projected_transpose = centered_scaled_data_a.dot(&q_basis); // N x L
+            let b_projected = b_projected_transpose.t().into_owned(); // L x N (owned for SVD)
+
+            let svd_result_b = b_projected
+                .svd_into(true, false) // compute_u=true, compute_v=false
+                .map_err(|e| format!("SVD of B_projected (from A_orig^T sketch) failed: {}", e))?;
+
+            singular_values_from_projected_b = svd_result_b.1; // k_eff_l elements
+            let u_b_matrix = svd_result_b
+                .0
+                .ok_or("SVD U_B not computed from B_projected (A_orig^T sketch)")?; // L x k_eff_l
+            
+            // Rotation = Q_basis * U_B_matrix
+            final_rotation_sketch = q_basis.dot(&u_b_matrix); // (D x L) . (L x k_eff_l) -> D x k_eff_l
         }
 
         // --- 6. Post-Sketching: Normalize, Select Components, Update Model ---
-        let mut rotation_matrix_normalized_d_x_l = sketched_rotation_matrix_d_x_l;
-        
-        // we have columns to work with
-        if rotation_matrix_normalized_d_x_l.ncols() == 0 {
+        let mut rotation_matrix_normalized = final_rotation_sketch; // D x k_eff_l
+
+        if rotation_matrix_normalized.ncols() == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
             return Ok(Array2::zeros((n_samples, 0)));
         }
 
-        // Normalize columns of the D x l (or D x k_eff_l) rotation matrix
-        for mut column_vec in rotation_matrix_normalized_d_x_l.columns_mut() {
+        for mut column_vec in rotation_matrix_normalized.columns_mut() {
             let norm_value = column_vec.dot(&column_vec).sqrt();
             if norm_value > 1e-9 {
                 column_vec.mapv_inplace(|val| val / norm_value);
             } else {
-                column_vec.fill(0.0); // Zero out columns with no magnitude (e.g. if k_eff_l < l_sketch_components)
+                column_vec.fill(0.0);
             }
         }
 
-        // Determine the final number of components to keep based on k_target and tolerance
-        let effective_l_dim_from_svd = rotation_matrix_normalized_d_x_l.ncols();
-        let mut n_components_to_keep = std::cmp::min(k_target_components, effective_l_dim_from_svd);
+        let k_eff_from_svd_path = rotation_matrix_normalized.ncols(); 
+        let mut n_components_to_keep =
+            std::cmp::min(n_components_requested, k_eff_from_svd_path);
 
         if let Some(tolerance_value) = tol {
-            // Apply tolerance filtering only if singular values are available and tol is valid (0.0 < t <= 1.0)
-            if !singular_values_from_projected_b.is_empty() && tolerance_value > 0.0 && tolerance_value <= 1.0 {
-                let largest_singular_value = singular_values_from_projected_b[0]; // SVD means they are sorted
+            if !singular_values_from_projected_b.is_empty()
+                && tolerance_value > 0.0
+                && tolerance_value <= 1.0
+            {
+                let largest_singular_value = singular_values_from_projected_b[0];
                 if largest_singular_value > 1e-9 {
                     let singular_value_threshold = tolerance_value * largest_singular_value;
-                    let rank_by_tolerance = singular_values_from_projected_b.iter()
-                        .take(effective_l_dim_from_svd) // Consider only up to available components
+                    let rank_by_tolerance = singular_values_from_projected_b
+                        .iter()
                         .take_while(|&&s_val| s_val > singular_value_threshold)
                         .count();
                     n_components_to_keep = std::cmp::min(n_components_to_keep, rank_by_tolerance);
                 } else {
-                    n_components_to_keep = 0; // All singular values are effectively zero
+                    n_components_to_keep = 0;
                 }
             }
-            // If tol is Some but invalid (e.g. <0 or >1), we currently don't change n_components_to_keep further.
-            // It remains capped by k_target_components and effective_l_dim_from_svd.
         }
-        // Final cap by number of available sketched components after SVD
-        n_components_to_keep = std::cmp::min(n_components_to_keep, effective_l_dim_from_svd);
+        n_components_to_keep = std::cmp::max(n_components_to_keep, 0);
 
 
-        // Update the PCA model (self)
         if n_components_to_keep == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
         } else {
-            let final_rotation_matrix_d_x_k = rotation_matrix_normalized_d_x_l
+            let final_rotation_matrix = rotation_matrix_normalized
                 .slice(s![.., ..n_components_to_keep])
                 .to_owned();
-            self.rotation = Some(final_rotation_matrix_d_x_k);
+            self.rotation = Some(final_rotation_matrix);
 
-            // Calculate and store explained variance
             if n_samples > 1 {
-                let selected_singular_values = singular_values_from_projected_b.slice(s![..n_components_to_keep]);
-                let variances = selected_singular_values.mapv(|s_val| s_val.powi(2) / ((n_samples - 1) as f64));
+                let selected_singular_values =
+                    singular_values_from_projected_b.slice(s![..n_components_to_keep]);
+                let variances = selected_singular_values
+                    .mapv(|s_val| s_val.powi(2) / ((n_samples - 1) as f64));
                 self.explained_variance = Some(variances);
             } else {
-                // This case should be caught by earlier n_samples < 2 validation
-                self.explained_variance = Some(Array1::from_elem(n_components_to_keep, f64::NAN));
+                self.explained_variance =
+                    Some(Array1::from_elem(n_components_to_keep, f64::NAN));
             }
         }
 
         // --- 7. Calculate and Return Principal Component Scores for the Input Data ---
-        // self.rotation is now Some(D x k_final_matrix) or Some(D x 0 matrix)
-        let rotation_matrix_for_transform = self.rotation.as_ref()
-            .expect("Internal error: self.rotation should be Some at this point.");
-
-        // centered_scaled_data_a is N x D
-        // rotation_matrix_for_transform is D x k_components_to_keep
-        // transformed_principal_components will be N x k_components_to_keep
-        let transformed_principal_components = centered_scaled_data_a.dot(rotation_matrix_for_transform);
+        let rotation_for_transform = self
+            .rotation
+            .as_ref()
+            .ok_or_else(|| "Rotation matrix not set after fitting, this should not happen.")?;
+        
+        let transformed_principal_components =
+            centered_scaled_data_a.dot(rotation_for_transform);
 
         Ok(transformed_principal_components)
     }
@@ -904,7 +920,7 @@ mod genome_tests {
                 
                 // Print first few PC values for inspection
                 println!("First 3 rows of PC values:");
-                // Ensure we don't panic if less than 3 rows or less than n_components are available
+                // we don't panic if less than 3 rows or less than n_components are available
                 for i in 0..std::cmp::min(3, transformed.nrows()) {
                     print!("Row {}: ", i);
                     for j in 0..std::cmp::min(n_components, transformed.ncols()) {
@@ -960,7 +976,7 @@ mod genome_tests {
                             
                             // Print the first 3 rows of filtered PC values to demonstrate they are valid
                             println!("First 3 rows of FILTERED PC values:");
-                                // Ensure we don't panic if less than 3 rows or less than n_components are available
+                                // we don't panic if less than 3 rows or less than n_components are available
                             for i in 0..std::cmp::min(3, transformed_filtered.nrows()) {
                                 print!("Row {}: ", i);
                                 for j in 0..std::cmp::min(n_components, transformed_filtered.ncols()) {
