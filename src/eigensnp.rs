@@ -806,7 +806,7 @@ impl EigenSNPCoreAlgorithm {
                 || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum
                 |mut acc_matrix, strip_scores_matrix| {
                     acc_matrix += &strip_scores_matrix; // Sum contributions
-                    Ok(acc_matrix)
+                    acc_matrix // Return the accumulated matrix directly
                 },
             )?.unwrap_or_else(|| Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)));
 
