@@ -302,15 +302,15 @@ impl EigenSNPCoreAlgorithm {
         let num_total_pca_snps = genotype_data.num_pca_snps();
 
         // Determine subset sample IDs based on config
-        let desired_ns = (self.config.subset_factor_for_local_basis_learning * num_total_qc_samples as f64).round() as usize;
-        let ns_clamped_min = desired_ns.max(self.config.min_subset_size_for_local_basis_learning);
-        let actual_ns = ns_clamped_min.min(self.config.max_subset_size_for_local_basis_learning).min(num_total_qc_samples);
+        let desired_subset_sample_count = (self.config.subset_factor_for_local_basis_learning * num_total_qc_samples as f64).round() as usize;
+        let clamped_min_subset_sample_count = desired_subset_sample_count.max(self.config.min_subset_size_for_local_basis_learning);
+        let actual_subset_sample_count = clamped_min_subset_sample_count.min(self.config.max_subset_size_for_local_basis_learning).min(num_total_qc_samples);
 
         info!(
             "Starting EigenSNP PCA. Target PCs={}, Total Samples={}, Subset Samples (N_s)={}, Num LD Blocks={}",
             self.config.target_num_global_pcs,
             num_total_qc_samples,
-            actual_ns,
+            actual_subset_sample_count,
             ld_block_specifications.len()
         );
         let overall_start_time = std::time::Instant::now();
@@ -345,9 +345,9 @@ impl EigenSNPCoreAlgorithm {
             });
         }
 
-        let subset_sample_ids_selected: Vec<QcSampleId> = if actual_ns > 0 {
+        let subset_sample_ids_selected: Vec<QcSampleId> = if actual_subset_sample_count > 0 {
             let mut rng_subset_selection = ChaCha8Rng::seed_from_u64(self.config.random_seed);
-            let subset_indices: Vec<usize> = rand::seq::index::sample(&mut rng_subset_selection, num_total_qc_samples, actual_ns).into_vec();
+            let subset_indices: Vec<usize> = rand::seq::index::sample(&mut rng_subset_selection, num_total_qc_samples, actual_subset_sample_count).into_vec();
             subset_indices.into_iter().map(QcSampleId).collect()
         } else {
              if num_total_qc_samples > 0 && ld_block_specifications.iter().any(|b| b.num_snps_in_block() > 0) {
@@ -765,11 +765,11 @@ impl EigenSNPCoreAlgorithm {
     fn compute_final_scores_and_eigenvalues<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
-        orthonormal_snp_loadings_d_by_k: &ArrayView2<f32>, 
+        orthonormal_snp_loadings_snps_by_components: &ArrayView2<f32>, 
         num_total_qc_samples: usize,
     ) -> Result<(Array2<f32>, Array1<f64>), ThreadSafeStdError> {
-        let num_total_pca_snps = orthonormal_snp_loadings_d_by_k.nrows();
-        let num_final_computed_pcs = orthonormal_snp_loadings_d_by_k.ncols();
+        let num_total_pca_snps = orthonormal_snp_loadings_snps_by_components.nrows();
+        let num_final_computed_pcs = orthonormal_snp_loadings_snps_by_components.ncols();
 
         info!(
             "Computing final sample scores ({} samples, {} PCs) and eigenvalues.",
@@ -817,7 +817,7 @@ impl EigenSNPCoreAlgorithm {
                     &all_qc_sample_ids_for_final_scores,
                 ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final score computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor)).into())?; // M_strip x N
 
-                let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_d_by_k
+                let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_snps_by_components
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
                 
                 // S_final_strip = X_strip^T V_final_strip
