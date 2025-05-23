@@ -485,8 +485,7 @@ impl EigenSNPCoreAlgorithm {
                         genotype_data.get_standardized_snp_sample_block(
                             &block_spec.pca_snp_ids_in_block,
                             subset_sample_ids,
-                        ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_accessor)).into())?;
-                    
+                        ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_accessor))) as ThreadSafeStdError)?;
                     let actual_num_snps_in_block = genotype_block_for_subset_samples.nrows();
                     let actual_num_subset_samples = genotype_block_for_subset_samples.ncols();
                     
@@ -511,13 +510,11 @@ impl EigenSNPCoreAlgorithm {
                     
                     let genotype_block_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
                     let snp_covariance_matrix_f64 = genotype_block_f64.dot(&genotype_block_f64.t());
-
                     // .eigh returns eigenvalues in ascending order; we slice the last 'num_components_to_extract'
                     // to get the eigenvectors corresponding to the largest eigenvalues.
                     let (_eigenvalues_f64, eigenvectors_f64_columns) =
                         snp_covariance_matrix_f64.eigh(UPLO::Upper)
-                        .map_err(|e_linalg| std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg)).into())?;
-                    
+                        .map_err(|e_linalg| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg))) as ThreadSafeStdError)?;
                     let selected_eigenvectors_f64 = eigenvectors_f64_columns.slice_axis(
                         Axis(1),
                         ndarray::Slice::from((actual_num_snps_in_block - num_components_to_extract)..actual_num_snps_in_block),
@@ -658,7 +655,7 @@ impl EigenSNPCoreAlgorithm {
             return Ok(Array2::zeros((num_samples, 0)));
         }
         orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
-            .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD: {}", e_qr)).into())?.0;
+            .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?.0;
         for iter_idx in 0..num_power_iterations {
             if orthonormal_basis_features_by_sketch.ncols() == 0 { break; } 
             trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
@@ -684,7 +681,7 @@ impl EigenSNPCoreAlgorithm {
             .map_err(|e_svd| std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd)).into())?;
         
         let right_singular_vectors_transposed_of_b = svd_of_projected_b.2
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD.").into())?;
+            .ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD.")) as ThreadSafeStdError)?;
         
         let computed_sample_scores_samples_by_rank_b = right_singular_vectors_transposed_of_b.t().into_owned();
 
@@ -830,13 +827,19 @@ impl EigenSNPCoreAlgorithm {
                 
                 Ok(scores_contribution_from_strip_n_by_k)
             })
-            .try_reduce(
-                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum
-                |mut acc_matrix, strip_scores_matrix| {
-                    acc_matrix += &strip_scores_matrix; // Sum contributions
-                    acc_matrix // Return the accumulated matrix directly
-                },
-            )?.unwrap_or_else(|| Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)));
+            .collect::<Result<Vec<Array2<f32>>, ThreadSafeStdError>>() // Attempt to collect all mapped results. If any map op failed, this yields Err.
+            .map(|successful_strip_scores| { // If all map operations were successful and collected into a Vec
+                successful_strip_scores
+                    .into_par_iter() // Convert Vec of successful scores into a parallel iterator
+                    .reduce( // Reduce the successfully computed strip scores
+                        || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum
+                        |mut acc_matrix, strip_scores_matrix| {
+                            acc_matrix += &strip_scores_matrix; // Sum contributions
+                            acc_matrix
+                        },
+                    ) // This parallel reduction yields Option<Array2<f32>>
+            })? // Propagate any error from the collect step; otherwise, unwrap the Result to get Option<Array2<f32>>
+            .unwrap_or_else(|| Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs))); // Handle the Option: if None (empty iterator), provide a default zero matrix.
 
         let mut computed_final_pc_eigenvalues = Array1::<f64>::zeros(num_final_computed_pcs);
         if num_total_qc_samples > 1 {
