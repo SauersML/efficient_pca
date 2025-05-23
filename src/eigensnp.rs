@@ -1,5 +1,8 @@
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{s, Array1, Array2, Axis, ArrayView2};
+use ndarray_linalg::{Eigh, UPLO, QR as NdarrayQR};
+use rayon::prelude::*;
 use std::error::Error;
+use log::{info, debug, trace};
 
 // --- Core Index Types for Enhanced Type Safety ---
 
@@ -206,5 +209,242 @@ impl EigenSNPCoreAlgorithm {
     /// Creates a new `EigenSNPCoreAlgorithm` runner with the given configuration.
     pub fn new(config: EigenSNPCoreAlgorithmConfig) -> Self {
         Self { config }
+    }
+}
+
+
+
+
+
+
+
+
+
+impl EigenSNPCoreAlgorithm {
+    /// Learns local eigenSNP bases for each LD block using a subset of samples.
+    fn learn_all_ld_block_local_bases<G: PcaReadyGenotypeAccessor>(
+        &self,
+        genotype_data: &G,
+        ld_block_specs: &[LdBlockSpecification],
+        subset_sample_ids: &[QcSampleId],
+    ) -> Result<Vec<PerBlockLocalSnpBasis>, Box<dyn Error>> {
+        info!(
+            "Learning local eigenSNP bases for {} LD blocks using N_s = {} samples.",
+            ld_block_specs.len(),
+            subset_sample_ids.len()
+        );
+
+        if subset_sample_ids.is_empty() {
+            let any_snps_in_blocks = ld_block_specs.iter().any(|b| b.num_snps_in_block() > 0);
+            if any_snps_in_blocks {
+                return Err("Subset sample IDs cannot be empty if there are LD blocks with SNPs.".into());
+            }
+        }
+
+        let local_bases_results: Vec<Result<PerBlockLocalSnpBasis, Box<dyn Error>>> =
+            ld_block_specs
+                .par_iter()
+                .enumerate()
+                .map(|(block_idx_val, block_spec)| {
+                    let block_list_id = LdBlockListId(block_idx_val);
+                    let num_snps_in_this_block = block_spec.num_snps_in_block();
+
+                    if num_snps_in_this_block == 0 {
+                        trace!("Block {:?} is empty of SNPs, creating empty basis.", block_list_id);
+                        return Ok(PerBlockLocalSnpBasis {
+                            block_list_id,
+                            basis_vectors: Array2::<f32>::zeros((0, 0)),
+                        });
+                    }
+
+                    // Fetch standardized genotype data for this block and the N_s subset
+                    // x_subset_block_snps_x_samples has shape (num_snps_in_this_block, subset_sample_ids.len())
+                    let x_subset_block_snps_x_samples =
+                        genotype_data.get_standardized_snp_sample_block(
+                            &block_spec.pca_snp_ids_in_block,
+                            subset_sample_ids,
+                        )?;
+                    
+                    let rank_limit_from_samples = if !subset_sample_ids.is_empty() { subset_sample_ids.len() } else { 0 };
+                    let num_components_to_extract = self.config.components_per_ld_block
+                        .min(num_snps_in_this_block)
+                        .min(rank_limit_from_samples);
+
+                    if num_components_to_extract == 0 {
+                        debug!(
+                            "Block {:?}: num components to extract is 0 (M_p={}, N_s={}, configured_cp={}), creating empty basis.", 
+                            block_list_id, 
+                            num_snps_in_this_block, 
+                            subset_sample_ids.len(),
+                            self.config.components_per_ld_block
+                        );
+                        return Ok(PerBlockLocalSnpBasis {
+                            block_list_id,
+                            basis_vectors: Array2::<f32>::zeros((num_snps_in_this_block, 0)),
+                        });
+                    }
+                    
+                    // Perform Direct SVD via X_s_p * X_s_p.T (M_p x M_p covariance matrix)
+                    // Using f64 for covariance matrix and its eigendecomposition for better precision.
+                    // x_subset_block_snps_x_samples is (M_p x N_s)
+                    // x_subset_block_snps_x_samples.t() is (N_s x M_p)
+                    let cov_matrix_snps_f64 = x_subset_block_snps_x_samples
+                        .dot(&x_subset_block_snps_x_samples.t().mapv(|x_val| x_val as f64)); // M_p x M_p
+
+                    let (_eigenvalues_f64, eigenvectors_f64_cols) =
+                        cov_matrix_snps_f64.eigh(UPLO::Upper)
+                        .map_err(|e| format!("Eigendecomposition failed for block {:?}: {}", block_list_id, e))?;
+                    
+                    // Eigenvalues from .eigh are ascending. Select the last `num_components_to_extract` eigenvectors.
+                    let selected_eigenvectors_f64 = eigenvectors_f64_cols.slice_axis(
+                        Axis(1),
+                        ndarray::Slice::from((num_snps_in_this_block - num_components_to_extract)..num_snps_in_this_block),
+                    );
+
+                    // Convert the selected basis vectors to f32 for storage
+                    let local_basis_vectors_f32 = selected_eigenvectors_f64.mapv(|x_val| x_val as f32);
+
+                    trace!("Block {:?}: extracted {} local components.", block_list_id, num_components_to_extract);
+                    Ok(PerBlockLocalSnpBasis {
+                        block_list_id,
+                        basis_vectors: local_basis_vectors_f32.into_owned(), // into_owned if slice_axis returns a view
+                    })
+                })
+                .collect();
+
+        // Collect results, propagating the first error if any occurred.
+        let mut all_local_bases_final = Vec::with_capacity(ld_block_specs.len());
+        for result_item in local_bases_results {
+            all_local_bases_final.push(result_item?);
+        }
+
+        info!("Successfully learned local eigenSNP bases for all blocks.");
+        Ok(all_local_bases_final)
+    }
+
+    /// Constructs the raw condensed feature matrix (A_eigen_star)
+    /// by projecting all N samples onto the learned local eigenSNP bases.
+    fn project_all_samples_onto_local_bases<G: PcaReadyGenotypeAccessor>(
+        &self,
+        genotype_data: &G,
+        ld_block_specs: &[LdBlockSpecification],
+        all_local_bases: &[PerBlockLocalSnpBasis], 
+        num_total_qc_samples: usize,
+    ) -> Result<RawCondensedFeatures, Box<dyn Error>> {
+        info!(
+            "Projecting N={} samples onto local bases to construct condensed feature matrix.",
+            num_total_qc_samples
+        );
+
+        let total_condensed_features: usize = all_local_bases.iter().map(|basis| basis.basis_vectors.ncols()).sum();
+
+        if total_condensed_features == 0 {
+            info!("Total condensed features M' is 0. Returning empty RawCondensedFeatures.");
+            return Ok(RawCondensedFeatures {
+                data: Array2::<f32>::zeros((0, num_total_qc_samples)),
+            });
+        }
+        debug!("Total condensed features M' = {}", total_condensed_features);
+
+        let mut raw_condensed_data_matrix =
+            Array2::<f32>::zeros((total_condensed_features, num_total_qc_samples));
+        let mut current_condensed_feature_row_offset = 0;
+
+        let all_qc_sample_ids: Vec<QcSampleId> = (0..num_total_qc_samples).map(QcSampleId).collect();
+
+        for block_list_idx_val in 0..ld_block_specs.len() {
+            let block_spec = &ld_block_specs[block_list_idx_val];
+            // Find the corresponding local_basis; assumes all_local_bases is in the same order
+            // or that PerBlockLocalSnpBasis.block_list_id can be used for robust lookup if needed.
+            // For this implementation, direct indexing is used assuming order.
+            let local_basis_data = &all_local_bases[block_list_idx_val];
+            
+            let u_p_star_cp = &local_basis_data.basis_vectors; // Shape: (num_snps_in_block, num_local_components_this_block)
+            let num_local_components_this_block = u_p_star_cp.ncols();
+
+            if block_spec.num_snps_in_block() == 0 || num_local_components_this_block == 0 {
+                trace!("Skipping block LdBlockListId({}) for projection: M_p={} or c_p=0.", block_list_idx_val, block_spec.num_snps_in_block());
+                continue;
+            }
+            
+            // Fetch X_p: standardized genotype data for this block for ALL N samples
+            // Shape: (num_snps_in_block, num_total_qc_samples)
+            let x_block_all_samples = genotype_data.get_standardized_snp_sample_block(
+                &block_spec.pca_snp_ids_in_block,
+                &all_qc_sample_ids,
+            )?;
+
+            // Compute S_p_star = U_p_star_cp.T @ X_block_all_samples
+            // Shapes: (num_local_components_this_block, num_snps_in_block) @ (num_snps_in_block, num_total_qc_samples)
+            // Result S_p_star shape: (num_local_components_this_block, num_total_qc_samples)
+            let s_p_star = u_p_star_cp.t().dot(&x_block_all_samples);
+
+            raw_condensed_data_matrix
+                .slice_mut(s![
+                    current_condensed_feature_row_offset
+                        ..current_condensed_feature_row_offset + num_local_components_this_block,
+                    ..
+                ])
+                .assign(&s_p_star);
+
+            current_condensed_feature_row_offset += num_local_components_this_block;
+        }
+        
+        info!("Constructed raw condensed feature matrix. Shape: {:?}", raw_condensed_data_matrix.dim());
+        Ok(RawCondensedFeatures { data: raw_condensed_data_matrix })
+    }
+
+    /// Standardizes the features (rows) of the raw condensed feature matrix.
+    fn standardize_rows_of_condensed_matrix(
+        raw_features_input: RawCondensedFeatures, // Takes ownership
+    ) -> Result<StandardizedCondensedFeatures, Box<dyn Error>> {
+        let mut condensed_data = raw_features_input.data; // Moves data
+        let num_features = condensed_data.nrows();
+        let num_samples = condensed_data.ncols();
+
+        info!(
+            "Standardizing rows of condensed feature matrix ({} features, {} samples).",
+            num_features, num_samples
+        );
+
+        if num_samples <= 1 { 
+            if num_features > 0 && num_samples == 1 { 
+                 condensed_data.fill(0.0f32);
+            } 
+            debug!("Number of samples ({}) is <= 1, standardization may result in zeros or is skipped if empty.", num_samples);
+            return Ok(StandardizedCondensedFeatures { data: condensed_data });
+        }
+
+        condensed_data
+            .axis_iter_mut(Axis(0)) // Iterate over rows (features)
+            .par_bridge() 
+            .for_each(|mut feature_row_view| {
+                let mut sum_f64: f64 = 0.0;
+                for val_ref in feature_row_view.iter() {
+                    sum_f64 += *val_ref as f64;
+                }
+                let mean_f64 = sum_f64 / (num_samples as f64);
+                let mean_f32 = mean_f64 as f32;
+
+                feature_row_view.mapv_inplace(|x_val| x_val - mean_f32);
+
+                let mut sum_sq_dev_f64: f64 = 0.0;
+                for val_centered_ref in feature_row_view.iter() {
+                    sum_sq_dev_f64 += (*val_centered_ref as f64).powi(2);
+                }
+                
+                let variance_f64 = sum_sq_dev_f64 / (num_samples as f64 - 1.0); 
+                let std_dev_f64 = variance_f64.sqrt();
+                let std_dev_f32 = std_dev_f64 as f32;
+
+                if std_dev_f32.abs() > 1e-7 { 
+                    feature_row_view.mapv_inplace(|x_val| x_val / std_dev_f32);
+                } else {
+                    feature_row_view.fill(0.0f32);
+                }
+            });
+        
+        info!("Finished standardizing rows of condensed feature matrix.");
+        Ok(StandardizedCondensedFeatures { data: condensed_data })
     }
 }
