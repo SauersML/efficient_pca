@@ -1,3 +1,6 @@
+use crate::PCA;
+use ndarray_linalg::{Eigh, QR, UPLO};
+
 #[cfg(test)]
 mod genome_tests {
     use super::*;
