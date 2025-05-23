@@ -685,8 +685,12 @@ impl EigenSNPCoreAlgorithm {
         let computed_sample_scores_samples_by_rank_b = right_singular_vectors_transposed_of_b.t().into_owned();
 
         let num_components_to_return = num_components_target_k.min(computed_sample_scores_samples_by_rank_b.ncols());
-        let final_sample_scores_n_by_k = computed_sample_scores_samples_by_rank_b.slice_axis(Axis(1), s![..num_components_to_return]).to_owned();
-        
+        // Slice the columns of computed_sample_scores_samples_by_rank_b from the beginning up to num_components_to_return.
+        // The slice_axis method expects an ndarray::Slice for the specific axis being sliced.
+        let final_sample_scores_n_by_k = computed_sample_scores_samples_by_rank_b.slice_axis(
+            Axis(1),
+            ndarray::Slice::from(0..num_components_to_return)
+        ).to_owned();        
         trace!("RSVD successfully computed scores. Shape: {:?}", final_sample_scores_n_by_k.dim());
         Ok(final_sample_scores_n_by_k)
     }
