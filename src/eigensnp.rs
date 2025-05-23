@@ -797,36 +797,51 @@ impl EigenSNPCoreAlgorithm {
             return Ok((Array2::zeros((0, num_final_computed_pcs)), Array1::zeros(num_final_computed_pcs)));
         }
 
-        let mut computed_final_sample_scores_samples_by_components =
-            Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs));
-        
         let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
-        let all_qc_sample_ids_for_block: Vec<QcSampleId> =
+        let all_qc_sample_ids_for_final_scores: Vec<QcSampleId> =
             (0..num_total_qc_samples).map(QcSampleId).collect();
 
-        // Iterate through SNP strips ONCE
-        for strip_start_snp_idx in (0..num_total_pca_snps).step_by(snp_processing_strip_size) {
-            let strip_end_snp_idx = (strip_start_snp_idx + snp_processing_strip_size).min(num_total_pca_snps);
-            let snp_ids_in_strip_as_indices: Vec<usize> = (strip_start_snp_idx..strip_end_snp_idx).collect();
-            let snp_ids_in_strip_as_pca_ids: Vec<PcaSnpId> =
-                snp_ids_in_strip_as_indices.iter().map(|&idx| PcaSnpId(idx)).collect();
+        // Define SNP strip iteration parameters
+        let strip_indices_starts: Vec<usize> = (0..num_total_pca_snps)
+            .step_by(snp_processing_strip_size)
+            .collect();
 
-            if snp_ids_in_strip_as_pca_ids.is_empty() { continue; }
+        // Parallel computation of score contributions from each SNP strip
+        let computed_final_sample_scores_samples_by_components = strip_indices_starts
+            .par_iter()
+            .map(|&strip_start_snp_idx| -> Result<Array2<f32>, Box<dyn Error>> {
+                let strip_end_snp_idx = (strip_start_snp_idx + snp_processing_strip_size).min(num_total_pca_snps);
+                
+                // If the strip has no SNPs, return zeros.
+                if strip_start_snp_idx >= strip_end_snp_idx {
+                    return Ok(Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)));
+                }
 
-            let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
-                &snp_ids_in_strip_as_pca_ids,
-                &all_qc_sample_ids_for_block,
-            )?; // M_strip x N
+                let snp_ids_in_strip_as_pca_ids: Vec<PcaSnpId> =
+                    (strip_start_snp_idx..strip_end_snp_idx).map(PcaSnpId).collect();
 
-            let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_d_by_k
-                .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
-            
-            // S_final = X V_final
-            let scores_contribution_from_strip_n_by_k =
-                genotype_data_strip_snps_by_samples.t().dot(&loadings_for_strip_snps_by_components);
-            
-            computed_final_sample_scores_samples_by_components += &scores_contribution_from_strip_n_by_k;
-        }
+                let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
+                    &snp_ids_in_strip_as_pca_ids,
+                    &all_qc_sample_ids_for_final_scores,
+                )?; // M_strip x N
+
+                let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_d_by_k
+                    .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
+                
+                // S_final_strip = X_strip^T V_final_strip
+                // (M_strip x N)^T dot (M_strip x K) -> (N x M_strip) dot (M_strip x K) -> N x K
+                let scores_contribution_from_strip_n_by_k =
+                    genotype_data_strip_snps_by_samples.t().dot(&loadings_for_strip_snps_by_components);
+                
+                Ok(scores_contribution_from_strip_n_by_k)
+            })
+            .try_reduce(
+                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum
+                |mut acc_matrix, strip_scores_matrix| {
+                    acc_matrix += &strip_scores_matrix; // Sum contributions
+                    Ok(acc_matrix)
+                },
+            )?.unwrap_or_else(|| Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)));
 
         let mut computed_final_pc_eigenvalues = Array1::<f64>::zeros(num_final_computed_pcs);
         if num_total_qc_samples > 1 {
