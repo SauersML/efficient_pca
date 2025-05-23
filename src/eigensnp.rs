@@ -582,8 +582,8 @@ impl EigenSNPCoreAlgorithm {
             let genotype_data_for_block_all_samples = genotype_data.get_standardized_snp_sample_block(
                 &block_spec.pca_snp_ids_in_block,
                 &all_qc_sample_ids,
-            ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during projection for block '{}': {}", block_spec.user_defined_block_tag, e_accessor)).into())?;
-
+            ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during projection for block '{}': {}", block_spec.user_defined_block_tag, e_accessor))) as ThreadSafeStdError)?;
+            
             let projected_scores_for_block = local_snp_basis_vectors.t().dot(&genotype_data_for_block_all_samples);
 
             raw_condensed_data_matrix
@@ -667,10 +667,9 @@ impl EigenSNPCoreAlgorithm {
             }
             
             orthonormal_basis_features_by_sketch = matrix_features_by_samples.dot(&projected_onto_samples); 
-            if orthonormal_basis_features_by_sketch.ncols() == 0 { break; }
             orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
-                .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD: {}", iter_idx + 1, e_qr)).into())?.0;         }
-
+                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?.0;         }
+        
         if orthonormal_basis_features_by_sketch.ncols() == 0 {
             warn!("RSVD: Refined sketch Q_basis for left singular vectors has zero columns. Returning empty scores.");
             return Ok(Array2::zeros((num_samples, 0)));
@@ -678,7 +677,7 @@ impl EigenSNPCoreAlgorithm {
         
         let projected_onto_sketch_basis_sketch_dim_by_samples = orthonormal_basis_features_by_sketch.t().dot(matrix_features_by_samples);
         let svd_of_projected_b = projected_onto_sketch_basis_sketch_dim_by_samples.svd_into(false, true) 
-            .map_err(|e_svd| std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd)).into())?;
+            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd))) as ThreadSafeStdError)?;
         
         let right_singular_vectors_transposed_of_b = svd_of_projected_b.2
             .ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD.")) as ThreadSafeStdError)?;
@@ -741,8 +740,8 @@ impl EigenSNPCoreAlgorithm {
                     let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
                         &snp_ids_in_strip,
                         &all_qc_sample_ids,
-                    ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during refined SNP loading for strip index {}: {}", strip_index, e_accessor)).into())?;
-                    
+                    ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during refined SNP loading for strip index {}: {}", strip_index, e_accessor))) as ThreadSafeStdError)?;
+                        
                     let snp_loadings_for_strip = genotype_data_strip_snps_by_samples.dot(initial_scores_n_by_k_initial);
                     loadings_strip_view_mut.assign(&snp_loadings_for_strip);
                     Ok(())
@@ -815,8 +814,8 @@ impl EigenSNPCoreAlgorithm {
                 let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
                     &snp_ids_in_strip_as_pca_ids,
                     &all_qc_sample_ids_for_final_scores,
-                ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final score computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor)).into())?; // M_strip x N
-
+                ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final score computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor))) as ThreadSafeStdError)?; // M_strip x N
+                
                 let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_snps_by_components
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
                 
