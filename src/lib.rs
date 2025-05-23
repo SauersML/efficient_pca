@@ -882,3 +882,6 @@ impl PCA {
         Ok(pca_model)
     }
 }
+
+#[cfg(test)]
+mod tests;
