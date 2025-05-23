@@ -80,47 +80,6 @@ impl LdBlockSpecification {
     }
 }
 
-/// Configuration for the core EigenSNP PCA algorithm's internal parameters.
-/// These parameters define the behavior of various algorithmic stages.
-#[derive(Clone, Debug)]
-pub struct EigenSNPCoreAlgorithmConfig {
-    /// Factor of total samples (N) to consider for the N_s subset size when learning local bases.
-    pub subset_factor_for_local_basis_learning: f64,
-    /// Minimum number of samples for the N_s subset.
-    pub min_subset_size_for_local_basis_learning: usize,
-    /// Maximum number of samples for the N_s subset.
-    pub max_subset_size_for_local_basis_learning: usize,
-
-    /// Number of local eigenSNPs (principal components) to extract per LD block (c_p).
-    pub components_per_ld_block: usize,
-
-    /// Target number of global Principal Components (K) to compute.
-    pub target_num_global_pcs: usize,
-    /// Number of additional random dimensions for sketching in the global RSVD stage (L_glob = K_target + this).
-    pub global_pca_sketch_oversampling: usize,
-    /// Number of power iterations for the global RSVD on the condensed feature matrix.
-    pub global_pca_num_power_iterations: usize,
-
-    /// Seed for the random number generator used in RSVD stages.
-    pub random_seed: u64,
-}
-
-impl Default for EigenSNPCoreAlgorithmConfig {
-    /// Provides sensible default parameters for the EigenSNP PCA algorithm.
-    fn default() -> Self {
-        EigenSNPCoreAlgorithmConfig {
-            subset_factor_for_local_basis_learning: 0.075,
-            min_subset_size_for_local_basis_learning: 10_000,
-            max_subset_size_for_local_basis_learning: 40_000,
-            components_per_ld_block: 7,
-            target_num_global_pcs: 15,
-            global_pca_sketch_oversampling: 10,
-            global_pca_num_power_iterations: 2,
-            random_seed: 2025,
-        }
-    }
-}
-
 // --- Typed Intermediate Data Product Structs ---
 
 /// Represents the learned local eigenSNP basis vectors for a single LD block.
@@ -199,14 +158,6 @@ pub struct EigenSNPCoreOutput {
     pub num_principal_components_computed: usize,
 }
 
-// --- Main Algorithm Orchestrator Struct Definition ---
-
-/// Orchestrates the EigenSNP PCA algorithm.
-/// Holds the configuration and provides the main execution method.
-#[derive(Debug, Clone)]
-pub struct EigenSNPCoreAlgorithm {
-    config: EigenSNPCoreAlgorithmConfig,
-}
 
 // --- Utility Functions ---
 
@@ -286,6 +237,22 @@ fn standardize_raw_condensed_features(
 #[derive(Debug, Clone)]
 pub struct EigenSNPCoreAlgorithm {
     config: EigenSNPCoreAlgorithmConfig,
+}
+
+impl Default for EigenSNPCoreAlgorithmConfig {
+    /// Provides sensible default parameters for the EigenSNP PCA algorithm.
+    fn default() -> Self {
+        EigenSNPCoreAlgorithmConfig {
+            subset_factor_for_local_basis_learning: 0.075,
+            min_subset_size_for_local_basis_learning: 10_000,
+            max_subset_size_for_local_basis_learning: 40_000,
+            components_per_ld_block: 7,
+            target_num_global_pcs: 15,
+            global_pca_sketch_oversampling: 10,
+            global_pca_num_power_iterations: 2,
+            random_seed: 2025,
+        }
+    }
 }
 
 impl EigenSNPCoreAlgorithm {
