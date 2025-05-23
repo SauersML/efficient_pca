@@ -35,6 +35,8 @@ rand_distr = "0.4.3"
 tempfile = "3.20.0"
 bincode = { version = "2.0.1", features = ["serde"] }
 serde = { version = "1.0.219", features = ["derive"] }
+rayon = "1.10.0"
+log = "0.4.27"
 
 [lib]
 name = "efficient_pca"
