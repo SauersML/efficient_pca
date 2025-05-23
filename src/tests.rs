@@ -1,4 +1,5 @@
 use crate::PCA;
+use ndarray::Axis;
 use ndarray_linalg::{Eigh, QR, UPLO};
 
 #[cfg(test)]
