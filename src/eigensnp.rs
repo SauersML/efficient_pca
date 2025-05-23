@@ -7,6 +7,10 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
 
+/// A thread-safe wrapper for standard dynamic errors,
+/// so they implement `Send` and `Sync`.
+type ThreadSafeStdError = Box<dyn Error + Send + Sync + 'static>;
+
 // --- Core Index Types ---
 
 /// Identifies a SNP included in the PCA (post-QC and part of an LD block).
@@ -51,7 +55,7 @@ pub trait PcaReadyGenotypeAccessor: Sync {
         &self,
         snp_ids: &[PcaSnpId],
         sample_ids: &[QcSampleId],
-    ) -> Result<Array2<f32>, Box<dyn Error>>;
+    ) -> Result<Array2<f32>, ThreadSafeStdError>;
 
     /// Returns the total number of SNPs available for PCA (i.e., D_blocked,
     /// those SNPs that passed QC and are part of defined LD blocks).
@@ -167,7 +171,7 @@ pub struct EigenSNPCoreOutput {
 /// to prevent division by zero and for numerical stability.
 fn standardize_raw_condensed_features(
     raw_features_input: RawCondensedFeatures,
-) -> Result<StandardizedCondensedFeatures, Box<dyn Error>> {
+) -> Result<StandardizedCondensedFeatures, ThreadSafeStdError> {
     let mut condensed_data_matrix = raw_features_input.data;
     let num_total_condensed_features = condensed_data_matrix.nrows();
     let num_samples = condensed_data_matrix.ncols();
@@ -293,7 +297,7 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
-    ) -> Result<EigenSNPCoreOutput, Box<dyn Error>> {
+    ) -> Result<EigenSNPCoreOutput, ThreadSafeStdError> {
         let num_total_qc_samples = genotype_data.num_qc_samples();
         let num_total_pca_snps = genotype_data.num_pca_snps();
 
@@ -313,10 +317,10 @@ impl EigenSNPCoreAlgorithm {
 
         // Input Validations
         if self.config.target_num_global_pcs == 0 {
-            return Err(Box::from("Target number of global PCs must be greater than 0."));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Target number of global PCs must be greater than 0.").into());
         }
         if num_total_pca_snps > 0 && ld_block_specifications.is_empty() {
-            return Err(Box::from("LD block specifications cannot be empty if PCA SNPs are present."));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "LD block specifications cannot be empty if PCA SNPs are present.").into());
         }
         if num_total_qc_samples == 0 {
             warn!("Genotype data has zero QC samples. Returning empty PCA output.");
@@ -348,7 +352,7 @@ impl EigenSNPCoreAlgorithm {
         } else {
              if num_total_qc_samples > 0 && ld_block_specifications.iter().any(|b| b.num_snps_in_block() > 0) {
                  warn!("Calculated N_s is 0, but total samples > 0 and blocks have SNPs. This situation is problematic for learning local bases.");
-                 return Err(Box::from("Subset size (N_s) for local basis learning is 0, but samples and SNP blocks are present."));
+                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Subset size (N_s) for local basis learning is 0, but samples and SNP blocks are present.").into());
              }
              Vec::new()
         };
@@ -447,7 +451,7 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
         subset_sample_ids: &[QcSampleId],
-    ) -> Result<Vec<PerBlockLocalSnpBasis>, Box<dyn Error>> {
+    ) -> Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError> {
         info!(
             "Learning local eigenSNP bases for {} LD blocks using N_subset = {} samples.",
             ld_block_specs.len(),
@@ -457,15 +461,15 @@ impl EigenSNPCoreAlgorithm {
         if subset_sample_ids.is_empty() {
             let any_snps_in_blocks = ld_block_specs.iter().any(|b| b.num_snps_in_block() > 0);
             if any_snps_in_blocks {
-                return Err(Box::from("Subset sample IDs for local basis learning cannot be empty if LD blocks contain SNPs."));
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Subset sample IDs for local basis learning cannot be empty if LD blocks contain SNPs.").into());
             }
         }
 
-        let local_bases_results: Vec<Result<PerBlockLocalSnpBasis, Box<dyn Error>>> =
+        let local_bases_results: Vec<Result<PerBlockLocalSnpBasis, ThreadSafeStdError>> =
             ld_block_specs
                 .par_iter()
                 .enumerate()
-                .map(|(block_idx_val, block_spec)| {
+                .map(|(block_idx_val, block_spec)| -> Result<PerBlockLocalSnpBasis, ThreadSafeStdError> {
                     let block_list_id = LdBlockListId(block_idx_val);
                     let num_snps_in_this_block_spec = block_spec.num_snps_in_block();
 
@@ -481,7 +485,7 @@ impl EigenSNPCoreAlgorithm {
                         genotype_data.get_standardized_snp_sample_block(
                             &block_spec.pca_snp_ids_in_block,
                             subset_sample_ids,
-                        )?;
+                        ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_accessor)).into())?;
                     
                     let actual_num_snps_in_block = genotype_block_for_subset_samples.nrows();
                     let actual_num_subset_samples = genotype_block_for_subset_samples.ncols();
@@ -512,7 +516,7 @@ impl EigenSNPCoreAlgorithm {
                     // to get the eigenvectors corresponding to the largest eigenvalues.
                     let (_eigenvalues_f64, eigenvectors_f64_columns) =
                         snp_covariance_matrix_f64.eigh(UPLO::Upper)
-                        .map_err(|e| Box::from(format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e)))?;
+                        .map_err(|e_linalg| std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg)).into())?;
                     
                     let selected_eigenvectors_f64 = eigenvectors_f64_columns.slice_axis(
                         Axis(1),
@@ -544,7 +548,7 @@ impl EigenSNPCoreAlgorithm {
         ld_block_specs: &[LdBlockSpecification],
         all_local_bases: &[PerBlockLocalSnpBasis], 
         num_total_qc_samples: usize,
-    ) -> Result<RawCondensedFeatures, Box<dyn Error>> {
+    ) -> Result<RawCondensedFeatures, ThreadSafeStdError> {
         info!(
             "Projecting {} total QC samples onto local bases to construct condensed feature matrix.",
             num_total_qc_samples
@@ -581,7 +585,7 @@ impl EigenSNPCoreAlgorithm {
             let genotype_data_for_block_all_samples = genotype_data.get_standardized_snp_sample_block(
                 &block_spec.pca_snp_ids_in_block,
                 &all_qc_sample_ids,
-            )?;
+            ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during projection for block '{}': {}", block_spec.user_defined_block_tag, e_accessor)).into())?;
 
             let projected_scores_for_block = local_snp_basis_vectors.t().dot(&genotype_data_for_block_all_samples);
 
@@ -603,7 +607,7 @@ impl EigenSNPCoreAlgorithm {
     fn compute_pca_on_standardized_condensed_features_via_rsvd(
         &self,
         standardized_condensed_features: &StandardizedCondensedFeatures,
-    ) -> Result<InitialSamplePcScores, Box<dyn Error>> {
+    ) -> Result<InitialSamplePcScores, ThreadSafeStdError> {
         let sample_scores_n_by_k = Self::perform_randomized_svd_for_scores(
             &standardized_condensed_features.data.view(),
             self.config.target_num_global_pcs,
@@ -620,7 +624,7 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
-    ) -> Result<Array2<f32>, Box<dyn Error>> {
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
         let num_features = matrix_features_by_samples.nrows();
         let num_samples = matrix_features_by_samples.ncols();
 
@@ -641,7 +645,7 @@ impl EigenSNPCoreAlgorithm {
 
         let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
         let normal_dist = Normal::new(0.0, 1.0)
-            .map_err(|e| Box::from(format!("Failed to create normal distribution for RSVD: {}", e)))?;
+            .map_err(|e_normal| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to create normal distribution for RSVD: {}", e_normal)).into())?;
 
         let random_projection_matrix_samples_by_sketch = Array2::from_shape_fn((num_samples, sketch_dimension), |_| {
             normal_dist.sample(&mut rng) as f32
@@ -653,8 +657,8 @@ impl EigenSNPCoreAlgorithm {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension);
             return Ok(Array2::zeros((num_samples, 0)));
         }
-        orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()?.0;
-
+        orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
+            .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD: {}", e_qr)).into())?.0;
         for iter_idx in 0..num_power_iterations {
             if orthonormal_basis_features_by_sketch.ncols() == 0 { break; } 
             trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
@@ -667,8 +671,8 @@ impl EigenSNPCoreAlgorithm {
             
             orthonormal_basis_features_by_sketch = matrix_features_by_samples.dot(&projected_onto_samples); 
             if orthonormal_basis_features_by_sketch.ncols() == 0 { break; }
-            orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()?.0; 
-        }
+            orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
+                .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD: {}", iter_idx + 1, e_qr)).into())?.0;         }
 
         if orthonormal_basis_features_by_sketch.ncols() == 0 {
             warn!("RSVD: Refined sketch Q_basis for left singular vectors has zero columns. Returning empty scores.");
@@ -676,12 +680,11 @@ impl EigenSNPCoreAlgorithm {
         }
         
         let projected_onto_sketch_basis_sketch_dim_by_samples = orthonormal_basis_features_by_sketch.t().dot(matrix_features_by_samples);
-
         let svd_of_projected_b = projected_onto_sketch_basis_sketch_dim_by_samples.svd_into(false, true) 
-            .map_err(|e| Box::from(format!("SVD of projected matrix B failed in RSVD: {}", e)))?;
+            .map_err(|e_svd| std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd)).into())?;
         
         let right_singular_vectors_transposed_of_b = svd_of_projected_b.2
-            .ok_or_else(|| Box::from("V^T from SVD of B was not computed in RSVD."))?;
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD.").into())?;
         
         let computed_sample_scores_samples_by_rank_b = right_singular_vectors_transposed_of_b.t().into_owned();
 
@@ -696,7 +699,7 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         initial_sample_pc_scores: &InitialSamplePcScores,
-    ) -> Result<Array2<f32>, Box<dyn Error>> {
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
         let initial_scores_n_by_k_initial = &initial_sample_pc_scores.scores; 
         let num_qc_samples = initial_scores_n_by_k_initial.nrows();
         let num_computed_initial_pcs = initial_scores_n_by_k_initial.ncols();
@@ -728,7 +731,7 @@ impl EigenSNPCoreAlgorithm {
                 .into_par_iter()
                 .enumerate()
                 .try_for_each(|(strip_index, mut loadings_strip_view_mut)| 
-                    -> Result<(), Box<dyn Error>> {
+                    -> Result<(), ThreadSafeStdError> {
                     let strip_start_snp_idx = strip_index * snp_processing_strip_size;
                     let num_snps_in_current_strip = loadings_strip_view_mut.nrows();
 
@@ -741,7 +744,7 @@ impl EigenSNPCoreAlgorithm {
                     let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
                         &snp_ids_in_strip,
                         &all_qc_sample_ids,
-                    )?;
+                    ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during refined SNP loading for strip index {}: {}", strip_index, e_accessor)).into())?;
                     
                     let snp_loadings_for_strip = genotype_data_strip_snps_by_samples.dot(initial_scores_n_by_k_initial);
                     loadings_strip_view_mut.assign(&snp_loadings_for_strip);
@@ -756,7 +759,7 @@ impl EigenSNPCoreAlgorithm {
 
         let (orthonormal_snp_loadings, _r_matrix_for_qr) = 
             snp_loadings_before_ortho_pca_snps_by_components.qr()
-            .map_err(|e| Box::from(format!("QR decomposition of refined loadings failed: {}", e)))?;
+            .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of refined loadings failed: {}", e_qr)).into())?;
         
         info!("Computed refined SNP loadings. Shape: {:?}", orthonormal_snp_loadings.dim());
         Ok(orthonormal_snp_loadings)
@@ -767,7 +770,7 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         orthonormal_snp_loadings_d_by_k: &ArrayView2<f32>, 
         num_total_qc_samples: usize,
-    ) -> Result<(Array2<f32>, Array1<f64>), Box<dyn Error>> {
+    ) -> Result<(Array2<f32>, Array1<f64>), ThreadSafeStdError> {
         let num_total_pca_snps = orthonormal_snp_loadings_d_by_k.nrows();
         let num_final_computed_pcs = orthonormal_snp_loadings_d_by_k.ncols();
 
@@ -801,7 +804,7 @@ impl EigenSNPCoreAlgorithm {
         // Parallel computation of score contributions from each SNP strip
         let computed_final_sample_scores_samples_by_components = strip_indices_starts
             .par_iter()
-            .map(|&strip_start_snp_idx| -> Result<Array2<f32>, Box<dyn Error>> {
+            .map(|&strip_start_snp_idx| -> Result<Array2<f32>, ThreadSafeStdError> {
                 let strip_end_snp_idx = (strip_start_snp_idx + snp_processing_strip_size).min(num_total_pca_snps);
                 
                 // If the strip has no SNPs, return zeros.
@@ -815,7 +818,7 @@ impl EigenSNPCoreAlgorithm {
                 let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
                     &snp_ids_in_strip_as_pca_ids,
                     &all_qc_sample_ids_for_final_scores,
-                )?; // M_strip x N
+                ).map_err(|e_accessor| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final score computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor)).into())?; // M_strip x N
 
                 let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_d_by_k
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
