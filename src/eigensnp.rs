@@ -1,5 +1,5 @@
-use ndarray::{s, Array1, Array2, Axis, ArrayView1, ArrayView2};
-use ndarray_linalg::{Eigh, UPLO, QR, SVDInto, Lapack};
+use ndarray::{s, Array1, Array2, Axis, ArrayView2};
+use ndarray_linalg::{Eigh, UPLO, QR, SVDInto};
 use rayon::prelude::*;
 use std::error::Error;
 use log::{info, debug, trace, warn};
@@ -208,6 +208,86 @@ pub struct EigenSNPCoreAlgorithm {
     config: EigenSNPCoreAlgorithmConfig,
 }
 
+// --- Utility Functions ---
+
+/// Standardizes each row (feature) of the input condensed feature matrix to have zero mean and unit variance.
+/// Features with a standard deviation effectively zero (absolute value < 1e-7) after mean centering
+/// will be filled with zeros. This is a common approach to handle constant features in PCA
+/// to prevent division by zero and for numerical stability.
+fn standardize_raw_condensed_features(
+    raw_features_input: RawCondensedFeatures,
+) -> Result<StandardizedCondensedFeatures, Box<dyn Error>> {
+    let mut condensed_data_matrix = raw_features_input.data;
+    let num_total_condensed_features = condensed_data_matrix.nrows();
+    let num_samples = condensed_data_matrix.ncols();
+
+    info!(
+        "Standardizing rows of condensed feature matrix ({} features, {} samples).",
+        num_total_condensed_features, num_samples
+    );
+
+    if num_samples <= 1 {
+        if num_total_condensed_features > 0 && num_samples == 1 {
+            // If there's only one sample, variance is undefined (or zero).
+            // Standardizing would lead to NaNs or division by zero.
+            // Filling with 0.0 is a consistent way to handle this.
+            condensed_data_matrix.fill(0.0f32);
+        }
+        debug!("Number of samples ({}) is <= 1 for condensed matrix; standardization results in zeros or is skipped if already empty.", num_samples);
+        return Ok(StandardizedCondensedFeatures { data: condensed_data_matrix });
+    }
+
+    // Parallelize row-wise standardization
+    condensed_data_matrix
+        .axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .for_each(|mut feature_row| {
+            // Calculate mean
+            let mut sum_for_mean_f64: f64 = 0.0;
+            for val_ref in feature_row.iter() {
+                sum_for_mean_f64 += *val_ref as f64;
+            }
+            let mean_val_f64 = sum_for_mean_f64 / (num_samples as f64);
+            let mean_val_f32 = mean_val_f64 as f32;
+
+            // Mean center the row
+            feature_row.mapv_inplace(|x_val| x_val - mean_val_f32);
+
+            // Calculate standard deviation of the mean-centered row
+            let mut sum_sq_deviations_f64: f64 = 0.0;
+            for val_centered_ref in feature_row.iter() {
+                sum_sq_deviations_f64 += (*val_centered_ref as f64).powi(2);
+            }
+            
+            // Use (N-1) for sample variance calculation
+            let variance_f64 = sum_sq_deviations_f64 / (num_samples as f64 - 1.0);
+            let std_dev_f64 = variance_f64.sqrt();
+            let std_dev_f32 = std_dev_f64 as f32;
+
+            // Scale by standard deviation
+            if std_dev_f32.abs() > 1e-7 { // Check against a small epsilon to avoid division by zero
+                feature_row.mapv_inplace(|x_val| x_val / std_dev_f32);
+            } else {
+                // If standard deviation is effectively zero, the feature is constant.
+                // Set all values in this row to 0.0.
+                feature_row.fill(0.0f32);
+            }
+        });
+    
+    info!("Finished standardizing rows of condensed feature matrix.");
+    Ok(StandardizedCondensedFeatures { data: condensed_data_matrix })
+}
+
+
+// --- Main Algorithm Orchestrator Struct Definition ---
+
+/// Orchestrates the EigenSNP PCA algorithm.
+/// Holds the configuration and provides the main execution method.
+#[derive(Debug, Clone)]
+pub struct EigenSNPCoreAlgorithm {
+    config: EigenSNPCoreAlgorithmConfig,
+}
+
 impl EigenSNPCoreAlgorithm {
     /// Creates a new `EigenSNPCoreAlgorithm` runner with the given configuration.
     pub fn new(config: EigenSNPCoreAlgorithmConfig) -> Self {
@@ -271,7 +351,6 @@ impl EigenSNPCoreAlgorithm {
 
         let subset_sample_ids_selected: Vec<QcSampleId> = if actual_ns > 0 {
             let mut rng_subset_selection = ChaCha8Rng::seed_from_u64(self.config.random_seed);
-            let all_sample_indices: Vec<usize> = (0..num_total_qc_samples).collect();
             let subset_indices: Vec<usize> = rand::seq::index::sample(&mut rng_subset_selection, num_total_qc_samples, actual_ns).into_vec();
             subset_indices.into_iter().map(QcSampleId).collect()
         } else {
@@ -302,7 +381,7 @@ impl EigenSNPCoreAlgorithm {
 
         let condensed_matrix_standardization_start_time = std::time::Instant::now();
         let standardized_condensed_feature_matrix =
-            Self::standardize_rows_of_condensed_matrix(raw_condensed_feature_matrix)?;
+            standardize_raw_condensed_features(raw_condensed_feature_matrix)?; // Updated call site
         info!("Standardized condensed feature matrix in {:?}", condensed_matrix_standardization_start_time.elapsed());
 
         let initial_global_pca_start_time = std::time::Instant::now();
@@ -437,6 +516,8 @@ impl EigenSNPCoreAlgorithm {
                     let genotype_block_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
                     let snp_covariance_matrix_f64 = genotype_block_f64.dot(&genotype_block_f64.t());
 
+                    // .eigh returns eigenvalues in ascending order; we slice the last 'num_components_to_extract'
+                    // to get the eigenvectors corresponding to the largest eigenvalues.
                     let (_eigenvalues_f64, eigenvectors_f64_columns) =
                         snp_covariance_matrix_f64.eigh(UPLO::Upper)
                         .map_err(|e| Box::from(format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e)))?;
@@ -495,7 +576,7 @@ impl EigenSNPCoreAlgorithm {
 
         for block_idx in 0..ld_block_specs.len() {
             let block_spec = &ld_block_specs[block_idx];
-            let local_basis_data = &all_local_bases[block_idx]; // Assumes all_local_bases is ordered same as ld_block_specs
+            let local_basis_data = &all_local_bases[block_idx]; // all_local_bases have to be ordered same as ld_block_specs
             
             let local_snp_basis_vectors = &local_basis_data.basis_vectors; 
             let num_components_this_block = local_snp_basis_vectors.ncols();
@@ -525,59 +606,6 @@ impl EigenSNPCoreAlgorithm {
         
         info!("Constructed raw condensed feature matrix. Shape: {:?}", raw_condensed_data_matrix.dim());
         Ok(RawCondensedFeatures { data: raw_condensed_data_matrix })
-    }
-    
-    fn standardize_rows_of_condensed_matrix(
-        raw_features_input: RawCondensedFeatures,
-    ) -> Result<StandardizedCondensedFeatures, Box<dyn Error>> {
-        let mut condensed_data_matrix = raw_features_input.data; 
-        let num_total_condensed_features = condensed_data_matrix.nrows();
-        let num_samples = condensed_data_matrix.ncols();
-
-        info!(
-            "Standardizing rows of condensed feature matrix ({} features, {} samples).",
-            num_total_condensed_features, num_samples
-        );
-
-        if num_samples <= 1 { 
-            if num_total_condensed_features > 0 && num_samples == 1 { 
-                condensed_data_matrix.fill(0.0f32);
-            } 
-            debug!("Number of samples ({}) is <= 1 for condensed matrix; standardization may result in zeros or is skipped if empty.", num_samples);
-            return Ok(StandardizedCondensedFeatures { data: condensed_data_matrix });
-        }
-
-        condensed_data_matrix
-            .axis_iter_mut(Axis(0)) 
-            .into_par_iter() 
-            .for_each(|mut feature_row| {
-                let mut sum_for_mean_f64: f64 = 0.0;
-                for val_ref in feature_row.iter() {
-                    sum_for_mean_f64 += *val_ref as f64;
-                }
-                let mean_val_f64 = sum_for_mean_f64 / (num_samples as f64);
-                let mean_val_f32 = mean_val_f64 as f32;
-
-                feature_row.mapv_inplace(|x_val| x_val - mean_val_f32);
-
-                let mut sum_sq_deviations_f64: f64 = 0.0;
-                for val_centered_ref in feature_row.iter() {
-                    sum_sq_deviations_f64 += (*val_centered_ref as f64).powi(2);
-                }
-                
-                let variance_f64 = sum_sq_deviations_f64 / (num_samples as f64 - 1.0); 
-                let std_dev_f64 = variance_f64.sqrt();
-                let std_dev_f32 = std_dev_f64 as f32;
-
-                if std_dev_f32.abs() > 1e-7 { 
-                    feature_row.mapv_inplace(|x_val| x_val / std_dev_f32);
-                } else {
-                    feature_row.fill(0.0f32);
-                }
-            });
-        
-        info!("Finished standardizing rows of condensed feature matrix.");
-        Ok(StandardizedCondensedFeatures { data: condensed_data_matrix })
     }
 
     fn compute_pca_on_standardized_condensed_features_via_rsvd(
