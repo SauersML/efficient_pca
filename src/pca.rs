@@ -3,7 +3,12 @@
 #![doc = include_str!("../README.md")]
 
 use ndarray::{s, Array1, Array2, Axis, ArrayView1};
-use ndarray_linalg::{Eigh, QR, SVDInto, UPLO}; // QR is the trait for .qr()
+// UPLO is no longer needed as the backend's eigh_upper handles this.
+// QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
+// Eigh trait for .eigh() is replaced by backend calls.
+use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput, LinAlgBackendProvider};
+// use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
+// use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rand::Rng;
 use rand::SeedableRng; // For ChaCha8Rng::seed_from_u64
 use rand_chacha::ChaCha8Rng;
@@ -201,26 +206,29 @@ impl PCA {
             .mean_axis(Axis(0))
             .ok_or("Failed to compute mean of the data.")?;
         self.mean = Some(mean_vector.clone());
-        data_matrix -= &mean_vector; 
+        data_matrix -= &mean_vector;
 
         let original_std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
         let sanitized_scale_vector = original_std_dev_vector
             .mapv(|val| if val.abs() < 1e-9 { 1.0 } else { val });
-        self.scale = Some(sanitized_scale_vector.clone()); 
-        
-        let mut scaled_data_matrix = data_matrix; 
-        scaled_data_matrix /= &sanitized_scale_vector; 
+        self.scale = Some(sanitized_scale_vector.clone());
+
+        let mut scaled_data_matrix = data_matrix;
+        scaled_data_matrix /= &sanitized_scale_vector;
+
+        let backend = LinAlgBackendProvider::<f64>::new(); // Use LinAlgBackendProvider
 
         if n_features <= n_samples {
             let mut cov_matrix = scaled_data_matrix.t().dot(&scaled_data_matrix);
             cov_matrix /= (n_samples - 1) as f64;
 
-            let (vals, vecs) = cov_matrix
-                .eigh(UPLO::Upper)
-                .map_err(|e| format!("Eigen decomposition of covariance matrix failed: {}",e))?;
+            let eigh_result = backend.eigh_upper(&cov_matrix)
+                .map_err(|e| format!("Eigen decomposition of covariance matrix failed (via backend): {}", e))?;
+            let vals = eigh_result.eigenvalues;
+            let vecs = eigh_result.eigenvectors;
 
             let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
-                .into_iter()
+                .iter().cloned() // Iterate over values, cloning them
                 .zip(vecs.columns().into_iter().map(|col| col.to_owned()))
                 .collect();
             eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
@@ -265,12 +273,13 @@ impl PCA {
             let mut gram_matrix = scaled_data_matrix.dot(&scaled_data_matrix.t());
             gram_matrix /= (n_samples - 1) as f64;
 
-            let (vals, u_vecs) = gram_matrix
-                .eigh(UPLO::Upper)
-                .map_err(|e| format!("Eigen decomposition of Gram matrix failed: {}", e))?;
+            let eigh_result_gram = backend.eigh_upper(&gram_matrix)
+                .map_err(|e| format!("Eigen decomposition of Gram matrix failed (via backend): {}", e))?;
+            let vals_gram = eigh_result_gram.eigenvalues;
+            let u_vecs = eigh_result_gram.eigenvectors;
 
-            let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals
-                .into_iter()
+            let mut eig_pairs: Vec<(f64, Array1<f64>)> = vals_gram
+                .iter().cloned() // Iterate over values, cloning them
                 .zip(u_vecs.columns().into_iter().map(|col| col.to_owned()))
                 .collect();
             eig_pairs.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
@@ -500,12 +509,14 @@ impl PCA {
 
         // --- 4. Initialize RNG ---
         // Number of power iterations (q in Halko et al.) to improve accuracy. 2 is a common default.
-        const N_POWER_ITERATIONS: usize = 2; 
+        const N_POWER_ITERATIONS: usize = 2;
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
             None => ChaCha8Rng::from_rng(rand::thread_rng())
                 .map_err(|e| format!("Failed to initialize RNG: {}", e))?,
         };
+
+        let backend = LinAlgBackendProvider::<f64>::new(); // Use LinAlgBackendProvider
 
         // --- 5. Randomized SVD Core: Sketching and Projection ---
         // `final_rotation_sketch` will hold the unnormalized principal axes (D x k_eff_sketch)
@@ -528,31 +539,28 @@ impl PCA {
                 });
 
             // Initial sketch: Y = A @ Omega_prime
-            let mut q_prime_basis = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) @ (D x L) -> N x L
-            if q_prime_basis.ncols() == 0 { // Should only happen if l_sketch_components was 0
-                 return Err("Sketch Q'_basis (from A) has zero columns before QR. This indicates l_sketch_components became 0.".into());
+            let mut q_prime_basis_candidate = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) @ (D x L) -> N x L
+            if q_prime_basis_candidate.ncols() == 0 { // Should only happen if l_sketch_components was 0
+                 return Err("Sketch Q'_basis_candidate (from A) has zero columns before QR. This indicates l_sketch_components became 0.".into());
             }
-            q_prime_basis = q_prime_basis.qr()
-                .map_err(|e| format!("QR decomposition of Q' (initial sketch of A) failed: {}", e))?
-                .0; // Q factor from QR decomposition (N x L_actual)
+            let mut q_prime_basis = backend.qr_q_factor(&q_prime_basis_candidate)
+                .map_err(|e| format!("QR decomposition of Q' (initial sketch of A) failed: {}", e))?; // Q factor (N x L_actual)
             
             // Power iterations to refine Q_prime_basis
             for i in 0..N_POWER_ITERATIONS {
                 if q_prime_basis.ncols() == 0 { break; } // Orthonormal basis might have reduced rank
                 // W_prime_intermediate = A.T @ Q_prime_basis  (D x N) @ (N x L) -> D x L
-                let w_prime_intermediate = centered_scaled_data_a.t().dot(&q_prime_basis);
-                if w_prime_intermediate.ncols() == 0 { break; }
-                let w_prime_ortho_basis = w_prime_intermediate.qr()
-                    .map_err(|e| format!("QR decomposition of W' (power iteration {}) failed: {}", i, e))?
-                    .0; // D x L_actual
+                let w_prime_intermediate_candidate = centered_scaled_data_a.t().dot(&q_prime_basis);
+                if w_prime_intermediate_candidate.ncols() == 0 { break; }
+                let w_prime_ortho_basis = backend.qr_q_factor(&w_prime_intermediate_candidate)
+                    .map_err(|e| format!("QR decomposition of W' (power iteration {}) failed: {}", i, e))?; // D x L_actual
                 
                 if w_prime_ortho_basis.ncols() == 0 { break; }
                 // Z_prime_intermediate = A @ W_prime_ortho_basis (N x D) @ (D x L) -> N x L
-                let z_prime_intermediate = centered_scaled_data_a.dot(&w_prime_ortho_basis);
-                if z_prime_intermediate.ncols() == 0 { break; }
-                q_prime_basis = z_prime_intermediate.qr()
-                    .map_err(|e| format!("QR decomposition of Z' (power iteration {}) failed: {}", i, e))?
-                    .0; // N x L_actual
+                let z_prime_intermediate_candidate = centered_scaled_data_a.dot(&w_prime_ortho_basis);
+                if z_prime_intermediate_candidate.ncols() == 0 { break; }
+                q_prime_basis = backend.qr_q_factor(&z_prime_intermediate_candidate)
+                    .map_err(|e| format!("QR decomposition of Z' (power iteration {}) failed: {}", i, e))?; // N x L_actual
             }
 
             if q_prime_basis.ncols() == 0 {
@@ -565,12 +573,12 @@ impl PCA {
             // SVD of the small projected matrix B_prime_projected
             // We need V^T from B_prime = U S V^T.
             // The columns of V (rows of V^T) are the principal components in feature space.
-            let svd_result_b_prime = b_prime_projected.svd_into(false, true) // compute_u=false, compute_v=true
-                .map_err(|e| format!("SVD of B' (projected sketch of A) failed: {}", e))?;
+            let svd_output_b_prime = backend.svd_into(b_prime_projected, false, true) // compute_u=false, compute_v=true
+                .map_err(|e| format!("SVD of B' (projected sketch of A) failed (via backend): {}", e))?;
             
-            singular_values_from_projected_b = svd_result_b_prime.1; // s_values
-            let vt_b_prime_matrix = svd_result_b_prime.2 // V^T matrix
-                .ok_or("SVD V_B_prime^T not computed from B' (A sketch)")?; // L_eff x D or L_actual x D
+            singular_values_from_projected_b = svd_output_b_prime.s; // s_values
+            let vt_b_prime_matrix = svd_output_b_prime.vt // V^T matrix
+                .ok_or("SVD V_B_prime^T not computed from B' (A sketch, via backend)")?; // L_eff x D or L_actual x D
             
             final_rotation_sketch = vt_b_prime_matrix.t().into_owned(); // D x L_eff (Principal axes)
 
@@ -588,32 +596,29 @@ impl PCA {
                     rng.sample(Normal::new(0.0, 1.0).expect("Failed to create Normal distribution"))
                 });
 
-            // Initial sketch: Y_aat = A.T @ Omega
-            let mut q_basis = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N) @ (N x L) -> D x L
-            if q_basis.ncols() == 0 {
-                return Err("Initial sketch Q_basis (from A.T) has zero columns before QR. This indicates l_sketch_components became 0.".into());
+            // Initial sketch: Y_aat_candidate = A.T @ Omega
+            let mut q_basis_candidate = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N) @ (N x L) -> D x L
+            if q_basis_candidate.ncols() == 0 {
+                return Err("Initial sketch Q_basis_candidate (from A.T) has zero columns before QR. This indicates l_sketch_components became 0.".into());
             }
-            q_basis = q_basis.qr()
-                .map_err(|e| format!("QR decomposition of Q (initial sketch of A.T) failed: {}",e))?
-                .0; // Q factor from QR (D x L_actual)
+            let mut q_basis = backend.qr_q_factor(&q_basis_candidate)
+                .map_err(|e| format!("QR decomposition of Q (initial sketch of A.T) failed: {}",e))?; // Q factor (D x L_actual)
 
             // Power iterations to refine Q_basis
             for i in 0..N_POWER_ITERATIONS {
                 if q_basis.ncols() == 0 { break; }
-                // W_intermediate = A @ Q_basis (N x D) @ (D x L) -> N x L
-                let w_intermediate = centered_scaled_data_a.dot(&q_basis);
-                if w_intermediate.ncols() == 0 { break; }
-                let w_ortho_basis = w_intermediate.qr()
-                    .map_err(|e| format!("QR decomposition of W (power iteration {}) failed: {}", i, e))?
-                    .0; // N x L_actual
+                // W_intermediate_candidate = A @ Q_basis (N x D) @ (D x L) -> N x L
+                let w_intermediate_candidate = centered_scaled_data_a.dot(&q_basis);
+                if w_intermediate_candidate.ncols() == 0 { break; }
+                let w_ortho_basis = backend.qr_q_factor(&w_intermediate_candidate)
+                    .map_err(|e| format!("QR decomposition of W (power iteration {}) failed: {}", i, e))?; // N x L_actual
 
                 if w_ortho_basis.ncols() == 0 { break; }
-                // Z_intermediate = A.T @ W_ortho_basis (D x N) @ (N x L) -> D x L
-                let z_intermediate = centered_scaled_data_a.t().dot(&w_ortho_basis);
-                if z_intermediate.ncols() == 0 { break; }
-                q_basis = z_intermediate.qr()
-                    .map_err(|e| format!("QR decomposition of Z (power iteration {}) failed: {}", i, e))?
-                    .0; // D x L_actual
+                // Z_intermediate_candidate = A.T @ W_ortho_basis (D x N) @ (N x L) -> D x L
+                let z_intermediate_candidate = centered_scaled_data_a.t().dot(&w_ortho_basis);
+                if z_intermediate_candidate.ncols() == 0 { break; }
+                q_basis = backend.qr_q_factor(&z_intermediate_candidate)
+                    .map_err(|e| format!("QR decomposition of Z (power iteration {}) failed: {}", i, e))?; // D x L_actual
             }
             
             if q_basis.ncols() == 0 {
@@ -628,12 +633,12 @@ impl PCA {
             // SVD of the small projected matrix B_projected
             // We need U_B from B_projected = U_B S_B VT_B.
             // Rotation sketch = Q_basis @ U_B
-            let svd_result_b = b_projected.svd_into(true, false) // compute_u=true, compute_v=false
-                .map_err(|e| format!("SVD of B_projected (from A.T sketch) failed: {}", e))?;
+            let svd_output_b = backend.svd_into(b_projected, true, false) // compute_u=true, compute_v=false
+                .map_err(|e| format!("SVD of B_projected (from A.T sketch) failed (via backend): {}", e))?;
             
-            singular_values_from_projected_b = svd_result_b.1; // s_values
-            let u_b_matrix = svd_result_b.0 // U_B matrix
-                .ok_or("SVD U_B not computed from B_projected (A.T sketch)")?; // L x L_eff or L_actual x L_eff
+            singular_values_from_projected_b = svd_output_b.s; // s_values
+            let u_b_matrix = svd_output_b.u // U_B matrix
+                .ok_or("SVD U_B not computed from B_projected (A.T sketch, via backend)")?; // L x L_eff or L_actual x L_eff
             
             final_rotation_sketch = q_basis.dot(&u_b_matrix); // (D x L_actual) @ (L_actual x L_eff) -> D x L_eff (Principal axes)
         }

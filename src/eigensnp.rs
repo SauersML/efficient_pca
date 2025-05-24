@@ -1,5 +1,9 @@
 use ndarray::{s, Array1, Array2, Axis, ArrayView2};
-use ndarray_linalg::{Eigh, UPLO, QR, SVDInto};
+// Eigh, QR, SVDInto are replaced by backend calls. UPLO is handled by eigh_upper.
+// use ndarray_linalg::{Eigh, UPLO, QR, SVDInto}; 
+use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput, LinAlgBackendProvider};
+// use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
+// use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rayon::prelude::*;
 use std::error::Error;
 use log::{info, debug, trace, warn};
@@ -510,12 +514,15 @@ impl EigenSNPCoreAlgorithm {
                     
                     let genotype_block_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
                     let snp_covariance_matrix_f64 = genotype_block_f64.dot(&genotype_block_f64.t());
+                    
+                    let backend = LinAlgBackendProvider::<f64>::new(); // Use LinAlgBackendProvider for f64
                     // .eigh returns eigenvalues in ascending order; we slice the last 'num_components_to_extract'
                     // to get the eigenvectors corresponding to the largest eigenvalues.
-                    let (_eigenvalues_f64, eigenvectors_f64_columns) =
-                        snp_covariance_matrix_f64.eigh(UPLO::Upper)
-                        .map_err(|e_linalg| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg))) as ThreadSafeStdError)?;
-                    let selected_eigenvectors_f64 = eigenvectors_f64_columns.slice_axis(
+                    let eigh_output_f64 = backend.eigh_upper(&snp_covariance_matrix_f64)
+                        .map_err(|e_linalg| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed (via backend) for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg))) as ThreadSafeStdError)?;
+                    // Eigenvalues from ndarray-linalg eigh are already sorted ascending.
+                    // Eigenvectors are columns corresponding to eigenvalues.
+                    let selected_eigenvectors_f64 = eigh_output_f64.eigenvectors.slice_axis(
                         Axis(1),
                         ndarray::Slice::from((actual_num_snps_in_block - num_components_to_extract)..actual_num_snps_in_block),
                     );
@@ -653,27 +660,35 @@ impl EigenSNPCoreAlgorithm {
             normal_dist.sample(&mut rng) as f32
         });
         
-        let mut orthonormal_basis_features_by_sketch = matrix_features_by_samples.dot(&random_projection_matrix_samples_by_sketch);
+        let backend = LinAlgBackendProvider::<f32>::new(); // Use LinAlgBackendProvider for f32
+        let mut orthonormal_basis_candidate = matrix_features_by_samples.dot(&random_projection_matrix_samples_by_sketch);
 
-        if orthonormal_basis_features_by_sketch.ncols() == 0 {
+        if orthonormal_basis_candidate.ncols() == 0 {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension);
             return Ok(Array2::zeros((num_samples, 0)));
         }
-        orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
-            .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?.0;
+        let mut orthonormal_basis_features_by_sketch = backend.qr_q_factor(&orthonormal_basis_candidate)
+            .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD (via backend): {}", e_qr))) as ThreadSafeStdError)?;
+        
         for iter_idx in 0..num_power_iterations {
             if orthonormal_basis_features_by_sketch.ncols() == 0 { break; } 
             trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
             
-            let projected_onto_samples = matrix_features_by_samples.t().dot(&orthonormal_basis_features_by_sketch); 
-            if projected_onto_samples.ncols() == 0 { 
+            let projected_onto_samples_candidate = matrix_features_by_samples.t().dot(&orthonormal_basis_features_by_sketch); 
+            if projected_onto_samples_candidate.ncols() == 0 { 
                 orthonormal_basis_features_by_sketch = Array2::zeros((orthonormal_basis_features_by_sketch.nrows(),0)); 
                 break; 
             }
+            // No QR needed for projected_onto_samples_candidate if it's just an intermediate product for the next Y.
             
-            orthonormal_basis_features_by_sketch = matrix_features_by_samples.dot(&projected_onto_samples); 
-            orthonormal_basis_features_by_sketch = orthonormal_basis_features_by_sketch.qr()
-                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?.0;         }
+            let orthonormal_basis_candidate_next = matrix_features_by_samples.dot(&projected_onto_samples_candidate);
+            if orthonormal_basis_candidate_next.ncols() == 0 {
+                 orthonormal_basis_features_by_sketch = Array2::zeros((orthonormal_basis_features_by_sketch.nrows(),0));
+                 break;
+            }
+            orthonormal_basis_features_by_sketch = backend.qr_q_factor(&orthonormal_basis_candidate_next)
+                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD (via backend): {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+        }
         
         if orthonormal_basis_features_by_sketch.ncols() == 0 {
             warn!("RSVD: Refined sketch Q_basis for left singular vectors has zero columns. Returning empty scores.");
@@ -681,11 +696,12 @@ impl EigenSNPCoreAlgorithm {
         }
         
         let projected_onto_sketch_basis_sketch_dim_by_samples = orthonormal_basis_features_by_sketch.t().dot(matrix_features_by_samples);
-        let svd_of_projected_b = projected_onto_sketch_basis_sketch_dim_by_samples.svd_into(false, true) 
-            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd))) as ThreadSafeStdError)?;
+        // Consuming SVD for projected_onto_sketch_basis_sketch_dim_by_samples
+        let svd_output_b = backend.svd_into(projected_onto_sketch_basis_sketch_dim_by_samples.into_owned(), false, true) 
+            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD (via backend): {}", e_svd))) as ThreadSafeStdError)?;
         
-        let right_singular_vectors_transposed_of_b = svd_of_projected_b.2
-            .ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD.")) as ThreadSafeStdError)?;
+        let right_singular_vectors_transposed_of_b = svd_output_b.vt
+            .ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD (via backend).")) as ThreadSafeStdError)?;
         
         let computed_sample_scores_samples_by_rank_b = right_singular_vectors_transposed_of_b.t().into_owned();
 
@@ -761,14 +777,14 @@ impl EigenSNPCoreAlgorithm {
             info!("Refined loadings matrix has 0 columns, QR skipped.");
             return Ok(snp_loadings_before_ortho_pca_snps_by_components);
         }
-
-        let (orthonormal_snp_loadings, _r_matrix_for_qr) = 
-            snp_loadings_before_ortho_pca_snps_by_components.qr()
+        
+        let backend = LinAlgBackendProvider::<f32>::new(); // Use LinAlgBackendProvider for f32
+        let orthonormal_snp_loadings = backend.qr_q_factor(&snp_loadings_before_ortho_pca_snps_by_components)
             .map_err(|e_qr| -> ThreadSafeStdError {
                 std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!("QR decomposition of refined loadings failed: {}", e_qr)
-                ).into() // .into() can now infer its target type as ThreadSafeStdError
+                    format!("QR decomposition of refined loadings failed (via backend): {}", e_qr)
+                ).into()
             })?;
         
         info!("Computed refined SNP loadings. Shape: {:?}", orthonormal_snp_loadings.dim());

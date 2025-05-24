@@ -10,12 +10,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_test_bench: # 1. Renamed job
-    name: Build, Test & Bench (${{ matrix.blas_backend }}) # 4. Updated name for clarity
-    runs-on: ${{ matrix.os }} # 3. Update runs-on
-    strategy: # 2. Add matrix strategy
+  build_test_bench:
+    name: Build, Test & Bench (${{ matrix.blas_backend }})
+    runs-on: ${{ matrix.os }}
+    strategy:
       matrix:
-        blas_backend: [backend_openblas, backend_mkl]
+        blas_backend: [backend_openblas, backend_mkl, backend_faer]
         include:
           - blas_backend: backend_openblas
             os: ubuntu-latest
@@ -29,6 +29,11 @@ jobs:
             backend_feature: backend_mkl
             # LD_LIBRARY_PATH is often needed at runtime
             ld_library_path_mkl: "/opt/intel/oneapi/mkl/latest/lib/intel64"
+          - blas_backend: backend_faer
+            os: ubuntu-latest
+            rust_flags: ""
+            backend_feature: backend_faer
+            ld_library_path_mkl: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -55,7 +60,6 @@ jobs:
           pip install numpy scikit-learn scipy
       # ----------------------------------------------------------------
 
-      # 5. Install BLAS dependencies
       - name: Install OpenBLAS
         if: matrix.blas_backend == 'backend_openblas'
         run: |
@@ -82,7 +86,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }} # 9. Cache key update
+          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }}
           restore-keys: |
             ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-
             ${{ runner.os }}-cargo-deps-
@@ -93,20 +97,17 @@ jobs:
         id: cache-rust-target
         with:
           path: target
-          # 9. Cache key update
           key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}-${{ matrix.blas_backend }}
           restore-keys: |
             ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-
             ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-
             ${{ runner.os }}-target-
 
-      # 6. Modify Build Step
       - name: Build 🛠️ (${{ matrix.blas_backend }})
         run: cargo build --verbose --release --features ${{ matrix.backend_feature }}
         env:
           RUSTFLAGS: ${{ matrix.rust_flags }}
 
-      # 7. Modify Test Step
       - name: Run tests 🧪 (${{ matrix.blas_backend }})
         run: cargo test --verbose --features ${{ matrix.backend_feature }}
         env:
@@ -114,8 +115,7 @@ jobs:
           LD_LIBRARY_PATH: ${{ matrix.ld_library_path_mkl }}${{ env.LD_LIBRARY_PATH:+:}}${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1
       
-      # 8. Add Benchmark Step
-      - name: Run benchmarks 벤치마크 📈 (${{ matrix.blas_backend }})
+      - name: Run benchmarks (${{ matrix.blas_backend }})
         run: cargo bench --features ${{ matrix.backend_feature }}
         env:
           RUSTFLAGS: ${{ matrix.rust_flags }}

@@ -48,11 +48,14 @@ reqwest = { version = "0.12.15", features = ["blocking"] }
 tar = "0.4.44"
 zstd = "0.13.3"
 criterion = { version = "0.5", features = ["html_reports"] }
+faer = { version = "0.18.0", optional = true, features = ["ndarray"] }
+approx = "0.5"
 
 [features]
 default = ["backend_openblas"]
 backend_openblas = ["ndarray-linalg/openblas-static"]
 backend_mkl = ["ndarray-linalg/intel-mkl-static"]
+backend_faer = ["dep:faer"]
 
 [[bench]]
 name = "pca_benchmark"

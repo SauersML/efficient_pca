@@ -1,11 +1,22 @@
 use crate::PCA;
 use ndarray::Axis;
-use ndarray_linalg::{Eigh, QR, UPLO};
+// ndarray_linalg specific imports might not be needed directly in all test files if
+// PCA internally uses the backend dispatch. UPLO might be used if tests construct matrices directly.
+// For now, let's assume they might be used by other tests in this file.
+use ndarray_linalg::{Eigh, QR, UPLO}; 
+
+// For numerical consistency test
+use approx::assert_abs_diff_eq;
+// serde::Deserialize, std::fs, std::path::Path are no longer needed
+use ndarray::{array, Array1, Array2}; // For creating the test data matrix easily & Array1 for direct comparison
+
+// PcaReferenceResults struct is no longer needed
 
 #[cfg(test)]
 mod genome_tests {
     use super::*;
-    use ndarray::{s, Array2, ArrayView1};
+    // use ndarray::array; // Already imported at top level of file
+    use ndarray::{s, ArrayView1}; // Array2 also needed for some tests
     use rand::Rng;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -1197,9 +1208,84 @@ mod pca_tests {
         }
     }
 
-    use super::*;
-    use ndarray::array;
+    use super::*; // This brings PcaReferenceResults into scope for this module if it's outside
+    // use ndarray::array; // Already imported at top level of file
     use ndarray_rand::rand_distr::Distribution;
+
+    #[test]
+    fn test_pca_fit_consistency_hardcoded() {
+        // Hardcoded reference values from scikit-learn
+        let ref_mean_vec = vec![5.5, 6.5, 7.5];
+        let ref_scale_vec = vec![3.3541019662496847, 3.3541019662496847, 3.3541019662496847];
+        let ref_explained_variance_vec = vec![3.0, 0.0, 0.0]; // Adjusted based on sklearn output for this data
+        
+        // Rotation matrix (principal components as columns, then store rows for easy comparison)
+        // ref_rotation_rows[feature_idx][component_idx]
+        let ref_rotation_rows = vec![
+            vec![0.577350269189626, 0.8164965809277258, 0.0],
+            vec![0.5773502691896255, -0.40824829046386313, -0.7071067811865475],
+            vec![0.5773502691896255, -0.40824829046386313, 0.7071067811865476]
+        ];
+        let ref_rotation_ndarray = Array2::from_shape_vec(
+            (3, 3), // features x components
+            ref_rotation_rows.clone().into_iter().flatten().collect::<Vec<f64>>()
+        ).unwrap().t().into_owned(); // Convert to components x features, then transpose to features x components for direct use.
+                                      // Or, more simply, construct directly if ref_rotation_rows is already feature x component
+        let ref_rotation_correct_shape = Array2::from_shape_fn((3,3), |(r,c)| ref_rotation_rows[r][c]);
+
+
+        // Data matrix used to generate the reference
+        let data_matrix = array![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.], [10., 11., 12.]];
+        
+        let mut pca = crate::PCA::new();
+        pca.fit(data_matrix.clone(), None).expect("PCA fit failed");
+        
+        let computed_rotation_arr = pca.rotation().expect("No rotation from fit");
+        let computed_explained_variance_arr = pca.explained_variance().expect("No explained variance from fit");
+        let computed_mean_arr = pca.mean().expect("No mean from fit");
+        let computed_scale_arr = pca.scale().expect("No scale from fit");
+
+        let tol = 1e-6;
+
+        // Compare mean
+        assert_eq!(computed_mean_arr.len(), ref_mean_vec.len(), "Mean vector length mismatch");
+        for (comp, ref_val) in computed_mean_arr.iter().zip(ref_mean_vec.iter()) {
+            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
+        }
+        // Compare scale
+        assert_eq!(computed_scale_arr.len(), ref_scale_vec.len(), "Scale vector length mismatch");
+        for (comp, ref_val) in computed_scale_arr.iter().zip(ref_scale_vec.iter()) {
+            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
+        }
+        // Compare explained variance
+        assert_eq!(computed_explained_variance_arr.len(), ref_explained_variance_vec.len(), "Explained variance length mismatch");
+        for (comp, ref_val) in computed_explained_variance_arr.iter().zip(ref_explained_variance_vec.iter()) {
+            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
+        }
+        
+        // Compare rotation matrix
+        assert_eq!(computed_rotation_arr.nrows(), ref_rotation_correct_shape.nrows(), "Rotation matrix row count mismatch");
+        assert_eq!(computed_rotation_arr.ncols(), ref_rotation_correct_shape.ncols(), "Rotation matrix column count mismatch");
+
+        for comp_idx in 0..computed_rotation_arr.ncols() {
+            let mut all_match_positive = true;
+            let mut all_match_negative = true;
+
+            for feat_idx in 0..computed_rotation_arr.nrows() {
+                let val = computed_rotation_arr[[feat_idx, comp_idx]];
+                let ref_val = ref_rotation_correct_shape[[feat_idx, comp_idx]];
+                if (val - ref_val).abs() > tol {
+                    all_match_positive = false;
+                }
+                if (val + ref_val).abs() > tol {
+                    all_match_negative = false;
+                }
+            }
+            assert!(all_match_positive || all_match_negative, 
+                    "Rotation matrix column {} does not match reference (accounting for sign). Computed: {:?}, Expected (or negative): {:?}", 
+                    comp_idx, computed_rotation_arr.column(comp_idx), ref_rotation_correct_shape.column(comp_idx));
+        }
+    }
 
     #[test]
     fn test_rpca_2x2() {
