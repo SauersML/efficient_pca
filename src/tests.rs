@@ -706,7 +706,7 @@ mod model_persistence_tests {
         assert!(pca_original.rotation().is_some(), "Original (exact) model rotation should be Some");
         assert!(pca_original.mean().is_some(), "Original (exact) model mean should be Some");
         assert!(pca_original.scale().is_some(), "Original (exact) model scale should be Some");
-        assert_eq!(pca_original.rotation().as_ref().unwrap().ncols(), expected_components, "Original (exact) model component count mismatch");
+        assert_eq!(pca_original.rotation().unwrap().ncols(), expected_components, "Original (exact) model component count mismatch");
 
         let temp_file = NamedTempFile::new()?;
         let file_path = temp_file.path();
@@ -718,9 +718,9 @@ mod model_persistence_tests {
         println!("Exact model loaded successfully.");
 
         // 1. Verify loaded model parameters are identical
-        assert_optional_array2_equals(pca_original.rotation().as_ref(), pca_loaded.rotation().as_ref(), "rotation matrix (exact fit)");
-        assert_optional_array1_equals(pca_original.mean().as_ref(), pca_loaded.mean().as_ref(), "mean vector (exact fit)");
-        assert_optional_array1_equals(pca_original.scale().as_ref(), pca_loaded.scale().as_ref(), "scale vector (exact fit)");
+        assert_optional_array2_equals(pca_original.rotation(), pca_loaded.rotation(), "rotation matrix (exact fit)");
+        assert_optional_array1_equals(pca_original.mean(), pca_loaded.mean(), "mean vector (exact fit)");
+        assert_optional_array1_equals(pca_original.scale(), pca_loaded.scale(), "scale vector (exact fit)");
 
         // 2. Verify transformation results are identical
         let data_to_transform = array![
@@ -757,7 +757,7 @@ mod model_persistence_tests {
 
         // Pre-save assertions
         assert!(pca_original.rotation().is_some(), "Original (randomized) model rotation should be Some");
-        assert_eq!(pca_original.rotation().as_ref().unwrap().ncols(), n_components_to_fit, "Original (randomized) model component count mismatch");
+        assert_eq!(pca_original.rotation().unwrap().ncols(), n_components_to_fit, "Original (randomized) model component count mismatch");
 
         let temp_file = NamedTempFile::new()?;
         let file_path = temp_file.path();
@@ -768,9 +768,9 @@ mod model_persistence_tests {
         println!("Randomized model loaded successfully.");
 
         // 1. Verify loaded model parameters
-        assert_optional_array2_equals(pca_original.rotation().as_ref(), pca_loaded.rotation().as_ref(), "rotation matrix (randomized fit)");
-        assert_optional_array1_equals(pca_original.mean().as_ref(), pca_loaded.mean().as_ref(), "mean vector (randomized fit)");
-        assert_optional_array1_equals(pca_original.scale().as_ref(), pca_loaded.scale().as_ref(), "scale vector (randomized fit)");
+        assert_optional_array2_equals(pca_original.rotation(), pca_loaded.rotation(), "rotation matrix (randomized fit)");
+        assert_optional_array1_equals(pca_original.mean(), pca_loaded.mean(), "mean vector (randomized fit)");
+        assert_optional_array1_equals(pca_original.scale(), pca_loaded.scale(), "scale vector (randomized fit)");
 
         // 2. Verify transformation results
         let data_to_transform = array![
@@ -802,7 +802,7 @@ mod model_persistence_tests {
         pca_original.fit(data.clone(), Some(0.999999999))?; 
 
         assert!(pca_original.rotation().is_some(), "Original model (zero components) rotation should be Some");
-        assert_eq!(pca_original.rotation().as_ref().unwrap().ncols(), 0, "Model with no significant variance should have 0 components");
+        assert_eq!(pca_original.rotation().unwrap().ncols(), 0, "Model with no significant variance should have 0 components");
 
         let temp_file = NamedTempFile::new()?;
         let file_path = temp_file.path();
@@ -812,8 +812,8 @@ mod model_persistence_tests {
         let pca_loaded = PCA::load_model(file_path)?;
         println!("Zero-component model loaded successfully.");
 
-        assert_optional_array2_equals(pca_original.rotation().as_ref(), pca_loaded.rotation().as_ref(), "rotation (zero components)");
-        assert_eq!(pca_loaded.rotation().as_ref().unwrap().ncols(), 0, "Loaded model should have 0 components");
+        assert_optional_array2_equals(pca_original.rotation(), pca_loaded.rotation(), "rotation (zero components)");
+        assert_eq!(pca_loaded.rotation().unwrap().ncols(), 0, "Loaded model should have 0 components");
 
         let data_to_transform = array![[1.1, 1.1, 1.1], [2.2, 2.2, 2.2]];
         let transformed_original = pca_original.transform(data_to_transform.clone())?;
@@ -846,7 +846,7 @@ mod model_persistence_tests {
 
         // Verify internal sanitization of scale
         let expected_sanitized_scale = array![1.0, 1.0, 2.0, 1.0];
-        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_original.scale().as_ref(), "sanitized scale in with_model");
+        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_original.scale(), "sanitized scale in with_model");
 
         let temp_file = NamedTempFile::new()?;
         let file_path = temp_file.path();
@@ -856,10 +856,10 @@ mod model_persistence_tests {
         let pca_loaded = PCA::load_model(file_path)?;
         println!("Model loaded successfully.");
 
-        assert_optional_array2_equals(pca_original.rotation().as_ref(), pca_loaded.rotation().as_ref(), "rotation (with_model)");
-        assert_optional_array1_equals(pca_original.mean().as_ref(), pca_loaded.mean().as_ref(), "mean (with_model)");
-        assert_optional_array1_equals(pca_original.scale().as_ref(), pca_loaded.scale().as_ref(), "scale (with_model, should be sanitized)");
-        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_loaded.scale().as_ref(), "loaded scale should match expected sanitized");
+        assert_optional_array2_equals(pca_original.rotation(), pca_loaded.rotation(), "rotation (with_model)");
+        assert_optional_array1_equals(pca_original.mean(), pca_loaded.mean(), "mean (with_model)");
+        assert_optional_array1_equals(pca_original.scale(), pca_loaded.scale(), "scale (with_model, should be sanitized)");
+        assert_optional_array1_equals(Some(&expected_sanitized_scale), pca_loaded.scale(), "loaded scale should match expected sanitized");
 
 
         let data_to_transform = array![
@@ -950,7 +950,7 @@ mod model_persistence_tests {
         let pca_model_finite = PCA::with_model(rotation.clone(), mean.clone(), raw_stds_problematic_finite.clone())?;
         assert_optional_array1_equals(
             Some(&expected_sanitized_finite), 
-            pca_model_finite.scale().as_ref(), 
+            pca_model_finite.scale(), 
             "scale sanitization for problematic finite values in with_model"
         );
 
