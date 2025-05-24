@@ -131,6 +131,22 @@ impl PCA {
         })
     }
 
+    /// Returns a reference to the mean vector of the original training data, if computed.
+    ///
+    /// The mean vector has dimensions (n_features).
+    /// Returns `None` if the PCA model has not been fitted.
+    pub fn mean(&self) -> Option<&Array1<f64>> {
+        self.mean.as_ref()
+    }
+
+    /// Returns a reference to the sanitized scale vector (standard deviations), if computed.
+    ///
+    /// The scale vector has dimensions (n_features) and contains positive values.
+    /// Returns `None` if the PCA model has not been fitted.
+    pub fn scale(&self) -> Option<&Array1<f64>> {
+        self.scale.as_ref()
+    }
+
     /// Returns a reference to the rotation matrix (principal components), if computed.
     ///
     /// The rotation matrix has dimensions (n_features, k_components).
