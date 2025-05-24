@@ -21,4 +21,5 @@ pub use eigensnp::{
 };
 
 #[cfg(test)]
-mod tests;
+mod pca_tests;
+mod eigensnp_tests;
