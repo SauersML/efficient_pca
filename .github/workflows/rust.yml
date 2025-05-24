@@ -10,9 +10,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Build and Test
-    runs-on: ubuntu-latest
+  build_test_bench: # 1. Renamed job
+    name: Build, Test & Bench (${{ matrix.blas_backend }}) # 4. Updated name for clarity
+    runs-on: ${{ matrix.os }} # 3. Update runs-on
+    strategy: # 2. Add matrix strategy
+      matrix:
+        blas_backend: [backend_openblas, backend_mkl]
+        include:
+          - blas_backend: backend_openblas
+            os: ubuntu-latest
+            rust_flags: "" # No specific flags needed for OpenBLAS usually
+            backend_feature: backend_openblas
+            ld_library_path_mkl: "" # No MKL path for openblas
+          - blas_backend: backend_mkl
+            os: ubuntu-latest # MKL setup will be for Linux
+            # The RUSTFLAGS are often needed at compile time to find MKL libs
+            rust_flags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
+            backend_feature: backend_mkl
+            # LD_LIBRARY_PATH is often needed at runtime
+            ld_library_path_mkl: "/opt/intel/oneapi/mkl/latest/lib/intel64"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,7 +37,7 @@ jobs:
         id: install_rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: ''
+          components: '' # Add 'clippy', 'rustfmt' if needed later
 
       - name: Get Rust compiler version
         id: rust_version
@@ -39,7 +55,24 @@ jobs:
           pip install numpy scikit-learn scipy
       # ----------------------------------------------------------------
 
-      # Cache for Cargo's downloaded dependencies (registry index, crate files, git repos)
+      # 5. Install BLAS dependencies
+      - name: Install OpenBLAS
+        if: matrix.blas_backend == 'backend_openblas'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev
+      
+      - name: Install Intel MKL
+        if: matrix.blas_backend == 'backend_mkl'
+        run: |
+          wget https://registrationcenter-download.intel.com/akdlm/irc_nas/19007/l_BaseKit_p_2023.2.0.49397_offline.sh
+          sudo bash ./l_BaseKit_p_2023.2.0.49397_offline.sh -a --silent --eula accept --components intel.oneapi.lin.mkl.devel
+          echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> $GITHUB_ENV
+          # For MKL, LD_LIBRARY_PATH might need to be set for subsequent steps
+          # GITHUB_ENV sets environment variables for subsequent steps in the job
+          echo "LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib/intel64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+
+      # Cache for Cargo's downloaded dependencies
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
         id: cache-cargo-deps
@@ -49,30 +82,42 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          # Use Cargo.toml if Cargo.lock is not in the repo
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }} # 9. Cache key update
           restore-keys: |
+            ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-
             ${{ runner.os }}-cargo-deps-
 
       # Cache for the Rust build artifacts (target directory)
-      # This cache is invalidated if Rust version, Cargo.toml, or any Rust source files change.
       - name: Cache Rust target directory
         uses: actions/cache@v4
         id: cache-rust-target
         with:
           path: target
-          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}
+          # 9. Cache key update
+          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}-${{ matrix.blas_backend }}
           restore-keys: |
             ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-
             ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-
             ${{ runner.os }}-target-
 
-      - name: Build 🛠️
-        # Builds the project in release mode with verbose output
-        run: cargo build --verbose --release
-
-      - name: Run tests 🧪
-        # Runs all tests with verbose output
-        run: cargo test --verbose
+      # 6. Modify Build Step
+      - name: Build 🛠️ (${{ matrix.blas_backend }})
+        run: cargo build --verbose --release --features ${{ matrix.backend_feature }}
         env:
+          RUSTFLAGS: ${{ matrix.rust_flags }}
+
+      # 7. Modify Test Step
+      - name: Run tests 🧪 (${{ matrix.blas_backend }})
+        run: cargo test --verbose --features ${{ matrix.backend_feature }}
+        env:
+          RUSTFLAGS: ${{ matrix.rust_flags }}
+          LD_LIBRARY_PATH: ${{ matrix.ld_library_path_mkl }}${{ env.LD_LIBRARY_PATH:+:}}${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
+          RUST_BACKTRACE: 1
+      
+      # 8. Add Benchmark Step
+      - name: Run benchmarks 벤치마크 📈 (${{ matrix.blas_backend }})
+        run: cargo bench --features ${{ matrix.backend_feature }}
+        env:
+          RUSTFLAGS: ${{ matrix.rust_flags }}
+          LD_LIBRARY_PATH: ${{ matrix.ld_library_path_mkl }}${{ env.LD_LIBRARY_PATH:+:}}${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1

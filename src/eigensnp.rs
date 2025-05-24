@@ -169,7 +169,7 @@ pub struct EigenSNPCoreOutput {
 /// Features with a standard deviation effectively zero (absolute value < 1e-7) after mean centering
 /// will be filled with zeros. This is a common approach to handle constant features in PCA
 /// to prevent division by zero and for numerical stability.
-pub(crate) fn standardize_raw_condensed_features(
+fn standardize_raw_condensed_features(
     raw_features_input: RawCondensedFeatures,
 ) -> Result<StandardizedCondensedFeatures, ThreadSafeStdError> {
     let mut condensed_data_matrix = raw_features_input.data;
@@ -446,7 +446,7 @@ impl EigenSNPCoreAlgorithm {
         })
     }
 
-    pub(crate) fn learn_all_ld_block_local_bases<G: PcaReadyGenotypeAccessor>(
+    fn learn_all_ld_block_local_bases<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
@@ -539,7 +539,7 @@ impl EigenSNPCoreAlgorithm {
         Ok(all_local_bases_collection)
     }
 
-    pub(crate) fn project_all_samples_onto_local_bases<G: PcaReadyGenotypeAccessor>(
+    fn project_all_samples_onto_local_bases<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
@@ -615,7 +615,7 @@ impl EigenSNPCoreAlgorithm {
         Ok(InitialSamplePcScores { scores: sample_scores_n_by_k })
     }
 
-    pub(crate) fn perform_randomized_svd_for_scores(
+    fn perform_randomized_svd_for_scores(
         matrix_features_by_samples: &ArrayView2<f32>, 
         num_components_target_k: usize,
         sketch_oversampling_count: usize,
@@ -700,7 +700,7 @@ impl EigenSNPCoreAlgorithm {
         Ok(final_sample_scores_n_by_k)
     }
 
-    pub(crate) fn compute_refined_snp_loadings<G: PcaReadyGenotypeAccessor>(
+    fn compute_refined_snp_loadings<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
         initial_sample_pc_scores: &InitialSamplePcScores,
@@ -775,7 +775,7 @@ impl EigenSNPCoreAlgorithm {
         Ok(orthonormal_snp_loadings)
     }
 
-    pub(crate) fn compute_final_scores_and_eigenvalues<G: PcaReadyGenotypeAccessor>(
+    fn compute_final_scores_and_eigenvalues<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
         orthonormal_snp_loadings_snps_by_components: &ArrayView2<f32>, 

@@ -26,7 +26,7 @@ documentation = "https://github.com/SauersML/efficient_pca"
 [dependencies]
 float-cmp = "0.10.0"
 ndarray = { version = "0.16.1", features = ["serde", "rayon"] }
-ndarray-linalg = { version = "0.17.0", features = ["openblas-static"] }
+ndarray-linalg = { version = "0.17.0", default-features = false }
 ndarray-rand = "0.15.0"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
@@ -47,3 +47,13 @@ dirs = "6.0.0"
 reqwest = { version = "0.12.15", features = ["blocking"] }
 tar = "0.4.44"
 zstd = "0.13.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = ["backend_openblas"]
+backend_openblas = ["ndarray-linalg/openblas-static"]
+backend_mkl = ["ndarray-linalg/intel-mkl-static"]
+
+[[bench]]
+name = "pca_benchmark"
+harness = false
