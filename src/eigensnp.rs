@@ -642,7 +642,12 @@ impl EigenSNPCoreAlgorithm {
 
         let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
         let normal_dist = Normal::new(0.0, 1.0)
-            .map_err(|e_normal| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to create normal distribution for RSVD: {}", e_normal)).into())?;
+            .map_err(|e_normal| -> ThreadSafeStdError {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to create normal distribution for RSVD: {}", e_normal),
+                ).into() // .into() can now infer its target type as ThreadSafeStdError
+            })?;
 
         let random_projection_matrix_samples_by_sketch = Array2::from_shape_fn((num_samples, sketch_dimension), |_| {
             normal_dist.sample(&mut rng) as f32
@@ -759,7 +764,12 @@ impl EigenSNPCoreAlgorithm {
 
         let (orthonormal_snp_loadings, _r_matrix_for_qr) = 
             snp_loadings_before_ortho_pca_snps_by_components.qr()
-            .map_err(|e_qr| std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of refined loadings failed: {}", e_qr)).into())?;
+            .map_err(|e_qr| -> ThreadSafeStdError {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("QR decomposition of refined loadings failed: {}", e_qr)
+                ).into() // .into() can now infer its target type as ThreadSafeStdError
+            })?;
         
         info!("Computed refined SNP loadings. Shape: {:?}", orthonormal_snp_loadings.dim());
         Ok(orthonormal_snp_loadings)
@@ -800,9 +810,8 @@ impl EigenSNPCoreAlgorithm {
         let strip_indices_starts: Vec<usize> = (0..num_total_pca_snps)
             .step_by(snp_processing_strip_size)
             .collect();
-
         // Parallel computation of score contributions from each SNP strip
-        let computed_final_sample_scores_samples_by_components = strip_indices_starts
+        let strip_score_contributions_results: Result<Vec<Array2<f32>>, ThreadSafeStdError> = strip_indices_starts
             .par_iter()
             .map(|&strip_start_snp_idx| -> Result<Array2<f32>, ThreadSafeStdError> {
                 let strip_end_snp_idx = (strip_start_snp_idx + snp_processing_strip_size).min(num_total_pca_snps);
@@ -830,19 +839,25 @@ impl EigenSNPCoreAlgorithm {
                 
                 Ok(scores_contribution_from_strip_n_by_k)
             })
-            .collect::<Result<Vec<Array2<f32>>, ThreadSafeStdError>>() // Attempt to collect all mapped results. If any map op failed, this yields Err.
-            .map(|successful_strip_scores| { // If all map operations were successful and collected into a Vec
-                successful_strip_scores
-                    .into_par_iter() // Convert Vec of successful scores into a parallel iterator
-                    .reduce( // Reduce the successfully computed strip scores
-                        || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum
-                        |mut acc_matrix, strip_scores_matrix| {
-                            acc_matrix += &strip_scores_matrix; // Sum contributions
-                            acc_matrix
-                        },
-                    ) // This parallel reduction yields Option<Array2<f32>>
-            })? // Propagate any error from the collect step; otherwise, unwrap the Result to get Option<Array2<f32>>
-            .unwrap_or_else(|| Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs))); // Handle the Option: if None (empty iterator), provide a default zero matrix.
+            .collect(); // Collects into Result<Vec<Array2<f32>>, ThreadSafeStdError>
+
+        // Sum the contributions. If any map failed, propagate the error from collecting results.
+        // Otherwise, reduce the vector of matrices.
+        let computed_final_sample_scores_samples_by_components: Array2<f32> = strip_score_contributions_results? // Yields Vec<Array2<f32>> or propagates error
+            .into_par_iter() // Convert Vec<Array2<f32>> to ParIter<Item = Array2<f32>>
+            .reduce( // Reduce on ParIter. Returns Option<Array2<f32>>.
+                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum. Not used if iterator is empty or has one element.
+                |mut acc_matrix, strip_scores_matrix| {
+                    acc_matrix += &strip_scores_matrix; // Sum contributions
+                    acc_matrix
+                },
+            )
+            .unwrap_or_else(|| {
+                // This branch is taken if the parallel iterator from `into_par_iter()` is empty,
+                // which occurs if `strip_indices_starts` was empty, leading to an empty collected Vec.
+                // In such a case, `reduce` returns `None`.
+                Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs))
+            });
 
         let mut computed_final_pc_eigenvalues = Array1::<f64>::zeros(num_final_computed_pcs);
         if num_total_qc_samples > 1 {
