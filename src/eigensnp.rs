@@ -845,19 +845,15 @@ impl EigenSNPCoreAlgorithm {
         // Otherwise, reduce the vector of matrices.
         let computed_final_sample_scores_samples_by_components: Array2<f32> = strip_score_contributions_results? // Yields Vec<Array2<f32>> or propagates error
             .into_par_iter() // Convert Vec<Array2<f32>> to ParIter<Item = Array2<f32>>
-            .reduce( // Reduce on ParIter. Returns Option<Array2<f32>>.
-                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), // Identity for sum. Not used if iterator is empty or has one element.
+            .reduce( // Reduce on ParIter. Returns Self::Item (i.e., Array2<f32>).
+                // The identity function provides the initial value for reduction tasks,
+                // and is returned if the iterator is empty.
+                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), 
                 |mut acc_matrix, strip_scores_matrix| {
                     acc_matrix += &strip_scores_matrix; // Sum contributions
                     acc_matrix
                 },
-            )
-            .unwrap_or_else(|| {
-                // This branch is taken if the parallel iterator from `into_par_iter()` is empty,
-                // which occurs if `strip_indices_starts` was empty, leading to an empty collected Vec.
-                // In such a case, `reduce` returns `None`.
-                Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs))
-            });
+            ); // The result of reduce is directly Array2<f32>.
 
         let mut computed_final_pc_eigenvalues = Array1::<f64>::zeros(num_final_computed_pcs);
         if num_total_qc_samples > 1 {
