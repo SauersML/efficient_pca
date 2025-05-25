@@ -60,5 +60,5 @@ backend_mkl = ["ndarray-linalg/intel-mkl-static"]
 backend_faer = ["dep:faer"]
 
 [[bench]]
-name = "pca_benchmark"
+name = "benchmarks"
 harness = false
