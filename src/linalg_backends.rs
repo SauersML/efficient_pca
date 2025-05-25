@@ -104,18 +104,14 @@ impl BackendSVD<f32> for NdarrayLinAlgBackend {
 #[cfg(feature = "backend_faer")]
 mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use super::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput}; // Use traits from parent module
-    use ndarray::{Array1, Array2, ShapeBuilder}; // Axis was already removed
-    // bytemuck::Pod is required for generic constraints (E0405).
-    use bytemuck::Pod;
-    // For faer::Par::rayon(0) parallelism control.
-    // For faer::Par::rayon(0) parallelism control.
-    // Consolidated Faer imports, removing prelude::* and unused items like bytemuck::Pod.
-    // Mat, Col, etc., are sourced from their specific faer submodules.
-    use faer::{col::Col, diag::DiagMut, mat::{Mat, MatRef}, linalg::svd::{ComputeSvdVectors, SvdParams}, traits::ComplexField, Par};
+    use ndarray::{Array1, Array2, ArrayView, ArrayViewMut, ShapeBuilder}; 
+    use faer::linalg::svd::{ComputeSvdVectors, SvdParams};
+    use faer::linalg::householder::Reconstruct; // For QR's q().reconstruct()
+    use faer::{MatRef, MatMut, Par}; 
+    use faer::diag::DiagMut; // Specific path for DiagMut type alias
+    use faer::dyn_stack::{GlobalPodBuffer, PodStack, StackReq};
+    use faer::traits::Number; // Added import for Number trait
     use std::error::Error;
-    // Use Faer's re-export of dyn_stack as per compiler suggestion (E0432).
-    // dyn-stack 0.13.0 uses PodBuffer for global allocation.
-    use faer::dyn_stack::{PodBuffer, StackReq}; // Added for SVD scratch space, StackReq. GlobalPodBuffer -> PodBuffer
 
     fn to_dyn_error_faer(msg: String) -> Box<dyn Error + Send + Sync> {
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg))
@@ -124,7 +120,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
     #[derive(Debug, Default, Copy, Clone)]
     pub struct FaerLinAlgBackend;
 
-    fn faer_mat_to_ndarray<F: ComplexField + Copy + Pod>(faer_mat: MatRef<'_, F>) -> Array2<F> {
+    fn faer_mat_to_ndarray<F: Number>(faer_mat: MatRef<'_, F>) -> Array2<F> {
         let nrows = faer_mat.nrows();
         let ncols = faer_mat.ncols();
         if nrows == 0 || ncols == 0 {
@@ -140,7 +136,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             .expect("Shape and data length mismatch creating ndarray from faer Mat")
     }
 
-    fn faer_col_to_ndarray_vec<F: ComplexField + Copy + Pod>(faer_col: faer::ColRef<'_, F>) -> Array1<F> {
+    fn faer_col_to_ndarray_vec<F: Number>(faer_col: faer::ColRef<'_, F>) -> Array1<F> {
         let nrows = faer_col.nrows();
         if nrows == 0 {
             return Array1::zeros(0);
@@ -160,40 +156,15 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             if matrix.is_empty() {
                 return Ok(EighOutput { eigenvalues: Array1::zeros(0), eigenvectors: Array2::zeros((0,0)) });
             }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            let nrows = matrix_view.nrows();
-            let ncols = matrix_view.ncols();
-
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    // This case should ideally not happen if is_standard_layout() is true,
-                    // as standard layout implies C-contiguous.
-                    // However, if it can, a copy would be needed.
-                    // For now, error if slice is None, as direct view is not possible.
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    // Similar to above, this case implies non-contiguous F-layout, which is unusual.
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                // Non-contiguous and not simply C or F layout.
-                // faer::MatRef requires contiguous data.
-                // A possible fallback would be to create an owned faer::Mat by copying,
-                // then take a view, but this changes the function's nature (no longer just viewing).
-                // For now, error out as a direct view isn't possible.
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
             let eig = faer_mat_view.as_ref().selfadjoint_eigendecomposition(faer::Side::Upper);
             let eigenvalues_faer_colref = eig.s();
@@ -210,123 +181,109 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let (nrows, ncols) = matrix.dim();
             let k = nrows.min(ncols);
             if nrows == 0 { return Ok(Array2::zeros((0, k))); }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // already available
-            // let ncols = matrix_view.ncols(); // already available
-
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
-            let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
-            let q_thin_faer_mat = qr_decomp.compute_thin_q(); // This returns an owned Mat<T>
-            Ok(faer_mat_to_ndarray(q_thin_faer_mat.as_ref())) // Pass as MatRef
+            let qr_decomp = faer_mat_view.as_ref().qr();
+            let q_full_faer_mat = qr_decomp.q().reconstruct();
+            let q_thin_faer_ref = q_full_faer_mat.as_ref().submatrix(0, 0, nrows, k);
+            Ok(faer_mat_to_ndarray(q_thin_faer_ref))
         }
     }
 
     impl BackendSVD<f64> for FaerLinAlgBackend {
         fn svd_into(&self, matrix: Array2<f64>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<f64>, Box<dyn Error + Send + Sync>> {
             let (nrows, ncols) = matrix.dim();
+            let k_dim = nrows.min(ncols);
+
             if matrix.is_empty() {
-                let k_dim = nrows.min(ncols);
                  return Ok(SVDOutput {
                     u: if compute_u { Some(Array2::zeros((nrows, k_dim))) } else { None },
                     s: Array1::zeros(k_dim),
                     vt: if compute_v { Some(Array2::zeros((k_dim, ncols))) } else { None },
                 });
             }
-            let matrix_view = matrix.view(); // matrix is Array2<F>
-            // let nrows = matrix_view.nrows(); // already available
-            // let ncols = matrix_view.ncols(); // already available
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
-            let compute_u_faer = if compute_u { ComputeSvdVectors::Full } else { ComputeSvdVectors::No };
-            let compute_v_faer = if compute_v { ComputeSvdVectors::Full } else { ComputeSvdVectors::No };
+
+            // Prepare output arrays
+            let mut s_values = Array1::<f64>::zeros(k_dim);
+            let mut u_matrix = if compute_u { Array2::<f64>::zeros((nrows, k_dim)) } else { Array2::<f64>::zeros((0,0)) }; // Dummy if not used
+            let mut v_matrix = if compute_v { Array2::<f64>::zeros((ncols, k_dim)) } else { Array2::<f64>::zeros((0,0)) }; // Dummy if not used
+
+            // Convert to Faer mutable views
+            let mut s_diag_mut = faer::diag::Diag::from_slice_mut(s_values.as_slice_mut().unwrap(), 0);
+            let mut u_mat_mut_opt = if compute_u {
+                Some(unsafe {
+                    MatMut::from_raw_parts(
+                        u_matrix.as_mut_ptr(),
+                        u_matrix.nrows(),
+                        u_matrix.ncols(),
+                        u_matrix.strides()[0] as isize,
+                        u_matrix.strides()[1] as isize,
+                    )
+                })
+            } else { None };
+
+            let mut v_mat_mut_opt = if compute_v {
+                Some(unsafe {
+                    MatMut::from_raw_parts(
+                        v_matrix.as_mut_ptr(),
+                        v_matrix.nrows(),
+                        v_matrix.ncols(),
+                        v_matrix.strides()[0] as isize,
+                        v_matrix.strides()[1] as isize,
+                    )
+                })
+            } else { None };
+            
+            // Memory allocation for Faer
+            let compute_u_svd_enum = if compute_u { ComputeSvdVectors::Full } else { ComputeSvdVectors::None };
+            let compute_v_svd_enum = if compute_v { ComputeSvdVectors::Full } else { ComputeSvdVectors::None };
 
             let stack_req = faer::linalg::svd::svd_scratch::<f64>(
-                faer_mat_view.as_ref().nrows(),
-                faer_mat_view.as_ref().ncols(),
-                compute_u_faer,
-                compute_v_faer,
-                SvdParams::default(),
-            ).map_err(|e| to_dyn_error_faer(format!("SVD scratch allocation error: {:?}", e)))?;
+                faer_mat_view.nrows(),
+                faer_mat_view.ncols(),
+                compute_u_svd_enum,
+                compute_v_svd_enum,
+                SvdParams::default() 
+            ).map_err(|e| to_dyn_error_faer(format!("SVD scratch requirements error: {:?}", e)))?;
             
-            let mut mem = PodBuffer::new(stack_req);
+            let mut pod_buffer = GlobalPodBuffer::new(stack_req);
+            let mut mem_stack = PodStack::new(&mut pod_buffer);
 
-            let k = faer_mat_view.as_ref().nrows().min(faer_mat_view.as_ref().ncols());
-            let mut s_mat = faer::Col::<f64>::zeros(k);
-            let mut u_mat_option = if compute_u {
-                Some(faer::Mat::<f64>::zeros(faer_mat_view.as_ref().nrows(), k))
-            } else {
-                None
-            };
-            let mut v_mat_option = if compute_v {
-                Some(faer::Mat::<f64>::zeros(faer_mat_view.as_ref().ncols(), k))
-            } else {
-                None
-            };
-
+            // Call faer::linalg::svd::svd
             faer::linalg::svd::svd(
                 faer_mat_view.as_ref(),
-                s_mat.as_mut().column_as_diagonal_mut(0),
-                u_mat_option.as_mut().map(|m| m.as_mut()),
-                v_mat_option.as_mut().map(|m| m.as_mut()),
-                faer::Par::rayon(0),
-                &mut mem,
-                SvdParams::default(),
-            ).map_err(|e| to_dyn_error_faer(format!("Faer SVD computation error: {:?}", e)))?;
+                &mut s_diag_mut, // Pass DiagMut by mutable reference
+                u_mat_mut_opt.as_mut().map(|m| m.as_mut()), // Option<MatMut<E>>
+                v_mat_mut_opt.as_mut().map(|m| m.as_mut()), // Option<MatMut<E>>
+                Par::Seq,
+                &mut mem_stack,
+                faer::Spec::auto() // Corrected argument
+            ).map_err(|e| to_dyn_error_faer(format!("SVD computation failed: {:?}", e)))?;
+            
+            // Construct SVDOutput
+            let u_ndarray = if compute_u { Some(u_matrix) } else { None };
+            let vt_ndarray = if compute_v { Some(v_matrix.t().into_owned()) } else { None };
 
-            let s_ndarray = faer_col_to_ndarray_vec(s_mat.as_ref());
-            let u_ndarray = if compute_u {
-                Some(faer_mat_to_ndarray(u_mat_option.unwrap().as_ref()))
-            } else {
-                None
-            };
-            let vt_ndarray = if compute_v {
-                let v_mat = v_mat_option.unwrap();
-                let v_ndarray = faer_mat_to_ndarray(v_mat.as_ref());
-                Some(v_ndarray.t().into_owned())
-            } else {
-                None
-            };
-            Ok(SVDOutput { u: u_ndarray, s: s_ndarray, vt: vt_ndarray })
+            Ok(SVDOutput { u: u_ndarray, s: s_values, vt: vt_ndarray })
         }
     }
 
@@ -338,30 +295,15 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             if matrix.is_empty() {
                 return Ok(EighOutput { eigenvalues: Array1::zeros(0), eigenvectors: Array2::zeros((0,0)) });
             }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            let nrows = matrix_view.nrows();
-            let ncols = matrix_view.ncols();
-
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
             let eig = faer_mat_view.as_ref().selfadjoint_eigendecomposition(faer::Side::Upper);
             let eigenvalues_faer_colref = eig.s();
@@ -378,133 +320,115 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let (nrows, ncols) = matrix.dim();
             let k = nrows.min(ncols);
             if nrows == 0 { return Ok(Array2::zeros((0, k))); }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // already available
-            // let ncols = matrix_view.ncols(); // already available
-
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
-            let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
-            let q_thin_faer_mat = qr_decomp.compute_thin_q(); // This returns an owned Mat<T>
-            Ok(faer_mat_to_ndarray(q_thin_faer_mat.as_ref())) // Pass as MatRef
+            let qr_decomp = faer_mat_view.as_ref().qr();
+            let q_full_faer_mat = qr_decomp.q().reconstruct();
+            let q_thin_faer_ref = q_full_faer_mat.as_ref().submatrix(0, 0, nrows, k);
+            Ok(faer_mat_to_ndarray(q_thin_faer_ref))
         }
     }
 
     impl BackendSVD<f32> for FaerLinAlgBackend {
         fn svd_into(&self, matrix: Array2<f32>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<f32>, Box<dyn Error + Send + Sync>> {
             let (nrows, ncols) = matrix.dim();
+            let k_dim = nrows.min(ncols);
+
             if matrix.is_empty() {
-                let k_dim = nrows.min(ncols);
                  return Ok(SVDOutput {
                     u: if compute_u { Some(Array2::zeros((nrows, k_dim))) } else { None },
                     s: Array1::zeros(k_dim),
                     vt: if compute_v { Some(Array2::zeros((k_dim, ncols))) } else { None },
                 });
             }
-            let matrix_view = matrix.view(); // matrix is Array2<F>
-            let nrows = matrix_view.nrows();
-            let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_f_layout() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
-                    faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else {
-                return Err(to_dyn_error_faer(format!(
-                    "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
-                )));
+            let matrix_view = matrix.view();
+            let faer_mat_view = unsafe {
+                MatRef::from_raw_parts(
+                    matrix_view.as_ptr(),
+                    matrix_view.nrows(),
+                    matrix_view.ncols(),
+                    matrix_view.strides()[0] as isize,
+                    matrix_view.strides()[1] as isize,
+                )
             };
-            let compute_u_faer = if compute_u { ComputeSvdVectors::Full } else { ComputeSvdVectors::No };
-            let compute_v_faer = if compute_v { ComputeSvdVectors::Full } else { ComputeSvdVectors::No };
+
+            // Prepare output arrays
+            let mut s_values = Array1::<f32>::zeros(k_dim);
+            let mut u_matrix = if compute_u { Array2::<f32>::zeros((nrows, k_dim)) } else { Array2::<f32>::zeros((0,0)) };
+            let mut v_matrix = if compute_v { Array2::<f32>::zeros((ncols, k_dim)) } else { Array2::<f32>::zeros((0,0)) };
+
+            // Convert to Faer mutable views
+            let mut s_diag_mut = faer::diag::Diag::from_slice_mut(s_values.as_slice_mut().unwrap(), 0);
+            let mut u_mat_mut_opt = if compute_u {
+                Some(unsafe {
+                    MatMut::from_raw_parts(
+                        u_matrix.as_mut_ptr(),
+                        u_matrix.nrows(),
+                        u_matrix.ncols(),
+                        u_matrix.strides()[0] as isize,
+                        u_matrix.strides()[1] as isize,
+                    )
+                })
+            } else { None };
+
+            let mut v_mat_mut_opt = if compute_v {
+                Some(unsafe {
+                    MatMut::from_raw_parts(
+                        v_matrix.as_mut_ptr(),
+                        v_matrix.nrows(),
+                        v_matrix.ncols(),
+                        v_matrix.strides()[0] as isize,
+                        v_matrix.strides()[1] as isize,
+                    )
+                })
+            } else { None };
+            
+            // Memory allocation for Faer
+            let compute_u_svd_enum = if compute_u { ComputeSvdVectors::Full } else { ComputeSvdVectors::None };
+            let compute_v_svd_enum = if compute_v { ComputeSvdVectors::Full } else { ComputeSvdVectors::None };
 
             let stack_req = faer::linalg::svd::svd_scratch::<f32>(
-                faer_mat_view.as_ref().nrows(),
-                faer_mat_view.as_ref().ncols(),
-                compute_u_faer,
-                compute_v_faer,
-                SvdParams::default(),
-            ).map_err(|e| to_dyn_error_faer(format!("SVD scratch allocation error: {:?}", e)))?;
-
-            let mut mem = PodBuffer::new(stack_req);
+                faer_mat_view.nrows(),
+                faer_mat_view.ncols(),
+                compute_u_svd_enum,
+                compute_v_svd_enum,
+                SvdParams::default()
+            ).map_err(|e| to_dyn_error_faer(format!("SVD f32 scratch requirements error: {:?}", e)))?;
             
-            let k = faer_mat_view.as_ref().nrows().min(faer_mat_view.as_ref().ncols());
-            let mut s_mat = faer::Col::<f32>::zeros(k);
-            let mut u_mat_option = if compute_u {
-                Some(faer::Mat::<f32>::zeros(faer_mat_view.as_ref().nrows(), k))
-            } else {
-                None
-            };
-            let mut v_mat_option = if compute_v {
-                Some(faer::Mat::<f32>::zeros(faer_mat_view.as_ref().ncols(), k))
-            } else {
-                None
-            };
+            let mut pod_buffer = GlobalPodBuffer::new(stack_req);
+            let mut mem_stack = PodStack::new(&mut pod_buffer);
 
+            // Call faer::linalg::svd::svd
             faer::linalg::svd::svd(
                 faer_mat_view.as_ref(),
-                s_mat.as_mut().column_as_diagonal_mut(0),
-                u_mat_option.as_mut().map(|m| m.as_mut()),
-                v_mat_option.as_mut().map(|m| m.as_mut()),
-                faer::Par::rayon(0),
-                &mut mem,
-                SvdParams::default(),
-            ).map_err(|e| to_dyn_error_faer(format!("Faer SVD computation error: {:?}", e)))?;
+                &mut s_diag_mut,
+                u_mat_mut_opt.as_mut().map(|m| m.as_mut()),
+                v_mat_mut_opt.as_mut().map(|m| m.as_mut()),
+                Par::Seq,
+                &mut mem_stack,
+                faer::Spec::auto() // Use Spec::auto() for the params argument
+            ).map_err(|e| to_dyn_error_faer(format!("SVD f32 computation failed: {:?}", e)))?;
+            
+            // Construct SVDOutput
+            let u_ndarray = if compute_u { Some(u_matrix) } else { None };
+            let vt_ndarray = if compute_v { Some(v_matrix.t().into_owned()) } else { None };
 
-            let s_ndarray = faer_col_to_ndarray_vec(s_mat.as_ref());
-            let u_ndarray = if compute_u {
-                Some(faer_mat_to_ndarray(u_mat_option.unwrap().as_ref()))
-            } else {
-                None
-            };
-            let vt_ndarray = if compute_v {
-                let v_mat = v_mat_option.unwrap();
-                let v_ndarray = faer_mat_to_ndarray(v_mat.as_ref());
-                Some(v_ndarray.t().into_owned())
-            } else {
-                None
-            };
-            Ok(SVDOutput { u: u_ndarray, s: s_ndarray, vt: vt_ndarray })
+            Ok(SVDOutput { u: u_ndarray, s: s_values, vt: vt_ndarray })
         }
     }
 } // End of faer_specific_code module
 
 // --- LinAlgBackendProvider Dispatch (originally from linalg_backend_dispatch.rs) ---
 use std::marker::PhantomData;
-
-// Import concrete backend types for the provider
-// Unused: #[cfg(feature = "backend_faer")]
-// Unused: use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module
 
 // NdarrayLinAlgBackend is already defined in this file.
 
@@ -522,61 +446,73 @@ impl<F: 'static + Copy + Send + Sync> LinAlgBackendProvider<F> {
 }
 
 // --- Implement BackendEigh for Provider ---
+#[cfg(feature = "backend_faer")]
 impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
-    NdarrayLinAlgBackend: BackendEigh<F>, // NdarrayLinAlgBackend is in the same file (self)
-    #[cfg(feature = "backend_faer")]
-    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>, // FaerLinAlgBackend is in inner module
+    NdarrayLinAlgBackend: BackendEigh<F>, 
+    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.eigh_upper(matrix)
-        }
+        faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
+impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    NdarrayLinAlgBackend: BackendEigh<F>,
+{
+    fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
+        NdarrayLinAlgBackend.eigh_upper(matrix)
     }
 }
 
 // --- Implement BackendQR for Provider ---
+#[cfg(feature = "backend_faer")]
 impl<F> BackendQR<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendQR<F>,
-    #[cfg(feature = "backend_faer")]
     faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.qr_q_factor(matrix)
-        }
+        faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
+impl<F> BackendQR<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    NdarrayLinAlgBackend: BackendQR<F>,
+{
+    fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
+        NdarrayLinAlgBackend.qr_q_factor(matrix)
     }
 }
 
 // --- Implement BackendSVD for Provider ---
+#[cfg(feature = "backend_faer")]
 impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendSVD<F>,
-    #[cfg(feature = "backend_faer")]
     faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
 {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
-        }
+        faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
+impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    NdarrayLinAlgBackend: BackendSVD<F>,
+{
+    fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
+        NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
     }
 }
