@@ -43,7 +43,7 @@ pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 // use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO};
+use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO, Lapack, Scalar};
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -66,7 +66,7 @@ impl BackendEigh<f64> for NdarrayLinAlgBackend {
 impl BackendQR<f64> for NdarrayLinAlgBackend {
     fn qr_q_factor(&self, matrix: &Array2<f64>) -> Result<Array2<f64>, Box<dyn Error + Send + Sync>> {
         let (q_option, _r) = matrix.qr().map_err(to_dyn_error)?;
-        Ok(q_option)
+        q_option.ok_or_else(|| Box::<dyn Error + Send + Sync>::from("QR decomposition did not return Q factor"))
     }
 }
 
@@ -88,7 +88,7 @@ impl BackendEigh<f32> for NdarrayLinAlgBackend {
 impl BackendQR<f32> for NdarrayLinAlgBackend {
     fn qr_q_factor(&self, matrix: &Array2<f32>) -> Result<Array2<f32>, Box<dyn Error + Send + Sync>> {
         let (q_option, _r) = matrix.qr().map_err(to_dyn_error)?;
-        Ok(q_option)
+        q_option.ok_or_else(|| Box::<dyn Error + Send + Sync>::from("QR decomposition did not return Q factor for f32"))
     }
 }
 
@@ -278,70 +278,61 @@ impl<F: 'static + Copy + Send + Sync> LinAlgBackendProvider<F> {
 }
 
 // --- Implement BackendEigh for Provider ---
-#[cfg(feature = "backend_faer")]
 impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
-    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>,
+    NdarrayLinAlgBackend: BackendEigh<F>, // NdarrayLinAlgBackend is in the same file (self)
+    #[cfg(feature = "backend_faer")]
+    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>, // FaerLinAlgBackend is in inner module
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
-    }
-}
-
-#[cfg(not(feature = "backend_faer"))]
-impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
-where
-    F: 'static + Copy + Send + Sync,
-    NdarrayLinAlgBackend: BackendEigh<F>,
-{
-    fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.eigh_upper(matrix)
+        #[cfg(feature = "backend_faer")]
+        {
+            faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
+        }
+        #[cfg(not(feature = "backend_faer"))]
+        {
+            NdarrayLinAlgBackend.eigh_upper(matrix)
+        }
     }
 }
 
 // --- Implement BackendQR for Provider ---
-#[cfg(feature = "backend_faer")]
-impl<F> BackendQR<F> for LinAlgBackendProvider<F>
-where
-    F: 'static + Copy + Send + Sync,
-    faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
-{
-    fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
-    }
-}
-
-#[cfg(not(feature = "backend_faer"))]
 impl<F> BackendQR<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendQR<F>,
+    #[cfg(feature = "backend_faer")]
+    faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.qr_q_factor(matrix)
+        #[cfg(feature = "backend_faer")]
+        {
+            faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
+        }
+        #[cfg(not(feature = "backend_faer"))]
+        {
+            NdarrayLinAlgBackend.qr_q_factor(matrix)
+        }
     }
 }
 
 // --- Implement BackendSVD for Provider ---
-#[cfg(feature = "backend_faer")]
-impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
-where
-    F: 'static + Copy + Send + Sync,
-    faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
-{
-    fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
-    }
-}
-
-#[cfg(not(feature = "backend_faer"))]
 impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendSVD<F>,
+    #[cfg(feature = "backend_faer")]
+    faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
 {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+        #[cfg(feature = "backend_faer")]
+        {
+            faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+        }
+        #[cfg(not(feature = "backend_faer"))]
+        {
+            NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+        }
     }
 }

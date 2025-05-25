@@ -13,31 +13,25 @@ jobs:
   build_test_bench:
     name: Build, Test & Bench (${{ matrix.blas_backend }})
     runs-on: ${{ matrix.os }}
-    env:
-      # Common RUSTFLAGS for static CRT
-      COMMON_RUSTFLAGS: "-C target-feature=+crt-static"
-      # MKL specific RUSTFLAGS (linker path)
-      MKL_RUSTFLAGS_PRE: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
-      # MKL static linking libraries
-      MKL_STATIC_LIBS: "-Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
     strategy:
       matrix:
         blas_backend: [backend_openblas, backend_mkl, backend_faer]
         include:
           - blas_backend: backend_openblas
             os: ubuntu-latest
+            rust_flags: "" # No specific flags needed for OpenBLAS usually
             backend_feature: backend_openblas
-            # rust_flags: "" # Will be handled by COMMON_RUSTFLAGS
             ld_library_path_mkl: "" # No MKL path for openblas
           - blas_backend: backend_mkl
             os: ubuntu-latest # MKL setup will be for Linux
-            # rust_flags will be constructed from MKL_RUSTFLAGS_PRE and MKL_STATIC_LIBS
+            # The RUSTFLAGS are often needed at compile time to find MKL libs
+            rust_flags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
             backend_feature: backend_mkl
-            # LD_LIBRARY_PATH is often needed at runtime and for build scripts
+            # LD_LIBRARY_PATH is often needed at runtime
             ld_library_path_mkl: "/opt/intel/oneapi/mkl/latest/lib/intel64"
           - blas_backend: backend_faer
             os: ubuntu-latest
-            # rust_flags: "" # Will be handled by COMMON_RUSTFLAGS
+            rust_flags: ""
             backend_feature: backend_faer
             ld_library_path_mkl: ""
     steps:
@@ -87,15 +81,6 @@ jobs:
           echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib/intel64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
 
-      - name: Cache Intel MKL
-        if: matrix.blas_backend == 'backend_mkl'
-        uses: actions/cache@v4
-        with:
-          path: /opt/intel/oneapi/mkl/latest/
-          key: mkl-cache-${{ runner.os }}-${{ matrix.blas_backend }} # MKL version is not explicitly pinned in install, relies on apt repo
-          restore-keys: |
-            mkl-cache-${{ runner.os }}-${{ matrix.blas_backend }}
-
       # Cache for Cargo's downloaded dependencies
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
@@ -126,99 +111,18 @@ jobs:
       - name: Build 🛠️ (${{ matrix.blas_backend }})
         run: cargo build --verbose --release --features ${{ matrix.backend_feature }}
         env:
-          RUSTFLAGS: |
-            ${{ env.COMMON_RUSTFLAGS }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_RUSTFLAGS_PRE || '' }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_STATIC_LIBS || '' }}
-          OPENBLAS_STATIC: ${{ matrix.blas_backend == 'backend_openblas' && '1' || '' }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Keep for MKL build scripts if they need it
-
-      - name: Check Static Linking (${{ matrix.blas_backend }})
-        run: |
-          echo "Running ldd on the binary..."
-          binary_path="target/release/efficient_pca"
-
-          if [ ! -f "$binary_path" ]; then
-            echo "Error: Binary $binary_path not found!"
-            exit 1
-          fi
-
-          ldd_output=$(ldd "$binary_path")
-          echo "$ldd_output"
-          echo # Newline for better readability
-
-          # Handle cases where ldd itself indicates the binary is static or not dynamic
-          if echo "$ldd_output" | grep -q -E "statically linked|not a dynamic executable"; then
-            echo "Binary is statically linked or not a dynamic executable according to ldd. Check passed."
-            exit 0
-          fi
-
-          echo "Verifying linked libraries against allowlist..."
-          # Define allowlist (basenames of the libraries)
-          allowed_libs="linux-vdso.so.1 ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libm.so.6 libgcc_s.so.1 libutil.so.1 libcrypt.so.1"
-
-          offending_libs=""
-
-          # Process each line of ldd output
-          echo "$ldd_output" | while IFS= read -r line; do
-            # Extract library name:
-            # - If "=>" is present, take the first field (the library name).
-            # - Otherwise, if the first field contains ".so", it's likely the library name (e.g., linux-vdso.so.1).
-            lib_path_or_name=$(echo "$line" | awk '{if ($2 == "=>") print $1; else if ($1 ~ /\.so/) print $1}')
-
-            if [ -n "$lib_path_or_name" ]; then
-              lib_basename=$(basename "$lib_path_or_name")
-              
-              # Check if lib_basename is in allowed_libs
-              # Using grep -w for whole word match, and -q for quiet
-              if ! echo "$allowed_libs" | grep -q -w -- "$lib_basename"; then
-                # Accumulate offending libraries
-                if [ -z "$offending_libs" ]; then
-                  offending_libs="$lib_basename"
-                else
-                  offending_libs="$offending_libs $lib_basename"
-                fi
-              fi
-            fi
-          done
-
-          if [ -n "$offending_libs" ]; then
-            echo "Error: The following unexpected libraries were found linked to the binary:"
-            # Print each offending lib on a new line for clarity
-            for lib in $offending_libs; do
-              echo "  - $lib"
-            done
-            exit 1
-          else
-            echo "All linked libraries are within the allowlist. Check passed."
-            exit 0
-          fi
+          RUSTFLAGS: ${{ matrix.rust_flags }}
 
       - name: Run tests 🧪 (${{ matrix.blas_backend }})
         run: cargo test --verbose --features ${{ matrix.backend_feature }}
         env:
-          RUSTFLAGS: |
-            ${{ env.COMMON_RUSTFLAGS }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_RUSTFLAGS_PRE || '' }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_STATIC_LIBS || '' }}
-          OPENBLAS_STATIC: ${{ matrix.blas_backend == 'backend_openblas' && '1' || '' }}
+          RUSTFLAGS: ${{ matrix.rust_flags }}
           LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1
       
       - name: Run benchmarks (${{ matrix.blas_backend }})
         run: cargo bench --features ${{ matrix.backend_feature }}
         env:
-          RUSTFLAGS: |
-            ${{ env.COMMON_RUSTFLAGS }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_RUSTFLAGS_PRE || '' }} \
-            ${{ matrix.blas_backend == 'backend_mkl' && env.MKL_STATIC_LIBS || '' }}
-          OPENBLAS_STATIC: ${{ matrix.blas_backend == 'backend_openblas' && '1' || '' }}
+          RUSTFLAGS: ${{ matrix.rust_flags }}
           LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1
-
-      - name: Upload Statically Linked Binary (${{ matrix.blas_backend }})
-        uses: actions/upload-artifact@v4
-        with:
-          name: efficient_pca-${{ matrix.blas_backend }}-${{ runner.os }}-static
-          path: target/release/efficient_pca
-          if-no-files-found: error # Useful for debugging
