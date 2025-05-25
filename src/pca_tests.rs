@@ -8,9 +8,18 @@ use ndarray_linalg::{Eigh, QR, UPLO};
 // For numerical consistency test
 use approx::assert_abs_diff_eq;
 // serde::Deserialize, std::fs, std::path::Path are no longer needed
-use ndarray::{array, Array1, Array2}; // For creating the test data matrix easily & Array1 for direct comparison
+use ndarray::{array, Array2}; // For creating the test data matrix easily & Array1 for direct comparison
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 
 // PcaReferenceResults struct is no longer needed
+
+fn generate_random_data(n_samples: usize, n_features: usize, seed: u64) -> Array2<f64> {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    Array2::from_shape_fn((n_samples, n_features), |_| {
+        rng.gen_range(0..=2) as f64 // Generates 0.0, 1.0, or 2.0
+    })
+}
 
 #[cfg(test)]
 mod genome_tests {
@@ -1243,7 +1252,7 @@ mod pca_tests {
             vec![0.5773502691896255, -0.40824829046386313, -0.7071067811865475],
             vec![0.5773502691896255, -0.40824829046386313, 0.7071067811865476]
         ];
-        let ref_rotation_ndarray = Array2::from_shape_vec(
+        let _ref_rotation_ndarray = Array2::from_shape_vec(
             (3, 3), // features x components
             ref_rotation_rows.clone().into_iter().flatten().collect::<Vec<f64>>()
         ).unwrap().t().into_owned(); // Convert to components x features, then transpose to features x components for direct use.

@@ -43,7 +43,7 @@ pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 // use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO, Lapack};
+use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO};
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -105,13 +105,13 @@ impl BackendSVD<f32> for NdarrayLinAlgBackend {
 mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use super::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
     use ndarray::{Array1, Array2, ShapeBuilder};
-    use faer::{Mat, MatRef, ColRef, Side, Par}; // Use faer::Par
+    use faer::{MatRef, Par}; // Use faer::Par
     use faer::linalg::svd::{ComputeSvdVectors, svd as faer_svd_fn};
     use faer::traits::num_traits::Zero;     // Use Zero via faer's re-export
     use faer::traits::ComplexField;
     use bytemuck::Pod;
     use std::error::Error; // Should already be there from original code
-    use dyn_stack::GlobalPodBuffer;         // Direct import after adding dyn-stack
+    use faer::dyn_stack::GlobalPodBuffer;         // Direct import after adding dyn-stack
 
     fn to_dyn_error_faer(msg: String) -> Box<dyn Error + Send + Sync> {
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg))
@@ -129,7 +129,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
         let mut data_vec = Vec::with_capacity(nrows * ncols);
         for j in 0..ncols {
             for i in 0..nrows {
-                data_vec.push(faer_mat.get_unchecked(i, j));
+                data_vec.push(*faer_mat.get_unchecked(i, j));
             }
         }
         Array2::from_shape_vec((nrows, ncols).f(), data_vec)
@@ -143,7 +143,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
         }
         let mut data_vec = Vec::with_capacity(nrows);
         for i in 0..nrows {
-            data_vec.push(faer_col.get_unchecked(i));
+            data_vec.push(*faer_col.get_unchecked(i));
         }
         Array1::from_vec(data_vec)
     }
@@ -442,7 +442,7 @@ use std::marker::PhantomData;
 
 // Import concrete backend types for the provider
 #[cfg(feature = "backend_faer")]
-use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module
+// use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module - This line is removed
 
 // NdarrayLinAlgBackend is already defined in this file.
 
