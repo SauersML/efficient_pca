@@ -43,7 +43,7 @@ pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 // use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO, Lapack, Scalar};
+use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO};
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
