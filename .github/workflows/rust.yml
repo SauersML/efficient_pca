@@ -69,11 +69,16 @@ jobs:
       - name: Install Intel MKL
         if: matrix.blas_backend == 'backend_mkl'
         run: |
-          wget https://registrationcenter-download.intel.com/akdlm/irc_nas/19007/l_BaseKit_p_2023.2.0.49397_offline.sh
-          sudo bash ./l_BaseKit_p_2023.2.0.49397_offline.sh -a --silent --eula accept --components intel.oneapi.lin.mkl.devel
+          # Download the key to system keyring
+          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | sudo gpg --dearmor --output /usr/share/keyrings/intel-archive-keyring.gpg
+          # Add the Intel repository
+          echo "deb [signed-by=/usr/share/keyrings/intel-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          # Update package lists
+          sudo apt-get update
+          # Install Intel oneAPI MKL Developer package
+          sudo apt-get install -y intel-oneapi-mkl-devel
+          # Set MKL_ROOT and update LD_LIBRARY_PATH.
           echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> $GITHUB_ENV
-          # For MKL, LD_LIBRARY_PATH might need to be set for subsequent steps
-          # GITHUB_ENV sets environment variables for subsequent steps in the job
           echo "LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib/intel64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
 
       # Cache for Cargo's downloaded dependencies
