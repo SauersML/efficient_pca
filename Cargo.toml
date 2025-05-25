@@ -26,6 +26,7 @@ documentation = "https://github.com/SauersML/efficient_pca"
 [dependencies]
 bincode = { version = "2.0.1", features = ["serde"] }
 bytemuck = { version = "1.18.0", features = ["derive"] }
+dyn-stack = "0.13.0"
 faer = { version = "0.22.6", optional = true }
 float-cmp = "0.10.0"
 log = "0.4.27"
