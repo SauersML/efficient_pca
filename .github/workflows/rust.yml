@@ -112,12 +112,12 @@ jobs:
         run: cargo test --verbose --features ${{ matrix.backend_feature }}
         env:
           RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ matrix.ld_library_path_mkl }}${{ env.LD_LIBRARY_PATH:+:}}${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1
       
       - name: Run benchmarks (${{ matrix.blas_backend }})
         run: cargo bench --features ${{ matrix.backend_feature }}
         env:
           RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ matrix.ld_library_path_mkl }}${{ env.LD_LIBRARY_PATH:+:}}${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Prepend MKL path if defined
           RUST_BACKTRACE: 1
