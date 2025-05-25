@@ -12,7 +12,7 @@ env:
 # Explicitly set permissions for the GITHUB_TOKEN
 permissions:
   contents: read  # For actions/checkout
-  issues: write   # For creating and closing issues
+  issues: write   # For creating, closing, and labeling issues
 
 jobs:
   build_test_bench:
@@ -27,16 +27,14 @@ jobs:
             os: ubuntu-latest
             rust_flags: "" 
             backend_feature: backend_openblas
-            # ld_library_path_mkl: "" # Not needed explicitly if handled by general LD_LIBRARY_PATH logic
           - blas_backend: backend_mkl
             os: ubuntu-latest 
             rust_flags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64" 
             backend_feature: backend_mkl
-            # ld_library_path_mkl: "/opt/intel/oneapi/mkl/latest/lib/intel64" # Handled by setup step
           - blas_backend: backend_faer
             os: ubuntu-latest
+            rust_flags: ""
             backend_feature: backend_faer
-            # ld_library_path_mkl: "" # Not needed
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,7 +76,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y intel-oneapi-mkl-devel
           echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> "$GITHUB_ENV"
-          # Robustly prepend MKL to LD_LIBRARY_PATH
+          # Robustly prepend MKL to LD_LIBRARY_PATH for subsequent steps in this job
           MKL_LD_PATH="/opt/intel/oneapi/mkl/latest/lib/intel64"
           if [ -n "$LD_LIBRARY_PATH" ]; then
             echo "LD_LIBRARY_PATH=${MKL_LD_PATH}:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
@@ -115,7 +113,7 @@ jobs:
         run: cargo build --verbose --release --features ${{ matrix.backend_feature }}
         env:
           RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} 
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} # Inherits job's LD_LIBRARY_PATH (MKL aware if set)
 
       - name: Run tests 🧪 (${{ matrix.blas_backend }})
         run: cargo test --verbose --features ${{ matrix.backend_feature }}
@@ -134,11 +132,12 @@ jobs:
       # --- getdoc Integration on Failure ---
       - name: Install getdoc on failure
         if: failure() 
-        run: cargo install getdoc
+        run: cargo install getdoc --locked # Use --locked for more reproducible installs from crates.io
 
       - name: Run getdoc for ${{ matrix.backend_feature }} context on failure
         if: failure()
-        run: getdoc --features ${{ matrix.backend_feature }} 
+        # RUSTFLAGS and LD_LIBRARY_PATH for the current matrix leg are inherited from the job environment
+        run: getdoc --features ${{ matrix.backend_feature }} # Generates 'report.md'
 
       - name: Rename getdoc report for this backend
         if: failure()
@@ -150,7 +149,7 @@ jobs:
         with:
           name: getdoc-report-${{ runner.os }}-${{ matrix.blas_backend }} 
           path: report-${{ runner.os }}-${{ matrix.blas_backend }}.md
-          if-no-files-found: error 
+          if-no-files-found: error # The report should exist if getdoc ran
 
   summarize_and_create_issue:
     name: Summarize Reports and Manage Issues
@@ -164,48 +163,58 @@ jobs:
       - name: Download all getdoc reports
         uses: actions/download-artifact@v4
         with:
-          path: all_getdoc_reports 
+          path: all_getdoc_reports # Downloads all artifacts from the run into this directory
 
       - name: Consolidate getdoc reports
-        id: consolidate # Give an ID to this step to reference its outputs if needed
+        id: consolidate 
         run: |
           FINAL_REPORT_FILE="final_consolidated_report.md"
+          # Initialize the report with a header
           echo "## Consolidated getdoc Failure Report - Workflow Run: ${{ github.run_id }}" > ${FINAL_REPORT_FILE}
           echo "Commit: ${{ github.sha }}" >> ${FINAL_REPORT_FILE}
           echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> ${FINAL_REPORT_FILE}
           echo "" >> ${FINAL_REPORT_FILE}
-          REPORT_COUNT=0
-          
-          find all_getdoc_reports -type f -name "report-*.md" | while read report_file; do
-            REPORT_COUNT=$((REPORT_COUNT + 1))
-            ARTIFACT_CONTEXT=$(basename $(dirname "$report_file")) 
+
+          NUM_REPORTS_PROCESSED=0
+          # Process each downloaded report file
+          # The find command with -print0 and while read -d $'\0' is robust for various filenames.
+          find all_getdoc_reports -type f -name "report-*.md" -print0 | while IFS= read -r -d $'\0' report_file; do
+            echo "Processing found report file: ${report_file}" # For debugging
+            ARTIFACT_CONTEXT=$(basename "$(dirname "${report_file}")") # Extracts artifact name like 'getdoc-report-Linux-backend_mkl'
+            
             echo "---" >> ${FINAL_REPORT_FILE}
             echo "### Report from Artifact: ${ARTIFACT_CONTEXT}" >> ${FINAL_REPORT_FILE}
-            echo "(Original file: ${report_file})" >> ${FINAL_REPORT_FILE}
+            echo "(Original file path in runner: ${report_file})" >> ${FINAL_REPORT_FILE}
             echo "" >> ${FINAL_REPORT_FILE}
             cat "${report_file}" >> ${FINAL_REPORT_FILE}
             echo "" >> ${FINAL_REPORT_FILE} 
             echo "" >> ${FINAL_REPORT_FILE} 
           done
 
-          if [ "${REPORT_COUNT}" -eq "0" ]; then
-            echo "No individual getdoc reports found to consolidate for issue content."
-            # Create a minimal report indicating no specific getdoc reports were found,
-            # but the overall workflow indicated a failure.
-            echo "## CI Failure - No specific getdoc Reports Found" > ${FINAL_REPORT_FILE}
-            echo "Workflow run ${{ github.run_id }} for commit ${{ github.sha }} on ref ${{ github.ref }} failed." >> ${FINAL_REPORT_FILE}
-            echo "Although the summarization job was triggered, no specific 'getdoc' report artifacts were found." >> ${FINAL_REPORT_FILE}
-            echo "Please check the logs of the 'build_test_bench' job legs for direct error details and artifact upload status." >> ${FINAL_REPORT_FILE}
+          # After the loop, count how many actual report sections were added
+          NUM_REPORTS_PROCESSED=$(grep -c "### Report from Artifact:" "${FINAL_REPORT_FILE}")
+
+          if [ "${NUM_REPORTS_PROCESSED}" -gt "0" ]; then
+            echo "Successfully consolidated ${NUM_REPORTS_PROCESSED} getdoc report(s) into ${FINAL_REPORT_FILE}."
           else
-            echo "Consolidated ${REPORT_COUNT} report(s) into ${FINAL_REPORT_FILE}."
+            echo "No individual getdoc reports found to consolidate. Appending fallback message."
+            # Fallback message if no reports were processed by the loop
+            echo "" >> ${FINAL_REPORT_FILE} # Ensure a blank line before fallback section
+            echo "## CI Failure - No specific getdoc Reports Found or Processed" >> ${FINAL_REPORT_FILE}
+            echo "Workflow run ${{ github.run_id }} for commit ${{ github.sha }} on ref ${{ github.ref }} failed." >> ${FINAL_REPORT_FILE}
+            echo "Although the summarization job was triggered, the script could not find or process individual 'getdoc' report artifacts from the 'all_getdoc_reports' directory." >> ${FINAL_REPORT_FILE}
+            echo "Listing contents of 'all_getdoc_reports' for debugging:" >> ${FINAL_REPORT_FILE}
+            ls -R all_getdoc_reports >> ${FINAL_REPORT_FILE}
+            echo "" >> ${FINAL_REPORT_FILE}
+            echo "Please check the logs of the 'build_test_bench' job legs for direct error details and individual artifact upload status." >> ${FINAL_REPORT_FILE}
           fi
           
-          echo "--- Preview of Consolidated Report (first 30 lines) ---"
-          head -n 30 ${FINAL_REPORT_FILE}
+          echo "--- Preview of Consolidated Report (first 50 lines) ---"
+          head -n 50 ${FINAL_REPORT_FILE}
           echo "--------------------------------------------------------"
 
       - name: Display full consolidated report content in logs
-        run: cat final_consolidated_report.md # Always display the (potentially fallback) report
+        run: cat final_consolidated_report.md 
 
       - name: Upload consolidated getdoc report
         uses: actions/upload-artifact@v4
@@ -234,16 +243,25 @@ jobs:
 
             let closedCount = 0;
             for (const issue of issues) {
+              // Additional check: ensure title matches the automated report format to be safer
+              if (!issue.title.startsWith("Automated CI Failure Report - Workflow Run")) {
+                core.info(`Skipping issue #${issue.number} ('${issue.title}') as its title does not match the expected pattern for automated reports.`);
+                continue;
+              }
               const createdAt = new Date(issue.created_at);
               if (createdAt < cutOffDate) {
                 core.info(`Closing issue #${issue.number} ('${issue.title}') as it was created at ${createdAt.toISOString()} (older than 24 hours).`);
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  state: 'closed'
-                });
-                closedCount++;
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    state: 'closed'
+                  });
+                  closedCount++;
+                } catch (error) {
+                  core.error(`Failed to close issue #${issue.number}: ${error.message}`);
+                }
               } else {
                 core.info(`Issue #${issue.number} ('${issue.title}') was created at ${createdAt.toISOString()}, not old enough to close.`);
               }
@@ -260,5 +278,5 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           title: "Automated CI Failure Report - Workflow Run ${{ github.run_id }}"
-          content-filepath: ./final_consolidated_report.md # This file is always created by the consolidate step
-          labels: bug, ci-failure, automated-report, getdoc # These labels are used by the auto-close step
+          content-filepath: ./final_consolidated_report.md 
+          labels: bug, ci-failure, automated-report, getdoc
