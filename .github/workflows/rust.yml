@@ -9,17 +9,16 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# Explicitly set permissions for the GITHUB_TOKEN
 permissions:
-  contents: read  # For actions/checkout
-  issues: write   # For creating, closing, and labeling issues
+  contents: read
+  issues: write
 
 jobs:
   build_test_bench:
     name: Build, Test & Bench (${{ matrix.blas_backend }})
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # Allow all matrix jobs to complete to get all reports
+      fail-fast: false
       matrix:
         blas_backend: [backend_openblas, backend_mkl, backend_faer]
         include:
@@ -161,7 +160,6 @@ jobs:
           path: all_getdoc_reports 
 
       - name: Debug: List structure of downloaded artifacts
-        # This step helps verify what download-artifact actually did
         run: |
           echo "Listing contents of ./all_getdoc_reports (PWD: $(pwd)):"
           ls -R all_getdoc_reports
@@ -174,14 +172,13 @@ jobs:
         id: consolidate 
         run: |
           FINAL_REPORT_FILE="final_consolidated_report.md"
-          # Initialize the report with a header
+          # Initialize the report with a master header using > (overwrite)
           echo "## Consolidated getdoc Failure Report - Workflow Run: ${{ github.run_id }}" > ${FINAL_REPORT_FILE}
           echo "Commit: ${{ github.sha }}" >> ${FINAL_REPORT_FILE}
           echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> ${FINAL_REPORT_FILE}
-          echo "" >> ${FINAL_REPORT_FILE} # Blank line after header
+          echo "" >> ${FINAL_REPORT_FILE} 
 
-          # Add a section for debugging the directory structure from within the script
-          # This helps diagnose if files were not downloaded or are in unexpected locations.
+          # Add a debug section for the directory listing into the report using >> (append)
           echo "---" >> ${FINAL_REPORT_FILE}
           echo "### Debug: Directory Listing of 'all_getdoc_reports' at time of consolidation" >> ${FINAL_REPORT_FILE}
           echo '```text' >> ${FINAL_REPORT_FILE}
@@ -191,15 +188,16 @@ jobs:
           echo "" >> ${FINAL_REPORT_FILE}
           
           # Process each downloaded report file.
-          # The find command with -print0 and while read -d $'\0' is robust for various filenames.
+          # The find command with -print0 and while read -d $'\0' is robust.
+          # Appends (>>) are made to FINAL_REPORT_FILE within the loop.
           find all_getdoc_reports -type f -name "report-*.md" -print0 | while IFS= read -r -d $'\0' report_file_path; do
-            if [ -f "${report_file_path}" ]; then # Ensure it's a file before processing
-              echo "Processing found report file: ${report_file_path}" # Log to console for CI debugging
+            if [ -f "${report_file_path}" ]; then 
+              echo "Processing found report file: ${report_file_path}" 
               
               ARTIFACT_CONTEXT_DIR=$(dirname "${report_file_path}")
-              ARTIFACT_CONTEXT=$(basename "${ARTIFACT_CONTEXT_DIR}") # Extracts artifact name like 'getdoc-report-Linux-backend_mkl'
+              ARTIFACT_CONTEXT=$(basename "${ARTIFACT_CONTEXT_DIR}") 
               
-              echo "---" >> ${FINAL_REPORT_FILE} # Use ">>" to append
+              echo "---" >> ${FINAL_REPORT_FILE} 
               echo "### Report from Artifact: ${ARTIFACT_CONTEXT}" >> ${FINAL_REPORT_FILE}
               echo "(Original file path in runner: ${report_file_path})" >> ${FINAL_REPORT_FILE}
               echo "" >> ${FINAL_REPORT_FILE}
@@ -207,22 +205,21 @@ jobs:
               echo "" >> ${FINAL_REPORT_FILE} 
               echo "" >> ${FINAL_REPORT_FILE} 
             else
-              echo "Warning: '${report_file_path}' (found by find) is not a regular file or not readable. Skipping." # Log to console
+              echo "Warning: '${report_file_path}' (found by find) is not a regular file or not readable. Skipping." 
             fi
           done
 
-          # After the loop, count how many actual report sections were appended to the file
-          # by looking for the unique marker we added for each report.
+          # After the loop, count how many actual report sections were added by looking for our marker.
+          # This count is reliable as it's done after all potential appends.
           NUM_REPORTS_PROCESSED=$(grep -c "### Report from Artifact:" "${FINAL_REPORT_FILE}")
 
           if [ "${NUM_REPORTS_PROCESSED}" -gt "0" ]; then
             echo "Successfully consolidated ${NUM_REPORTS_PROCESSED} getdoc report(s) into ${FINAL_REPORT_FILE}."
           else
-            # This block is reached if no "### Report from Artifact:" lines were found in FINAL_REPORT_FILE.
-            # This means no individual reports were successfully processed and appended by the loop.
-            # The FINAL_REPORT_FILE will contain the initial header and the debug ls -R output.
+            # If no "### Report from Artifact:" lines were found, it means no reports were processed by the loop.
+            # Append the fallback message to the FINAL_REPORT_FILE, which already contains the header and debug info.
             echo "No individual getdoc reports were successfully processed and appended by the script. Fallback message will be added."
-            echo "" >> ${FINAL_REPORT_FILE} # Ensure a blank line before fallback section
+            echo "" >> ${FINAL_REPORT_FILE} 
             echo "## CI Failure - No specific getdoc Reports Processed by Consolidation Script" >> ${FINAL_REPORT_FILE}
             echo "Workflow run ${{ github.run_id }} for commit ${{ github.sha }} on ref ${{ github.ref }} failed." >> ${FINAL_REPORT_FILE}
             echo "The consolidation script did not find or process individual 'getdoc' report artifacts as expected." >> ${FINAL_REPORT_FILE}
