@@ -31,7 +31,6 @@ jobs:
             ld_library_path_mkl: "/opt/intel/oneapi/mkl/latest/lib/intel64"
           - blas_backend: backend_faer
             os: ubuntu-latest
-            rust_flags: ""
             backend_feature: backend_faer
             ld_library_path_mkl: ""
     steps:
