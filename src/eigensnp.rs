@@ -1,7 +1,7 @@
 use ndarray::{s, Array1, Array2, Axis, ArrayView2};
 // Eigh, QR, SVDInto are replaced by backend calls. UPLO is handled by eigh_upper.
 // use ndarray_linalg::{Eigh, UPLO, QR, SVDInto}; 
-use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput, LinAlgBackendProvider};
+use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, LinAlgBackendProvider};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rayon::prelude::*;

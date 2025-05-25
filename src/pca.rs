@@ -6,7 +6,7 @@ use ndarray::{s, Array1, Array2, Axis, ArrayView1};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.
-use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput, LinAlgBackendProvider};
+use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, LinAlgBackendProvider};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rand::Rng;
