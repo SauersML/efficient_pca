@@ -39,8 +39,9 @@ jobs:
 
       - name: Install Rust toolchain
         id: install_rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly
           components: '' # Add 'clippy', 'rustfmt' if needed later
 
       - name: Get Rust compiler version
@@ -90,9 +91,9 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }}
+          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }}-${{ matrix.rust_flags }}
           restore-keys: |
-            ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-
+            ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }}-
             ${{ runner.os }}-cargo-deps-
 
       # Cache for the Rust build artifacts (target directory)
@@ -101,10 +102,10 @@ jobs:
         id: cache-rust-target
         with:
           path: target
-          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}-${{ matrix.blas_backend }}
+          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}-${{ matrix.blas_backend }}-${{ matrix.rust_flags }}
           restore-keys: |
-            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-
-            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-
+            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}-${{ matrix.blas_backend }}-
+            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ matrix.blas_backend }}-
             ${{ runner.os }}-target-
 
       - name: Build 🛠️ (${{ matrix.blas_backend }})
