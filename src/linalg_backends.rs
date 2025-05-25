@@ -43,7 +43,7 @@ pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 // use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO, Lapack, Scalar};
+use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, UPLO};
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -65,8 +65,8 @@ impl BackendEigh<f64> for NdarrayLinAlgBackend {
 
 impl BackendQR<f64> for NdarrayLinAlgBackend {
     fn qr_q_factor(&self, matrix: &Array2<f64>) -> Result<Array2<f64>, Box<dyn Error + Send + Sync>> {
-        let (q_factor, _r) = matrix.qr().map_err(to_dyn_error)?;
-        Ok(q_factor)
+        let (q_option, _r) = matrix.qr().map_err(to_dyn_error)?;
+        q_option.ok_or_else(|| Box::<dyn Error + Send + Sync>::from("QR decomposition did not return Q factor"))
     }
 }
 
@@ -87,8 +87,8 @@ impl BackendEigh<f32> for NdarrayLinAlgBackend {
 
 impl BackendQR<f32> for NdarrayLinAlgBackend {
     fn qr_q_factor(&self, matrix: &Array2<f32>) -> Result<Array2<f32>, Box<dyn Error + Send + Sync>> {
-        let (q_factor, _r) = matrix.qr().map_err(to_dyn_error)?;
-        Ok(q_factor)
+        let (q_option, _r) = matrix.qr().map_err(to_dyn_error)?;
+        q_option.ok_or_else(|| Box::<dyn Error + Send + Sync>::from("QR decomposition did not return Q factor for f32"))
     }
 }
 
@@ -108,7 +108,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use faer::{linalg::{
         reconstruct::Reconstruct,
         svd::ComputeSingularVectors,
-    }, prelude::*, Mat, MatRef}; // Comment for MatRef removed
+    }, MatRef}; // Comment for MatRef removed
     use std::error::Error;
 
     fn to_dyn_error_faer(msg: String) -> Box<dyn Error + Send + Sync> {
@@ -257,10 +257,6 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
 
 // --- LinAlgBackendProvider Dispatch (originally from linalg_backend_dispatch.rs) ---
 use std::marker::PhantomData;
-
-// Import concrete backend types for the provider
-#[cfg(feature = "backend_faer")]
-use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module
 
 // NdarrayLinAlgBackend is already defined in this file.
 
