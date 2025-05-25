@@ -661,7 +661,7 @@ impl EigenSNPCoreAlgorithm {
         });
         
         let backend = LinAlgBackendProvider::<f32>::new(); // Use LinAlgBackendProvider for f32
-        let mut orthonormal_basis_candidate = matrix_features_by_samples.dot(&random_projection_matrix_samples_by_sketch);
+        let orthonormal_basis_candidate = matrix_features_by_samples.dot(&random_projection_matrix_samples_by_sketch);
 
         if orthonormal_basis_candidate.ncols() == 0 {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension);

@@ -539,7 +539,7 @@ impl PCA {
                 });
 
             // Initial sketch: Y = A @ Omega_prime
-            let mut q_prime_basis_candidate = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) @ (D x L) -> N x L
+            let q_prime_basis_candidate = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) @ (D x L) -> N x L
             if q_prime_basis_candidate.ncols() == 0 { // Should only happen if l_sketch_components was 0
                  return Err("Sketch Q'_basis_candidate (from A) has zero columns before QR. This indicates l_sketch_components became 0.".into());
             }
@@ -597,7 +597,7 @@ impl PCA {
                 });
 
             // Initial sketch: Y_aat_candidate = A.T @ Omega
-            let mut q_basis_candidate = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N) @ (N x L) -> D x L
+            let q_basis_candidate = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N) @ (N x L) -> D x L
             if q_basis_candidate.ncols() == 0 {
                 return Err("Initial sketch Q_basis_candidate (from A.T) has zero columns before QR. This indicates l_sketch_components became 0.".into());
             }
