@@ -24,20 +24,22 @@ categories = [
 documentation = "https://github.com/SauersML/efficient_pca"
 
 [dependencies]
+bincode = { version = "2.0.1", features = ["serde"] }
+bytemuck = { version = "1.18.0", features = ["derive"] }
+dyn-stack = "0.13.0"
+faer = { version = "0.22.6", optional = true }
 float-cmp = "0.10.0"
+log = "0.4.27"
 ndarray = { version = "0.16.1", features = ["serde", "rayon"] }
 ndarray-linalg = { version = "0.17.0", default-features = false }
 ndarray-rand = "0.15.0"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
-sysinfo = "0.33.1"
 rand_distr = "0.4.3"
-tempfile = "3.20.0"
-bincode = { version = "2.0.1", features = ["serde"] }
-serde = { version = "1.0.219", features = ["derive"] }
 rayon = "1.10.0"
-log = "0.4.27"
-faer = { version = "0.22.6", optional = true }
+serde = { version = "1.0.219", features = ["derive"] }
+sysinfo = "0.33.1"
+tempfile = "3.20.0"
 
 [lib]
 name = "efficient_pca"
