@@ -1,5 +1,5 @@
-// For your crate's PCA
-use crate::PCA;
+// For the crate's PCA
+use efficient_pca::PCA;
 
 // For ndarray operations
 use ndarray::{array, Array2, Axis};
@@ -1507,8 +1507,8 @@ mod pca_tests {
                 panic!("sv_rfit_sorted_vec is empty, but Linfa reported {} SV(s). Inconsistent SV counts.", sv_linfa_sorted_vec.len());
             }
         } else { // Linfa found no SVs
-            // If Linfa reports 0 SVs, your PCAs should ideally also report 0 (or only near-zero SVs).
-            // This checks if your PCA's SV lists are also empty or effectively all zeros.
+            // If Linfa reports 0 SVs, the PCAs should ideally also report 0 (or only near-zero SVs).
+            // This checks if the PCA's SV lists are also empty or effectively all zeros.
             let fit_is_effectively_empty = sv_fit_sorted_vec.is_empty() || sv_fit_sorted_vec.iter().all(|&x| x.abs() < TOLERANCE * 10.0);
             assert!(fit_is_effectively_empty,
                     "Expected fit SVs to be empty or near-zero if Linfa SVs are empty; fit has {} SVs: {:?}",
