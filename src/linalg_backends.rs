@@ -105,13 +105,15 @@ impl BackendSVD<f32> for NdarrayLinAlgBackend {
 mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use super::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
     use ndarray::{Array1, Array2, ShapeBuilder};
-    use faer::{MatRef, Par}; // Use faer::Par
-    use faer::linalg::svd::{ComputeSvdVectors, svd as faer_svd_fn};
+    use faer::{MatRef, Parallelism}; // Use faer::Parallelism instead of faer::Par
+    use faer::linalg::svd::{ComputeVectors, svd as faer_svd_fn}; // ComputeSvdVectors is ComputeVectors
     use faer::traits::num_traits::Zero;     // Use Zero via faer's re-export
     use faer::traits::ComplexField;
     use bytemuck::Pod;
     use std::error::Error; // Should already be there from original code
     use faer::dyn_stack::GlobalPodBuffer;         // Direct import after adding dyn-stack
+    // use faer::linalg::svd::ComputeVectors; // Already imported above, ensure it's the correct one
+    // use faer::Parallelism;                 // Already imported above
 
     fn to_dyn_error_faer(msg: String) -> Box<dyn Error + Send + Sync> {
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg))
