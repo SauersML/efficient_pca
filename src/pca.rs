@@ -304,7 +304,7 @@ impl PCA {
             let original_gram_eigenvectors_u = eigh_result_gram.eigenvectors; // Array2<f64> (these are U from U S V^T of Gram)
 
             let mut indexed_gram_eigenvalues: Vec<(usize, f64)> = original_gram_eigenvalues
-                .into_iter()
+                .iter().map(|&v|v) // Use iter() to borrow original_gram_eigenvalues
                 .enumerate()
                 .collect();
 
@@ -312,6 +312,12 @@ impl PCA {
                 b_val.partial_cmp(a_val).unwrap_or(std::cmp::Ordering::Equal)
             });
 
+            // Build (eigenvalue, eigenvector-column) pairs in the same order.
+            // Each v_col is an owned Array1<f64>, so we can keep it after the loop.
+            let eig_pairs: Vec<(f64, Array1<f64>)> = indexed_gram_eigenvalues
+                .iter()
+                .map(|(idx, &val)| (val, original_gram_eigenvectors_u.column(*idx).to_owned()))
+                .collect();
             let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues.iter().map(|(_, val)| *val).collect();
             let rank_limit = calculate_rank_by_tolerance(&sorted_gram_eigenvalues_for_tol, tolerance, NEAR_ZERO_THRESHOLD);
 
