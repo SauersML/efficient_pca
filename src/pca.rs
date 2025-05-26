@@ -318,6 +318,7 @@ impl PCA {
                 .iter()
                 .map(|(idx, val)| (*val, original_gram_eigenvectors_u.column(*idx).to_owned()))
                 .collect();
+
             let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues.iter().map(|(_, val)| *val).collect();
             let rank_limit = calculate_rank_by_tolerance(&sorted_gram_eigenvalues_for_tol, tolerance, NEAR_ZERO_THRESHOLD);
 
@@ -337,11 +338,11 @@ impl PCA {
                     .map(|(_, v_col)| v_col.view()) // v_col is Array1<f64>, get its view
                     .collect();
 
-                let U_subset = ndarray::stack(Axis(1), &u_block_views)
+                let u_subset = ndarray::stack(Axis(1), &u_block_views)
                     .map_err(|e| format!("PCA::fit (Gram trick): Failed to stack eigenvectors into U_subset: {}", e))?;
-                // U_subset is now an owned Array2<f64> of shape (n_samples, final_rank)
+                // u_subset is now an owned Array2<f64> of shape (n_samples, final_rank)
                 
-                let mut rotation_matrix = scaled_data_matrix.t().dot(&U_subset); // (D x N) @ (N x final_rank) -> D x final_rank
+                let mut rotation_matrix = scaled_data_matrix.t().dot(&u_subset); // (D x N) @ (N x final_rank) -> D x final_rank
                 
                 // sorted_eigenvalues_gram_arr is the Array1<f64> of Gram eigenvalues (length final_rank)
                 // n_samples is available in this scope.
