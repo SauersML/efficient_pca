@@ -52,6 +52,9 @@ tar = "0.4.44"
 zstd = "0.13.3"
 criterion = { version = "0.6.0", features = ["html_reports"] }
 approx = "0.5.1"
+linfa = "0.7.1"
+linfa-reduction = "0.7.1"
+ndarray_v15 = { version = "0.15.6", package = "ndarray" }
 
 [features]
 default = ["backend_openblas"]
