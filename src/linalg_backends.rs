@@ -192,10 +192,10 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 )));
             };
             let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
-            let eigenvalues_faer_colref = eig.s();
-            let eigenvectors_faer_matref = eig.u();
+            let eigenvalues_faer_colref = eig.S().column_vector();
+            let eigenvectors_faer_matref = eig.U();
             Ok(EighOutput {
-                eigenvalues: faer_col_to_ndarray_vec(eigenvalues_faer_colref.as_ref()),
+                eigenvalues: faer_col_to_ndarray_vec(eigenvalues_faer_colref),
                 eigenvectors: faer_mat_to_ndarray(eigenvectors_faer_matref.as_ref()),
             })
         }
@@ -305,10 +305,10 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 )));
             };
             let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
-            let eigenvalues_faer_colref = eig.s();
-            let eigenvectors_faer_matref = eig.u();
+            let eigenvalues_faer_colref = eig.S().column_vector();
+            let eigenvectors_faer_matref = eig.U();
             Ok(EighOutput {
-                eigenvalues: faer_col_to_ndarray_vec(eigenvalues_faer_colref.as_ref()),
+                eigenvalues: faer_col_to_ndarray_vec(eigenvalues_faer_colref),
                 eigenvectors: faer_mat_to_ndarray(eigenvectors_faer_matref.as_ref()),
             })
         }
