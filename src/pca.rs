@@ -316,7 +316,7 @@ impl PCA {
             // Each v_col is an owned Array1<f64>, so we can keep it after the loop.
             let eig_pairs: Vec<(f64, Array1<f64>)> = indexed_gram_eigenvalues
                 .iter()
-                .map(|(idx, &val)| (val, original_gram_eigenvectors_u.column(*idx).to_owned()))
+                .map(|(idx, val)| (*val, original_gram_eigenvectors_u.column(*idx).to_owned()))
                 .collect();
             let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues.iter().map(|(_, val)| *val).collect();
             let rank_limit = calculate_rank_by_tolerance(&sorted_gram_eigenvalues_for_tol, tolerance, NEAR_ZERO_THRESHOLD);
