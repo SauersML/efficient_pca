@@ -16,8 +16,6 @@ use ndarray::{s, Array1, Array2};
 // use num_traits::Float; // No longer needed directly by provider
 use std::error::Error;
 use std::marker::PhantomData;
-// Ensure Scalar is imported for the provider bounds
-use ndarray_linalg::Scalar;
 
 // --- Trait Definitions (originally from linalg_abstract.rs) ---
 
@@ -33,7 +31,7 @@ pub struct EighOutput<F: 'static> {
 
 /// Trait for symmetric eigendecomposition (similar to LAPACK's DSYEVR or DSYEVD).
 /// Implementers will typically expect `matrix` to be symmetric.
-pub trait BackendEigh<F: 'static + Copy + Send + Sync> {
+pub trait BackendEigh<F: Lapack + 'static + Copy + Send + Sync> {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>>;
 }
 
@@ -51,14 +49,16 @@ pub struct SVDOutput<F: 'static> {
 }
 
 /// Trait for Singular Value Decomposition.
-pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
+pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>>;
 }
 
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 // use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Eigh as NdLinalgEigh, QR as NdLinalgQR, SVDInto as NdLinalgSVDInto, Scalar, UPLO};
+use ndarray_linalg::{Lapack, Eigh, QR, SVDInto, UPLO};
+#[cfg(feature = "backend_faer")]
+use ndarray_linalg::Scalar;
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -73,17 +73,18 @@ fn to_dyn_error<E: Error + Send + Sync + 'static>(e: E) -> Box<dyn Error + Send 
 // Single impl block handles f32, f64, complex if you need it
 impl<F> BackendEigh<F> for NdarrayLinAlgBackend
 where
-    F: Scalar + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        let (eigvals, eigvecs) = NdLinalgEigh::eigh(matrix, UPLO::Upper).map_err(to_dyn_error)?;
+        // Use direct Eigh call
+        let (eigvals, eigvecs) = matrix.eigh(UPLO::Upper).map_err(to_dyn_error)?;
         Ok(EighOutput { eigenvalues: eigvals, eigenvectors: eigvecs })
     }
 }
 
 impl<F> BackendQR<F> for NdarrayLinAlgBackend
 where
-    F: Scalar + 'static + Copy + Send + Sync,
+    F: Lapack + 'static + Copy + Send + Sync,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
         let (nrows, ncols) = matrix.dim();
@@ -91,7 +92,8 @@ where
             return Ok(Array2::zeros((0, 0)));
         }
         let k = nrows.min(ncols); // Re-introduce k
-        let (q_full, _) = NdLinalgQR::qr(matrix).map_err(to_dyn_error)?;
+        // Use direct QR call
+        let (q_full, _) = matrix.qr().map_err(to_dyn_error)?;
         // Return q_full.slice_move(s![.., 0..k])
         Ok(q_full.slice_move(s![.., 0..k]))
     }
@@ -99,7 +101,7 @@ where
 
 impl<F> BackendSVD<F> for NdarrayLinAlgBackend
 where
-    F: Scalar + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
 {
     fn svd_into(
         &self,
@@ -107,7 +109,8 @@ where
         compute_u: bool,
         compute_v: bool,
     ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        let (u, s, vt) = NdLinalgSVDInto::svd_into(matrix, compute_u, compute_v).map_err(to_dyn_error)?;
+        // Use direct SVDInto call
+        let (u, s, vt) = matrix.svd_into(compute_u, compute_v).map_err(to_dyn_error)?;
         Ok(SVDOutput { u, s, vt })
     }
 }
@@ -504,7 +507,7 @@ where
 #[cfg(not(feature = "backend_faer"))]
 impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendEigh<F>,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
@@ -527,7 +530,7 @@ where
 #[cfg(not(feature = "backend_faer"))]
 impl<F> BackendQR<F> for LinAlgBackendProvider<F>
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
+    F: Lapack + 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendQR<F>,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
@@ -550,12 +553,10 @@ where
 #[cfg(not(feature = "backend_faer"))]
 impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendSVD<F>,
 {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
         NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
     }
 }
-
-pub use NdarrayLinAlgBackend;
