@@ -2,9 +2,9 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,283 +14,195 @@ permissions:
   issues: write
 
 jobs:
-  build_test_bench:
-    name: Build, Test & Bench (${{ matrix.blas_backend }})
-    runs-on: ${{ matrix.os }}
+  test:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        blas_backend: [backend_openblas, backend_mkl, backend_faer]
+        backend: [openblas, mkl, faer]
         include:
-          - blas_backend: backend_openblas
-            os: ubuntu-latest
-            rust_flags: "" 
-            backend_feature: backend_openblas
-          - blas_backend: backend_mkl
-            os: ubuntu-latest 
-            rust_flags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64" 
-            backend_feature: backend_mkl
-          - blas_backend: backend_faer
-            os: ubuntu-latest
-            rust_flags: "" 
-            backend_feature: backend_faer
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+          - backend: openblas
+            feature: backend_openblas
+            rustflags: ""
+          - backend: mkl
+            feature: backend_mkl
+            rustflags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
+          - backend: faer
+            feature: backend_faer
+            rustflags: ""
 
-      - name: Install Rust toolchain
-        id: install_rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly
-          components: ''
+          components: rustfmt, clippy
 
-      - name: Get Rust compiler version
-        id: rust_version
-        run: echo "version=$(rustc --version)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Python 🐍
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
-      - name: Install Python dependencies 📦
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy scikit-learn scipy
-      
+
       - name: Install OpenBLAS
-        if: matrix.blas_backend == 'backend_openblas'
+        if: matrix.backend == 'openblas'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libopenblas-dev
-      
-      - name: Install Intel MKL and set environment
-        if: matrix.blas_backend == 'backend_mkl'
+
+      - name: Install Intel MKL
+        if: matrix.backend == 'mkl'
         run: |
-          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | sudo gpg --dearmor --output /usr/share/keyrings/intel-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/intel-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | 
+            sudo gpg --dearmor --output /usr/share/keyrings/intel-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/intel-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | 
+            sudo tee /etc/apt/sources.list.d/oneAPI.list
           sudo apt-get update -qq
           sudo apt-get install -y intel-oneapi-mkl-devel
           echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> "$GITHUB_ENV"
-          MKL_LD_PATH="/opt/intel/oneapi/mkl/latest/lib/intel64"
-          if [ -n "$LD_LIBRARY_PATH" ]; then
-            echo "LD_LIBRARY_PATH=${MKL_LD_PATH}:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-          else
-            echo "LD_LIBRARY_PATH=${MKL_LD_PATH}" >> "$GITHUB_ENV"
-          fi
+          echo "LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib/intel64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
-      - name: Cache Cargo dependencies
+      - name: Cache dependencies
         uses: actions/cache@v4
-        id: cache-cargo-deps
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.blas_backend }}-${{ matrix.rust_flags }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.blas_backend }}-
-            ${{ runner.os }}-cargo-deps-
+            ${{ runner.os }}-cargo-${{ matrix.backend }}-
+            ${{ runner.os }}-cargo-
 
-      - name: Cache Rust target directory
-        uses: actions/cache@v4
-        id: cache-rust-target
-        with:
-          path: target
-          key: ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/src/**/*.rs', '**/examples/**/*.rs', '**/tests/**/*.rs', '**/benches/**/*.rs', '**/lib.rs', '**/main.rs', '**/build.rs') }}-${{ matrix.blas_backend }}-${{ matrix.rust_flags }}
-          restore-keys: |
-            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.blas_backend }}-
-            ${{ runner.os }}-target-${{ steps.rust_version.outputs.version }}-${{ matrix.blas_backend }}-
-            ${{ runner.os }}-target-
+      - name: Build
+        run: |
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+            cargo build --release --features ${{ matrix.feature }}
+          else
+            cargo build --release --no-default-features --features ${{ matrix.feature }}
+          fi
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
-      - name: Build 🛠️ (${{ matrix.blas_backend }})
-        run: cargo build --verbose --release --features ${{ matrix.backend_feature }}
+      - name: Test
+        run: |
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+            cargo test --features ${{ matrix.feature }}
+          else
+            cargo test --no-default-features --features ${{ matrix.feature }}
+          fi
         env:
-          RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} 
-
-      - name: Run tests 🧪 (${{ matrix.blas_backend }})
-        run: cargo test --verbose --features ${{ matrix.backend_feature }}
-        env:
-          RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} 
-          RUST_BACKTRACE: 1
-      
-      - name: Run benchmarks (${{ matrix.blas_backend }})
-        run: cargo bench --features ${{ matrix.backend_feature }}
-        env:
-          RUSTFLAGS: ${{ matrix.rust_flags }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }} 
+          RUSTFLAGS: ${{ matrix.rustflags }}
           RUST_BACKTRACE: 1
 
-      - name: Install getdoc on failure
-        if: failure() 
-        run: cargo install getdoc --locked
+      - name: Benchmark
+        run: |
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+            cargo bench --features ${{ matrix.feature }}
+          else
+            cargo bench --no-default-features --features ${{ matrix.feature }}
+          fi
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUST_BACKTRACE: 1
 
-      - name: Run getdoc for ${{ matrix.backend_feature }} context on failure
+      - name: Generate failure report
         if: failure()
-        run: getdoc --features ${{ matrix.backend_feature }} 
+        run: |
+          cargo install getdoc --locked
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+            getdoc --features ${{ matrix.feature }}
+          else
+            getdoc --no-default-features --features ${{ matrix.feature }}
+          fi
+          mv report.md failure-report-${{ matrix.backend }}.md
 
-      - name: Rename getdoc report for this backend
-        if: failure()
-        run: mv report.md report-${{ runner.os }}-${{ matrix.blas_backend }}.md
-
-      - name: Upload getdoc report for this backend
+      - name: Upload failure report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: getdoc-report-${{ runner.os }}-${{ matrix.blas_backend }} 
-          path: report-${{ runner.os }}-${{ matrix.blas_backend }}.md
-          if-no-files-found: error 
+          name: failure-report-${{ matrix.backend }}
+          path: failure-report-${{ matrix.backend }}.md
 
-  summarize_and_create_issue:
-    name: Summarize Reports and Manage Issues
+  consolidate-failures:
+    if: always() && needs.test.result == 'failure'
+    needs: test
     runs-on: ubuntu-latest
-    needs: build_test_bench 
-    if: failure() 
     steps:
-      - name: Create workspace for downloaded artifacts
-        run: mkdir -p all_getdoc_reports
-
-      - name: Download all getdoc reports
+      - name: Download failure reports
         uses: actions/download-artifact@v4
         with:
-          path: all_getdoc_reports 
+          pattern: failure-report-*
+          path: reports
+          merge-multiple: true
 
-      - name: Debug: List structure of downloaded artifacts
+      - name: Consolidate reports
         run: |
-          echo "Listing contents of ./all_getdoc_reports (PWD: $(pwd)):"
-          ls -R all_getdoc_reports
-          echo "-------------------------------------------"
-          echo "Checking for specific report files using find (debug)..."
-          find all_getdoc_reports -type f -name "report-*.md" -ls
-          echo "-------------------------------------------"
-
-      - name: Consolidate getdoc reports
-        id: consolidate 
-        run: |
-          FINAL_REPORT_FILE="final_consolidated_report.md"
-          # Initialize the report with a master header using > (overwrite)
-          echo "## Consolidated getdoc Failure Report - Workflow Run: ${{ github.run_id }}" > ${FINAL_REPORT_FILE}
-          echo "Commit: ${{ github.sha }}" >> ${FINAL_REPORT_FILE}
-          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> ${FINAL_REPORT_FILE}
-          echo "" >> ${FINAL_REPORT_FILE} 
-
-          # Add a debug section for the directory listing into the report using >> (append)
-          echo "---" >> ${FINAL_REPORT_FILE}
-          echo "### Debug: Directory Listing of 'all_getdoc_reports' at time of consolidation" >> ${FINAL_REPORT_FILE}
-          echo '```text' >> ${FINAL_REPORT_FILE}
-          ls -R all_getdoc_reports >> ${FINAL_REPORT_FILE}
-          echo '```' >> ${FINAL_REPORT_FILE}
-          echo "---" >> ${FINAL_REPORT_FILE}
-          echo "" >> ${FINAL_REPORT_FILE}
+          exec > consolidated-report.md
+          cat << 'EOF'
+          # CI Failure Report
           
-          # Process each downloaded report file.
-          # The find command with -print0 and while read -d $'\0' is robust.
-          # Appends (>>) are made to FINAL_REPORT_FILE within the loop.
-          find all_getdoc_reports -type f -name "report-*.md" -print0 | while IFS= read -r -d $'\0' report_file_path; do
-            if [ -f "${report_file_path}" ]; then 
-              echo "Processing found report file: ${report_file_path}" 
-              
-              ARTIFACT_CONTEXT_DIR=$(dirname "${report_file_path}")
-              ARTIFACT_CONTEXT=$(basename "${ARTIFACT_CONTEXT_DIR}") 
-              
-              echo "---" >> ${FINAL_REPORT_FILE} 
-              echo "### Report from Artifact: ${ARTIFACT_CONTEXT}" >> ${FINAL_REPORT_FILE}
-              echo "(Original file path in runner: ${report_file_path})" >> ${FINAL_REPORT_FILE}
-              echo "" >> ${FINAL_REPORT_FILE}
-              cat "${report_file_path}" >> ${FINAL_REPORT_FILE}
-              echo "" >> ${FINAL_REPORT_FILE} 
-              echo "" >> ${FINAL_REPORT_FILE} 
-            else
-              echo "Warning: '${report_file_path}' (found by find) is not a regular file or not readable. Skipping." 
+          **Run ID:** ${{ github.run_id }}
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          **Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          EOF
+          
+          for report in reports/failure-report-*.md; do
+            if [[ -f "$report" ]]; then
+              backend=$(basename "$report" .md | sed 's/failure-report-//')
+              cat << EOF
+          
+          ## Backend: ${backend}
+          
+          EOF
+              cat "$report"
+              echo -e "\n---\n"
             fi
           done
 
-          # After the loop, count how many actual report sections were added by looking for our marker.
-          # This count is reliable as it's done after all potential appends.
-          NUM_REPORTS_PROCESSED=$(grep -c "### Report from Artifact:" "${FINAL_REPORT_FILE}")
-
-          if [ "${NUM_REPORTS_PROCESSED}" -gt "0" ]; then
-            echo "Successfully consolidated ${NUM_REPORTS_PROCESSED} getdoc report(s) into ${FINAL_REPORT_FILE}."
-          else
-            # If no "### Report from Artifact:" lines were found, it means no reports were processed by the loop.
-            # Append the fallback message to the FINAL_REPORT_FILE, which already contains the header and debug info.
-            echo "No individual getdoc reports were successfully processed and appended by the script. Fallback message will be added."
-            echo "" >> ${FINAL_REPORT_FILE} 
-            echo "## CI Failure - No specific getdoc Reports Processed by Consolidation Script" >> ${FINAL_REPORT_FILE}
-            echo "Workflow run ${{ github.run_id }} for commit ${{ github.sha }} on ref ${{ github.ref }} failed." >> ${FINAL_REPORT_FILE}
-            echo "The consolidation script did not find or process individual 'getdoc' report artifacts as expected." >> ${FINAL_REPORT_FILE}
-            echo "(The debug directory listing included earlier in this report shows the state of 'all_getdoc_reports' when consolidation was attempted)." >> ${FINAL_REPORT_FILE}
-            echo "Please check the 'Debug: List structure of downloaded artifacts' step log in this 'Summarize Reports' job, and also the logs of the 'build_test_bench' job legs for individual artifact upload status." >> ${FINAL_REPORT_FILE}
-          fi
-          
-          echo "--- Full Consolidated Report Content (for console log) ---"
-          cat ${FINAL_REPORT_FILE} 
-          echo "--------------------------------------------------------"
-
-      - name: Upload consolidated getdoc report
+      - name: Upload consolidated report
         uses: actions/upload-artifact@v4
         with:
-          name: consolidated-getdoc-report
-          path: final_consolidated_report.md 
+          name: consolidated-failure-report
+          path: consolidated-report.md
 
-      - name: Auto-close old automated issues
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+      - name: Close stale issues
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const labelsToMatch = ['getdoc', 'automated-report']; 
-            const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
-            const cutOffDate = new Date(new Date().getTime() - twentyFourHoursInMs);
-
-            core.info(`Searching for open issues with labels: ${labelsToMatch.join(', ')} created before ${cutOffDate.toISOString()}`);
-
+            const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: labelsToMatch.join(','), 
+              labels: 'ci-failure,automated',
             });
-
-            let closedCount = 0;
+            
             for (const issue of issues) {
-              if (!issue.title.startsWith("Automated CI Failure Report - Workflow Run")) {
-                core.info(`Skipping issue #${issue.number} ('${issue.title}') as its title does not match the expected pattern for automated reports.`);
-                continue;
+              if (new Date(issue.created_at) < cutoff && 
+                  issue.title.includes('CI Failure Report')) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed'
+                });
               }
-              const createdAt = new Date(issue.created_at);
-              if (createdAt < cutOffDate) {
-                core.info(`Closing issue #${issue.number} ('${issue.title}') as it was created at ${createdAt.toISOString()} (older than 24 hours).`);
-                try {
-                  await github.rest.issues.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: issue.number,
-                    state: 'closed'
-                  });
-                  closedCount++;
-                } catch (error) {
-                  core.error(`Failed to close issue #${issue.number}: ${error.message}`);
-                }
-              } else {
-                core.info(`Issue #${issue.number} ('${issue.title}') was created at ${createdAt.toISOString()}, not old enough to close.`);
-              }
-            }
-            if (closedCount > 0) {
-              core.info(`Successfully closed ${closedCount} old automated issue(s).`);
-            } else {
-              core.info("No old automated issues found matching criteria to close.");
             }
 
-      - name: Create New GitHub Issue with consolidated report
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+      - name: Create failure issue
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: peter-evans/create-issue-from-file@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Automated CI Failure Report - Workflow Run ${{ github.run_id }}"
-          content-filepath: ./final_consolidated_report.md 
-          labels: bug, ci-failure, automated-report, getdoc
+          title: "CI Failure Report - Run ${{ github.run_id }}"
+          content-filepath: consolidated-report.md
+          labels: ci-failure,automated
