@@ -33,7 +33,6 @@ log = "0.4.27"
 ndarray = { version = "0.16.1", features = ["serde", "rayon"] }
 ndarray-linalg = { version = "0.17.0", default-features = false }
 ndarray-rand = "0.15.0"
-openblas-src = { version = "0.10.11", optional = true, features = ["static", "system"] }
 rand = "0.8.5"
 rand_chacha = "0.3.1"
 rand_distr = "0.4.3"
@@ -61,7 +60,7 @@ ndarray_v15 = { version = "0.15.6", package = "ndarray" }
 default = ["backend_openblas"]
 backend_openblas = ["ndarray-linalg/openblas-static"]
 backend_mkl = ["ndarray-linalg/intel-mkl-static"]
-backend_faer = ["dep:faer", "dep:openblas-src"]
+backend_faer = ["dep:faer"]
 
 [[bench]]
 name = "benchmarks"
