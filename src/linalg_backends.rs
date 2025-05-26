@@ -178,33 +178,15 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let nrows = matrix_view.nrows();
             let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    // This case should ideally not happen if is_standard_layout() is true,
-                    // as standard layout implies C-contiguous.
-                    // However, if it can, a copy would be needed.
-                    // For now, error if slice is None, as direct view is not possible.
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    // Similar to above, this case implies non-contiguous F-layout, which is unusual.
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
-                // Non-contiguous and not simply C or F layout.
-                // faer::MatRef requires contiguous data.
-                // A possible fallback would be to create an owned faer::Mat by copying,
-                // then take a view, but this changes the function's nature (no longer just viewing).
-                // For now, error out as a direct view isn't possible.
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
@@ -225,26 +207,18 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let k = nrows.min(ncols);
             if nrows == 0 { return Ok(Array2::zeros((0, k))); }
             let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // already available
-            // let ncols = matrix_view.ncols(); // already available
+            let nrows = matrix_view.nrows(); 
+            let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
@@ -267,35 +241,29 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 });
             }
             let matrix_view = matrix.view(); // matrix is Array2<F>
+            let nrows = matrix_view.nrows();
+            let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
             };
-            let faer_mat_ref = faer_mat_view.as_ref(); 
+            let faer_mat_ref = faer_mat_view.as_ref();
 
             let svd_solver_instance = FaerSolverSvd::new_thin(faer_mat_ref)
                 .map_err(|e| to_dyn_error_faer(format!("Faer SVD computation failed: {:?}", e)))?;
 
             let s_diag_ref = svd_solver_instance.S(); 
-            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.diagonal().as_ref());
+            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.as_col().as_ref());
 
             let u_ndarray = if compute_u {
                 Some(faer_mat_to_ndarray(svd_solver_instance.U().as_ref()))
@@ -323,23 +291,15 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let nrows = matrix_view.nrows();
             let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
@@ -360,26 +320,18 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
             let k = nrows.min(ncols);
             if nrows == 0 { return Ok(Array2::zeros((0, k))); }
             let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // already available
-            // let ncols = matrix_view.ncols(); // already available
+            let nrows = matrix_view.nrows();
+            let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
@@ -402,24 +354,18 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 });
             }
             let matrix_view = matrix.view(); // matrix is Array2<F>
+            let nrows = matrix_view.nrows();
+            let ncols = matrix_view.ncols();
 
-            let faer_mat_view = if matrix_view.is_standard_layout() { // C-order (row-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+            let faer_mat_view = if let Some(slice) = matrix_view.as_slice_memory_order() {
+                // Data is contiguous (either C or F)
+                if matrix_view.is_standard_layout() { // Check if it's C-order (row-major)
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from row-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
-                }
-            } else if matrix_view.is_fcontiguous() { // Fortran-order (column-major)
-                if let Some(slice) = matrix_view.as_slice_memory_order() {
+                } else { // If it's contiguous and not C-order, it must be F-order (column-major)
                     faer::MatRef::from_column_major_slice(slice, nrows, ncols)
-                } else {
-                    return Err(to_dyn_error_faer(format!(
-                        "Failed to get slice from column-major ndarray matrix ({}x{})", nrows, ncols
-                    )));
                 }
             } else {
+                // Data is not contiguous
                 return Err(to_dyn_error_faer(format!(
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
@@ -430,7 +376,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 .map_err(|e| to_dyn_error_faer(format!("Faer SVD computation failed: {:?}", e)))?;
 
             let s_diag_ref = svd_solver_instance.S();
-            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.diagonal().as_ref());
+            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.as_col().as_ref());
 
             let u_ndarray = if compute_u {
                 Some(faer_mat_to_ndarray(svd_solver_instance.U().as_ref()))
@@ -459,61 +405,70 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
 /// based on compile-time feature flags.
 
 // --- Implement BackendEigh for Provider ---
+#[cfg(feature = "backend_faer")]
 impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
-    NdarrayLinAlgBackend: BackendEigh<F>, // NdarrayLinAlgBackend is in the same file (self)
-    #[cfg(feature = "backend_faer")]
-    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>, // FaerLinAlgBackend is in inner module
+    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.eigh_upper(matrix)
-        }
+        faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
+impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    NdarrayLinAlgBackend: BackendEigh<F>,
+{
+    fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
+        NdarrayLinAlgBackend.eigh_upper(matrix)
     }
 }
 
 // --- Implement BackendQR for Provider ---
+#[cfg(feature = "backend_faer")]
+impl<F> BackendQR<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
+{
+    fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
+        faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
 impl<F> BackendQR<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendQR<F>,
-    #[cfg(feature = "backend_faer")]
-    faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.qr_q_factor(matrix)
-        }
+        NdarrayLinAlgBackend.qr_q_factor(matrix)
     }
 }
 
 // --- Implement BackendSVD for Provider ---
+#[cfg(feature = "backend_faer")]
+impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
+where
+    F: 'static + Copy + Send + Sync,
+    faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
+{
+    fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
+        faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+    }
+}
+
+#[cfg(not(feature = "backend_faer"))]
 impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
 where
     F: 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendSVD<F>,
-    #[cfg(feature = "backend_faer")]
-    faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
 {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "backend_faer")]
-        {
-            faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
-        }
-        #[cfg(not(feature = "backend_faer"))]
-        {
-            NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
-        }
+        NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
     }
 }
