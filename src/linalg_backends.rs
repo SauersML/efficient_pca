@@ -31,7 +31,7 @@ pub struct EighOutput<F: 'static> {
 
 /// Trait for symmetric eigendecomposition (similar to LAPACK's DSYEVR or DSYEVD).
 /// Implementers will typically expect `matrix` to be symmetric.
-pub trait BackendEigh<F: 'static + Copy + Send + Sync> {
+pub trait BackendEigh<F: Lapack + 'static + Copy + Send + Sync> {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>>;
 }
 
@@ -49,14 +49,15 @@ pub struct SVDOutput<F: 'static> {
 }
 
 /// Trait for Singular Value Decomposition.
-pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
+pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>>;
 }
 
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
-// use ndarray::ScalarOperand; // Removed as not directly used by trait impls
-use ndarray_linalg::{Lapack, Scalar, Eigh, QR, SVDInto, UPLO};
+use ndarray_linalg::{Lapack, Eigh, QR, SVDInto, UPLO};
+#[cfg(feature = "backend_faer")]
+use ndarray_linalg::Scalar;
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -71,7 +72,7 @@ fn to_dyn_error<E: Error + Send + Sync + 'static>(e: E) -> Box<dyn Error + Send 
 // Single impl block handles f32, f64, complex if you need it
 impl<F> BackendEigh<F> for NdarrayLinAlgBackend
 where
-    F: Lapack + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
         // Use direct Eigh call
@@ -99,7 +100,7 @@ where
 
 impl<F> BackendSVD<F> for NdarrayLinAlgBackend
 where
-    F: Lapack + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
 {
     fn svd_into(
         &self,
@@ -483,7 +484,6 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
 
 // Import concrete backend types for the provider
 #[cfg(feature = "backend_faer")]
-// // use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module - This line is removed
 
 // NdarrayLinAlgBackend is already defined in this file.
 
@@ -505,7 +505,7 @@ where
 #[cfg(not(feature = "backend_faer"))]
 impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
 where
-    F: Lapack + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendEigh<F>,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
@@ -551,7 +551,7 @@ where
 #[cfg(not(feature = "backend_faer"))]
 impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
 where
-    F: Lapack + 'static + Copy + Send + Sync,
+    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
     NdarrayLinAlgBackend: BackendSVD<F>,
 {
     fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
