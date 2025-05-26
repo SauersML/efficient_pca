@@ -1000,15 +1000,23 @@ impl EigenSNPCoreAlgorithm {
         let mut s_a_approx_opt: Option<Array1<f32>> = None;
         let mut v_a_approx_opt: Option<Array2<f32>> = None;
 
-        let effective_rank_b = svd_output_b.s.as_ref().map_or(0, |s_vals| s_vals.len());
+        let effective_rank_b = svd_output_b.s.len(); // Corrected: svd_output_b.s is Array1<f32>
         let num_k_to_return = num_components_target_k.min(effective_rank_b);
 
+        // This replaces the block from 'if request_s_components {' down to its closing brace.
         if request_s_components {
-            if let Some(s_b_values) = svd_output_b.s {
-                s_a_approx_opt = Some(s_b_values.slice(s![0..num_k_to_return]).to_owned());
-            } else {
-                // Should not happen if svd_into succeeds and effective_rank_b > 0, but handle defensively
+            // svd_output_b.s is Array1<f32>.
+            // num_k_to_return was calculated earlier and is the number of components the user wants.
+            // effective_rank_b is svd_output_b.s.len(), the actual number of singular values from SVD.
+            
+            let actual_k_to_slice = std::cmp::min(num_k_to_return, effective_rank_b);
+
+            if actual_k_to_slice == 0 {
                 s_a_approx_opt = Some(Array1::zeros(0));
+            } else {
+                // Slice svd_output_b.s to get the top 'actual_k_to_slice' singular values.
+                // The s! macro is appropriate for slicing ndarray::Array1.
+                s_a_approx_opt = Some(svd_output_b.s.slice(s![0..actual_k_to_slice]).to_owned());
             }
         }
 
@@ -1017,7 +1025,7 @@ impl EigenSNPCoreAlgorithm {
                 if u_b_l_actual_by_rank_b.ncols() > 0 && q_basis_m_by_l_actual.ncols() > 0 {
                     // U_A = Q_basis * U_B (M x L_actual) * (L_actual x rank_b) -> M x rank_b
                     let u_a_approx_m_by_rank_b = q_basis_m_by_l_actual.dot(&u_b_l_actual_by_rank_b);
-                    u_a_approx_opt = Some(u_a_approx_m_by_rank_b.slice_axis(Axis(1), s![0..num_k_to_return]).to_owned());
+                    u_a_approx_opt = Some(u_a_approx_m_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned());
                 } else {
                      u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
                 }
@@ -1031,7 +1039,7 @@ impl EigenSNPCoreAlgorithm {
                 if v_b_t_rank_b_by_n.nrows() > 0 { // effectively checks rank_b > 0
                     // V_A = V_B. V_B is (N x rank_b). We have V_B.T (rank_b x N)
                     let v_a_approx_n_by_rank_b = v_b_t_rank_b_by_n.t().into_owned();
-                    v_a_approx_opt = Some(v_a_approx_n_by_rank_b.slice_axis(Axis(1), s![0..num_k_to_return]).to_owned());
+                    v_a_approx_opt = Some(v_a_approx_n_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned());
                 } else {
                     v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
                 }
