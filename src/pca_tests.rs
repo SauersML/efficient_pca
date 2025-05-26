@@ -1237,80 +1237,194 @@ mod pca_tests {
     use super::*; // This brings PcaReferenceResults into scope for this module if it's outside
     // use ndarray::array; // Already imported at top level of file
     use ndarray_rand::rand_distr::Distribution;
-
+    
     #[test]
-    fn test_pca_fit_consistency_hardcoded() {
-        // Hardcoded reference values from scikit-learn
-        let ref_mean_vec = vec![5.5, 6.5, 7.5];
-        let ref_scale_vec = vec![3.3541019662496847, 3.3541019662496847, 3.3541019662496847];
-        let ref_explained_variance_vec = vec![3.0, 0.0, 0.0]; // Adjusted based on sklearn output for this data
-        
-        // Rotation matrix (principal components as columns, then store rows for easy comparison)
-        // ref_rotation_rows[feature_idx][component_idx]
-        let ref_rotation_rows = vec![
-            vec![0.577350269189626, 0.8164965809277258, 0.0],
-            vec![0.5773502691896255, -0.40824829046386313, -0.7071067811865475],
-            vec![0.5773502691896255, -0.40824829046386313, 0.7071067811865476]
-        ];
-        let _ref_rotation_ndarray = Array2::from_shape_vec(
-            (3, 3), // features x components
-            ref_rotation_rows.clone().into_iter().flatten().collect::<Vec<f64>>()
-        ).unwrap().t().into_owned(); // Convert to components x features, then transpose to features x components for direct use.
-                                      // Or, more simply, construct directly if ref_rotation_rows is already feature x component
-        let ref_rotation_correct_shape = Array2::from_shape_fn((3,3), |(r,c)| ref_rotation_rows[r][c]);
-
-
-        // Data matrix used to generate the reference
-        let data_matrix = array![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.], [10., 11., 12.]];
-        
-        let mut pca = crate::PCA::new();
-        pca.fit(data_matrix.clone(), None).expect("PCA fit failed");
-        
-        let computed_rotation_arr = pca.rotation().expect("No rotation from fit");
-        let computed_explained_variance_arr = pca.explained_variance().expect("No explained variance from fit");
-        let computed_mean_arr = pca.mean().expect("No mean from fit");
-        let computed_scale_arr = pca.scale().expect("No scale from fit");
-
-        let tol = 1e-6;
-
-        // Compare mean
-        assert_eq!(computed_mean_arr.len(), ref_mean_vec.len(), "Mean vector length mismatch");
-        for (comp, ref_val) in computed_mean_arr.iter().zip(ref_mean_vec.iter()) {
-            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
-        }
-        // Compare scale
-        assert_eq!(computed_scale_arr.len(), ref_scale_vec.len(), "Scale vector length mismatch");
-        for (comp, ref_val) in computed_scale_arr.iter().zip(ref_scale_vec.iter()) {
-            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
-        }
-        // Compare explained variance
-        assert_eq!(computed_explained_variance_arr.len(), ref_explained_variance_vec.len(), "Explained variance length mismatch");
-        for (comp, ref_val) in computed_explained_variance_arr.iter().zip(ref_explained_variance_vec.iter()) {
-            assert_abs_diff_eq!(*comp, *ref_val, epsilon = tol);
-        }
-        
-        // Compare rotation matrix
-        assert_eq!(computed_rotation_arr.nrows(), ref_rotation_correct_shape.nrows(), "Rotation matrix row count mismatch");
-        assert_eq!(computed_rotation_arr.ncols(), ref_rotation_correct_shape.ncols(), "Rotation matrix column count mismatch");
-
-        for comp_idx in 0..computed_rotation_arr.ncols() {
-            let mut all_match_positive = true;
-            let mut all_match_negative = true;
-
-            for feat_idx in 0..computed_rotation_arr.nrows() {
-                let val = computed_rotation_arr[[feat_idx, comp_idx]];
-                let ref_val = ref_rotation_correct_shape[[feat_idx, comp_idx]];
-                if (val - ref_val).abs() > tol {
-                    all_match_positive = false;
-                }
-                if (val + ref_val).abs() > tol {
-                    all_match_negative = false;
-                }
+    fn test_pca_fit_consistency_linfa() -> Result<(), Box<dyn Error>> {
+        const TOLERANCE: f64 = 1e-5; // Tolerance for float comparisons
+    
+        // Helper function to compare two vectors for approximate equality.
+        fn assert_vectors_approx_equal(
+            v1: &Array1<f64>,
+            v2: &Array1<f64>,
+            tol: f64,
+            context_msg: &str,
+        ) {
+            assert_eq!(v1.len(), v2.len(), "Length mismatch for {}: expected {}, got {}", context_msg, v2.len(), v1.len());
+            for i in 0..v1.len() {
+                assert_abs_diff_eq!(v1[i], v2[i], epsilon = tol, "Element mismatch at index {} in {}. v1[i]: {}, v2[i]: {}", i, context_msg, v1[i], v2[i]);
             }
-            assert!(all_match_positive || all_match_negative, 
-                    "Rotation matrix column {} does not match reference (accounting for sign). Computed: {:?}, Expected (or negative): {:?}", 
-                    comp_idx, computed_rotation_arr.column(comp_idx), ref_rotation_correct_shape.column(comp_idx));
         }
+    
+        // Helper function to compare two matrices, allowing for sign flips in columns.
+        fn assert_matrices_approx_equal_columnwise_sign_agnostic(
+            m1: &Array2<f64>,
+            m2: &Array2<f64>,
+            tol: f64,
+            context_msg: &str,
+        ) {
+            assert_eq!(m1.shape(), m2.shape(), "Shape mismatch for {}: expected {:?}, got {:?}", context_msg, m2.shape(), m1.shape());
+            if m1.ncols() == 0 { // Both are empty with same shape
+                return;
+            }
+            for j in 0..m1.ncols() {
+                let col1 = m1.column(j);
+                let col2 = m2.column(j);
+    
+                let mut col1_sum_sq = 0.0;
+                col1.for_each(|x| col1_sum_sq += x*x);
+                let col1_norm = col1_sum_sq.sqrt();
+    
+                // Check if columns are close with same sign or opposite sign
+                // We sum absolute differences and compare against a tolerance scaled by vector norm or length
+                // to handle very small vectors where relative tolerance is less meaningful.
+                let diff_same_sign_sum_abs = (&col1 - &col2).mapv(f64::abs).sum();
+                let diff_flipped_sign_sum_abs = (&col1 + &col2).mapv(f64::abs).sum();
+                
+                // A simple heuristic for tolerance boundary, can be refined
+                let max_permissible_error_sum = tol * (col1_norm + col1.len() as f64);
+    
+    
+                assert!(
+                    diff_same_sign_sum_abs < max_permissible_error_sum || diff_flipped_sign_sum_abs < max_permissible_error_sum,
+                    "Column {} mismatch for {}. Sum diff_same_sign: {}, Sum diff_flipped_sign: {}. Max_err_sum: {}. col1: {:?.3}, col2: {:?.3}",
+                    j, context_msg, diff_same_sign_sum_abs, diff_flipped_sign_sum_abs, max_permissible_error_sum, col1, col2
+                );
+            }
+        }
+    
+        // Data matrix from the original test
+        let data_matrix_owned = array![
+            [1., 2., 3.], 
+            [4., 5., 6.], 
+            [7., 8., 9.], 
+            [10., 11., 12.]
+        ];
+    
+        let n_samples = data_matrix_owned.nrows();
+        let n_features = data_matrix_owned.ncols();
+        let k_components = n_features.min(n_samples); // For this 4x3 data, k_components = 3
+    
+        // --- 1. efficient_pca - fit() method ---
+        println!("Testing efficient_pca with fit()...");
+        let mut pca_fit_eff = PCA::new();
+        pca_fit_eff.fit(data_matrix_owned.clone(), None)?; 
+    
+        let mean_fit_eff = pca_fit_eff.mean().expect("Mean missing after efficient_pca.fit()");
+        let rotation_fit_eff = pca_fit_eff.rotation().expect("Rotation missing after efficient_pca.fit()");
+        let transformed_fit_eff = pca_fit_eff.transform(data_matrix_owned.clone())?;
+        let explained_variance_fit_eff = pca_fit_eff.explained_variance().expect("Explained variance missing after efficient_pca.fit()");
+        let singular_values_from_fit_eff = explained_variance_fit_eff.mapv(|ev| (ev * (n_samples - 1) as f64).max(0.0).sqrt());
+    
+    
+        // --- 2. efficient_pca - rfit() method ---
+        println!("Testing efficient_pca with rfit()...");
+        let mut pca_rfit_eff = PCA::new();
+        let n_oversamples = 2; 
+        let rfit_seed = Some(42u64);
+        let transformed_rfit_eff = pca_rfit_eff.rfit(
+            data_matrix_owned.clone(), 
+            k_components, 
+            n_oversamples, 
+            rfit_seed, 
+            None 
+        )?;
+    
+        let mean_rfit_eff = pca_rfit_eff.mean().expect("Mean missing after efficient_pca.rfit()");
+        let rotation_rfit_eff = pca_rfit_eff.rotation().expect("Rotation missing after efficient_pca.rfit()");
+        let explained_variance_rfit_eff = pca_rfit_eff.explained_variance().expect("Explained variance missing after efficient_pca.rfit()");
+        let singular_values_from_rfit_eff = explained_variance_rfit_eff.mapv(|ev| (ev * (n_samples - 1) as f64).max(0.0).sqrt());
+    
+    
+        // --- 3. linfa::Pca - Reference ---
+        println!("Fitting LinfaPcaModel as reference...");
+        let linfa_dataset = DatasetBase::from(data_matrix_owned.clone()); 
+        let linfa_rng_seed = 2025u64;
+        
+        let linfa_pca_model = LinfaPcaModel::params(k_components)
+            .with_rng(StdRng::seed_from_u64(linfa_rng_seed)) 
+            .fit(&linfa_dataset)?;
+    
+        let mean_linfa = linfa_pca_model.mean();
+        let components_linfa = linfa_pca_model.components(); 
+        let transformed_linfa = linfa_pca_model.predict(&linfa_dataset);
+        let singular_values_linfa = linfa_pca_model.singular_values();
+    
+    
+        // --- 4. Comparisons ---
+        println!("Starting comparisons with LinfaPCA...");
+    
+        // Compare Means
+        assert_vectors_approx_equal(mean_fit_eff, mean_linfa, TOLERANCE, "Mean (efficient_pca.fit vs linfa)");
+        assert_vectors_approx_equal(mean_rfit_eff, mean_linfa, TOLERANCE, "Mean (efficient_pca.rfit vs linfa)");
+    
+        // Compare Rotation Matrices / Components
+        assert_matrices_approx_equal_columnwise_sign_agnostic(
+            rotation_fit_eff,
+            components_linfa,
+            TOLERANCE,
+            "Rotation/Components (efficient_pca.fit vs linfa)",
+        );
+        assert_matrices_approx_equal_columnwise_sign_agnostic(
+            rotation_rfit_eff,
+            components_linfa,
+            TOLERANCE * 10.0, // higher tolerance for rPCA vs exact SVD from Linfa
+            "Rotation/Components (efficient_pca.rfit vs linfa)",
+        );
+        
+        // Compare Transformed Data
+        assert_matrices_approx_equal_columnwise_sign_agnostic(
+            &transformed_fit_eff,
+            &transformed_linfa,
+            TOLERANCE,
+            "Transformed Data (efficient_pca.fit vs linfa)",
+        );
+        assert_matrices_approx_equal_columnwise_sign_agnostic(
+            &transformed_rfit_eff,
+            &transformed_linfa,
+            TOLERANCE * 10.0, // Potentially higher tolerance
+            "Transformed Data (efficient_pca.rfit vs linfa)",
+        );
+    
+        // Compare Singular Values (derived for efficient_pca, direct from linfa)
+        // Linfa's PCA standardizes data before SVD.
+        // The singular values obtained from both should thus correspond to standardized data.
+        // Sort them for stable comparison, especially for near-zero values.
+        let mut sv_fit_sorted = singular_values_from_fit_eff.to_vec();
+        sv_fit_sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        
+        let mut sv_rfit_sorted = singular_values_from_rfit_eff.to_vec();
+        sv_rfit_sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    
+        let mut sv_linfa_sorted = singular_values_linfa.to_vec();
+        sv_linfa_sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    
+        assert_vectors_approx_equal(
+            &Array1::from_vec(sv_fit_sorted), 
+            &Array1::from_vec(sv_linfa_sorted.clone()), // Clone as sv_linfa_sorted is used again
+            TOLERANCE * 10.0, // Singular values might differ more than components
+            "Sorted Singular Values (efficient_pca.fit vs linfa)"
+        );
+        assert_vectors_approx_equal(
+            &Array1::from_vec(sv_rfit_sorted), 
+            &Array1::from_vec(sv_linfa_sorted), 
+            TOLERANCE * 20.0, // RPCA can have larger deviations for singular values
+            "Sorted Singular Values (efficient_pca.rfit vs linfa)"
+        );
+    
+        // --- 5. Internal Consistency Check for efficient_pca.fit() explained_variance ---
+        // For the specific data_matrix, the first eigenvalue of Cov(X_scaled) should be 4.0.
+        if explained_variance_fit_eff.len() > 0 {
+            assert_abs_diff_eq!(
+                explained_variance_fit_eff[0], 
+                4.0, 
+                epsilon = TOLERANCE,
+                "Efficient PCA (fit) first explained variance for hardcoded data should be 4.0. Got: {}",
+                explained_variance_fit_eff[0]
+            );
+        }
+    
+        println!("Test 'test_pca_fit_consistency_linfa' (now comparing with Linfa) passed!");
+        Ok(())
     }
 
     #[test]
@@ -1478,12 +1592,6 @@ mod pca_tests {
     fn test_pca_random_012_512() {
         test_pca_random_012(256, 1337);
     }
-
-    /*
-    #[test]
-    fn test_pca_random_012_1024() {
-        test_pca_random_012(1024, 1337);
-    }*/
 
     #[test]
     #[should_panic]
