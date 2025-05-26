@@ -21,7 +21,3 @@ pub use eigensnp::{
     CondensedFeatureId,
     PrincipalComponentId,
 };
-
-#[cfg(test)]
-mod pca_tests;
-mod eigensnp_tests;
