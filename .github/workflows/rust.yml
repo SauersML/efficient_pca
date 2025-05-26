@@ -27,9 +27,9 @@ jobs:
           - backend: mkl
             feature: backend_mkl
             rustflags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
-          - backend: faer
-            feature: backend_faer
-            rustflags: "--cfg openblas"
+          - backend: faer # This name is just a label for the matrix row
+            feature: "faer_links_ndarray_static_openblas"
+            rustflags: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -49,11 +49,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy scikit-learn scipy
 
-      - name: Install OpenBLAS
+      - name: Install Fortran compiler
         if: matrix.backend == 'openblas' || matrix.backend == 'faer'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libopenblas-dev
+          sudo apt-get update -qq && sudo apt-get install -y gfortran
 
       - name: Install Intel MKL
         if: matrix.backend == 'mkl'
