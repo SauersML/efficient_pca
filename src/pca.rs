@@ -301,42 +301,28 @@ impl PCA {
                 self.rotation = Some(Array2::zeros((n_features, 0)));
                 self.explained_variance = Some(Array1::zeros(0));
             } else {
-                let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
-                let mut sorted_eigenvalues: Vec<f64> = Vec::with_capacity(final_rank);
+                let mut U_subset = Array2::<f64>::zeros((n_samples, final_rank));
+                let mut sorted_eigenvalues_gram: Vec<f64> = Vec::with_capacity(final_rank);
+                
                 for i in 0..final_rank {
-                    let (eigval, ref u_col) = eig_pairs[i];
-                    sorted_eigenvalues.push(eigval.max(0.0)); // Store the eigenvalue (variance)
-                    // Eigenvalue from G = X'X'^T / (N-1)
-                    // V_k = (X'^T u_k) / sqrt(eigval_k_gram * (N-1)) should yield unit norm V_k.
-                    
-                    // Clamp eigenvalues to a small positive number for calculations to prevent division by zero or very small numbers.
-                    let eigval_clamped_for_calc = eigval.max(1e-12);
-                    let lam_sqrt = eigval_clamped_for_calc.sqrt();
+                    let (eigval, u_col_ref) = &eig_pairs[i];
+                    sorted_eigenvalues_gram.push(eigval.max(0.0));
+                    U_subset.column_mut(i).assign(u_col_ref);
+                }
+                self.explained_variance = Some(Array1::from(sorted_eigenvalues_gram));
 
-                    let mut axis_i = scaled_data_matrix.t().dot(u_col);
-                    
-                    // Denominator for scaling axis_i.
-                    // Since n_samples >= 2 and lam_sqrt >= sqrt(1e-12), denom will be non-zero.
-                    let denom = lam_sqrt * ((n_samples - 1) as f64).sqrt();
-                    if denom.abs() > 1e-9 { // Avoid division by zero if lam_sqrt is extremely small
-                        axis_i.mapv_inplace(|x| x / denom);
+                let mut rotation_matrix = scaled_data_matrix.t().dot(&U_subset); // (D x N) @ (N x final_rank) -> D x final_rank
+
+                for i in 0..final_rank {
+                    let mut col_view = rotation_matrix.column_mut(i);
+                    let norm_val = col_view.dot(&col_view).sqrt();
+                    if norm_val > 1e-9 {
+                        col_view.mapv_inplace(|x| x / norm_val);
                     } else {
-                        axis_i.fill(0.0); // If denominator is zero, axis is likely zero or ill-defined
+                        col_view.fill(0.0); // If column is zero, keep it zero
                     }
-                    
-                    // Explicitly re-normalize the principal axis to unit length.
-                    // Standard PCA components are unit vectors.
-                    let norm_val = axis_i.dot(&axis_i).sqrt();
-                    if norm_val > 1e-9 { // Avoid division by zero/small norm if axis_i is effectively zero
-                        axis_i.mapv_inplace(|x| x / norm_val);
-                    } else {
-                        // If the axis vector is effectively zero, represent it as such.
-                        axis_i.fill(0.0);
-                    }
-                    rotation_matrix.slice_mut(s![.., i]).assign(&axis_i);
                 }
                 self.rotation = Some(rotation_matrix);
-                self.explained_variance = Some(Array1::from(sorted_eigenvalues));
             }
         }
         Ok(())
@@ -509,7 +495,7 @@ impl PCA {
 
         // --- 4. Initialize RNG ---
         // Number of power iterations (q in Halko et al.) to improve accuracy. 2 is a common default.
-        const N_POWER_ITERATIONS: usize = 2;
+        const N_POWER_ITERATIONS: usize = 1;
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
             None => ChaCha8Rng::from_rng(rand::thread_rng())

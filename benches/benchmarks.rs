@@ -30,9 +30,11 @@ struct BenchResult {
     n_samples: usize,
     n_features: usize,
     fit_time: f64,
-    fit_memory_kb: u64,
+    fit_rss_delta_kb: u64,
+    fit_virt_delta_kb: u64,
     rfit_time: f64,
-    rfit_memory_kb: u64,
+    rfit_rss_delta_kb: u64,
+    rfit_virt_delta_kb: u64,
     backend_name: String,
     n_components_override: Option<usize>,
 }
@@ -121,12 +123,13 @@ fn benchmark_pca(
     n_components_override: Option<usize>,
     n_oversamples_for_rfit: usize,
     seed_for_rfit: u64,
-) -> (f64, u64) {
+) -> (f64, u64, u64) {
     let mut sys = System::new_all();
     sys.refresh_all();
     let pid = sysinfo::get_current_pid().expect("Unable to get current PID");
     let process_start = sys.process(pid).expect("Unable to get current process");
     let initial_mem = process_start.memory();
+    let initial_virt_mem = process_start.virtual_memory();
 
     let start_time = Instant::now();
 
@@ -164,13 +167,11 @@ fn benchmark_pca(
         .process(pid)
         .expect("Unable to get current process at end");
     let final_mem = process_end.memory();
-    let used = if final_mem > initial_mem {
-        final_mem - initial_mem
-    } else {
-        0
-    };
+    let final_virt_mem = process_end.virtual_memory();
+    let rss_used_bytes = final_mem.saturating_sub(initial_mem);
+    let virt_used_bytes = final_virt_mem.saturating_sub(initial_virt_mem);
 
-    (duration, used / 1024) // Convert bytes to KB
+    (duration, rss_used_bytes / 1024, virt_used_bytes / 1024) // Convert bytes to KB
 }
 
 /// Appends benchmark results to a CSV file. Creates the file and writes headers if it doesn't exist.
@@ -189,7 +190,7 @@ fn append_results_to_csv(
     if !file_exists {
         writeln!(
             file,
-            "Scenario,Samples,Features,Backend,FitTimeSec,FitMemoryKB,RFitTimeSec,RFitMemoryKB,NumComponentsOverride"
+            "Scenario,Samples,Features,Backend,FitTimeSec,FitRSSDeltaKB,FitVirtDeltaKB,RFitTimeSec,RFitRSSDeltaKB,RFitVirtDeltaKB,NumComponentsOverride"
         )?;
     }
 
@@ -197,15 +198,17 @@ fn append_results_to_csv(
         let n_comp_str = r.n_components_override.map_or_else(|| "Default".to_string(), |k| k.to_string());
         writeln!(
             file,
-            "{},{},{},{},{:.3},{},{:.3},{},{}",
+            "{},{},{},{},{:.3},{},{},{:.3},{},{},{}",
             r.scenario_name,
             r.n_samples,
             r.n_features,
             r.backend_name,
             r.fit_time,
-            r.fit_memory_kb,
+            r.fit_rss_delta_kb,
+            r.fit_virt_delta_kb,
             r.rfit_time,
-            r.rfit_memory_kb,
+            r.rfit_rss_delta_kb,
+            r.rfit_virt_delta_kb,
             n_comp_str
         )?;
     }
@@ -215,31 +218,52 @@ fn append_results_to_csv(
 /// Prints a final summary table of all scenario results.
 fn print_summary_table(results: &[BenchResult]) {
     println!("\n===== FINAL SUMMARY TABLE (from CSV data) =====");
-    println!(
-        "{:<10} | {:>8} | {:>8} | {:<7} | {:>10} | {:>10} | {:>10} | {:>10} | {:>8}",
-        "Scenario", "Samples", "Features", "Backend", "fit (s)", "fit Mem", "rfit (s)", "rfit Mem", "CompsReq"
-    );
-    println!(
-        "----------+----------+----------+---------+------------+------------+------------+------------+----------"
-    );
+    println!("{:<10} | {:>8} | {:>8} | {:<7} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>8}", "Scenario", "Samples", "Features", "Backend", "fit (s)", "fit RSSΔ", "fit VirtΔ", "rfit (s)", "rfit RSSΔ", "rfit VirtΔ", "CompsReq");
+    println!("----------+----------+----------+---------+------------+------------+------------+------------+------------+------------+----------");
     for r in results {
         let n_comp_disp = r.n_components_override.map_or_else(|| "Def".to_string(), |k| k.to_string());
         println!(
-            "{:<10} | {:>8} | {:>8} | {:<7} | {:>10.3} | {:>10} | {:>10.3} | {:>10} | {:>8}",
+            "{:<10} | {:>8} | {:>8} | {:<7} | {:>10.3} | {:>10} | {:>10} | {:>10.3} | {:>10} | {:>10} | {:>8}",
             r.scenario_name,
             r.n_samples,
             r.n_features,
             r.backend_name,
             r.fit_time,
-            format_memory_kb(r.fit_memory_kb),
+            format_memory_kb(r.fit_rss_delta_kb),
+            format_memory_kb(r.fit_virt_delta_kb),
             r.rfit_time,
-            format_memory_kb(r.rfit_memory_kb),
+            format_memory_kb(r.rfit_rss_delta_kb),
+            format_memory_kb(r.rfit_virt_delta_kb),
             n_comp_disp
         );
     }
-    println!("==========================================================================================");
+    println!("===================================================================================================================");
 }
 
+fn determine_appropriate_sample_size(
+    scenario_name_short: &str, // e.g., "Large", "Wide", "Small"
+    is_rfit: bool,
+    _n_samples: usize, // _ to indicate potentially unused for now, but good for context
+    n_features: usize
+) -> usize {
+    if !is_rfit { // Fit method
+        match scenario_name_short {
+            "Large" | "Square" | "Sparse-W" => return 10,
+            "Wide" | "LowVar-W" | "Wide-k10" | "Wide-k50" | "Wide-k200" if n_features >= 10000 => return 10,
+            "Wide-XL" if n_features >= 100000 => return 10,
+            "Wide-L" if n_features >= 50000 => return 20,
+            "Medium" | "Tall" => return 50,
+            _ => return 100, // For "Small" and other faster scenarios
+        }
+    } else { // Rfit method
+        match scenario_name_short {
+            "Wide-k200" if n_features >= 10000 => return 20,
+            "Wide-XL" if n_features >= 100000 => return 30,
+            "Large" | "Wide-L" | "Sparse-W" => return 50,
+            _ => return 100, // For other faster rfit scenarios
+        }
+    }
+}
 
 fn criterion_benchmark_runner(c: &mut Criterion) {
     let scenarios = vec![
@@ -259,7 +283,6 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
     ];
 
     let mut collected_results_for_csv = Vec::new();
-    let mut group = c.benchmark_group("PCA Benchmarks"); // Renamed group
 
     for (name, n_samples, n_features, seed, data_source_type, n_components_override) in scenarios {
         // Clone data_source_type if it's captured by multiple closures or used after move.
@@ -270,7 +293,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
                 generate_low_variance_data(n_samples, n_features, fraction_low_var_feats, majority_val_in_low_var_feat, seed),
         };
 
-        let oversamples_for_rfit = 10;
+        let oversamples_for_rfit = 0;
 
         // --- FIT Benchmark ---
         let fit_benchmark_id = BenchmarkId::new(
@@ -278,52 +301,73 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
         );
         let mut fit_time_manual = 0.0;
-        let mut fit_mem_kb_manual = 0;
+        let mut fit_rss_delta_kb_manual = 0;
+        let mut fit_virt_delta_kb_manual = 0;
 
-        // Set throughput for FIT
+        // --- FIT Benchmark ---
+        let fit_group_name = format!("fit/{}", name);
+        let fit_sample_size = determine_appropriate_sample_size(name, false, n_samples, n_features);
+        let mut fit_group = c.benchmark_group(fit_group_name);
+        fit_group.sample_size(fit_sample_size);
         let input_size_bytes = (n_samples * n_features * std::mem::size_of::<f64>()) as u64;
-        group.throughput(Throughput::Bytes(input_size_bytes));
+        fit_group.throughput(Throughput::Bytes(input_size_bytes));
 
-        group.bench_with_input(fit_benchmark_id, &data.clone(), |b, data_to_bench| {
+        let fit_benchmark_id = BenchmarkId::new(
+            "fit", // Use "fit" as function_id
+            format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
+        );
+        let mut fit_time_manual = 0.0;
+        let mut fit_rss_delta_kb_manual = 0;
+        let mut fit_virt_delta_kb_manual = 0;
+
+        fit_group.bench_with_input(fit_benchmark_id, &data.clone(), |b, data_to_bench| {
             b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
                 for _i in 0..iters {
-                    let (time_taken, mem_used) = benchmark_pca(false, data_to_bench, n_components_override, oversamples_for_rfit, seed);
+                    let (time_taken, rss_mem_used, virt_mem_used) = benchmark_pca(false, data_to_bench, n_components_override, oversamples_for_rfit, seed);
                     total_duration += std::time::Duration::from_secs_f64(time_taken);
-                    if fit_time_manual == 0.0 {
+                    if fit_time_manual == 0.0 { // Capture on first iteration
                         fit_time_manual = time_taken;
-                        fit_mem_kb_manual = mem_used;
+                        fit_rss_delta_kb_manual = rss_mem_used;
+                        fit_virt_delta_kb_manual = virt_mem_used;
                     }
                 }
                 total_duration
             });
         });
+        fit_group.finish();
 
         // --- RFIT Benchmark ---
+        let rfit_group_name = format!("rfit/{}", name);
+        let rfit_sample_size = determine_appropriate_sample_size(name, true, n_samples, n_features);
+        let mut rfit_group = c.benchmark_group(rfit_group_name);
+        rfit_group.sample_size(rfit_sample_size);
+        rfit_group.throughput(Throughput::Bytes(input_size_bytes));
+
         let rfit_benchmark_id = BenchmarkId::new(
             "rfit", // Use "rfit" as function_id
             format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
         );
         let mut rfit_time_manual = 0.0;
-        let mut rfit_mem_kb_manual = 0;
+        let mut rfit_rss_delta_kb_manual = 0;
+        let mut rfit_virt_delta_kb_manual = 0;
         
-        // Set throughput for RFIT (same as FIT)
-        group.throughput(Throughput::Bytes(input_size_bytes));
-
-        group.bench_with_input(rfit_benchmark_id, &data.clone(), |b, data_to_bench| {
+        rfit_group.bench_with_input(rfit_benchmark_id, &data.clone(), |b, data_to_bench| {
              b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
                 for _i in 0..iters {
-                    let (time_taken, mem_used) = benchmark_pca(true, data_to_bench, n_components_override, oversamples_for_rfit, seed);
+                    let (time_taken, rss_mem_used, virt_mem_used) = benchmark_pca(true, data_to_bench, n_components_override, oversamples_for_rfit, seed);
                     total_duration += std::time::Duration::from_secs_f64(time_taken);
-                    if rfit_time_manual == 0.0 {
+                    if rfit_time_manual == 0.0 { // Capture on first iteration
                         rfit_time_manual = time_taken;
-                        rfit_mem_kb_manual = mem_used;
+                        rfit_rss_delta_kb_manual = rss_mem_used;
+                        rfit_virt_delta_kb_manual = virt_mem_used;
                     }
                 }
                 total_duration
             });
         });
+        rfit_group.finish();
 
         let backend_name = if cfg!(feature = "backend_faer") { "faer".to_string() } else { "ndarray".to_string() };
         collected_results_for_csv.push(BenchResult {
@@ -331,16 +375,16 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             n_samples,
             n_features,
             fit_time: fit_time_manual,
-            fit_memory_kb: fit_mem_kb_manual,
+            fit_rss_delta_kb: fit_rss_delta_kb_manual, 
+            fit_virt_delta_kb: fit_virt_delta_kb_manual,
             rfit_time: rfit_time_manual,
-            rfit_memory_kb: rfit_mem_kb_manual,
+            rfit_rss_delta_kb: rfit_rss_delta_kb_manual, 
+            rfit_virt_delta_kb: rfit_virt_delta_kb_manual,
             backend_name,
             n_components_override,
         });
     }
     
-    group.finish(); // Finish group
-
     // After all benchmarks, print and save CSV
     print_summary_table(&collected_results_for_csv);
     if let Err(e) = append_results_to_csv(&collected_results_for_csv, "benchmark_results.csv") {
