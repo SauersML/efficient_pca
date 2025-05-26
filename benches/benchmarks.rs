@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant; // Keep for benchmark_pca internal timing, though Criterion handles overall.
-use sysinfo::{System, Process, Pid}; // Added SystemExt, ProcessExt, PidExt for sysinfo
+use sysinfo::System; // Added SystemExt, ProcessExt, PidExt for sysinfo
 
 // Enum to specify the type of data source for benchmarks.
 #[derive(Clone, Debug)] // Added Clone and Debug for DataSource
