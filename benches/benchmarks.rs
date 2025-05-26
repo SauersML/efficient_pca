@@ -312,30 +312,35 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         let input_size_bytes = (n_samples * n_features * std::mem::size_of::<f64>()) as u64;
         fit_group.throughput(Throughput::Bytes(input_size_bytes));
 
-        let fit_benchmark_id = BenchmarkId::new(
+        let _fit_benchmark_id = BenchmarkId::new(
             "fit", // Use "fit" as function_id
             format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
         );
-        let mut fit_time_manual = 0.0;
-        let mut fit_rss_delta_kb_manual = 0;
-        let mut fit_virt_delta_kb_manual = 0;
+        let mut _fit_time_manual_capture = 0.0; // Temp vars for capture
+        let mut _fit_rss_delta_kb_manual_capture = 0;
+        let mut _fit_virt_delta_kb_manual_capture = 0;
 
-        fit_group.bench_with_input(fit_benchmark_id, &data.clone(), |b, data_to_bench| {
+        fit_group.bench_with_input(_fit_benchmark_id, &data.clone(), |b, data_to_bench| {
             b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
                 for _i in 0..iters {
                     let (time_taken, rss_mem_used, virt_mem_used) = benchmark_pca(false, data_to_bench, n_components_override, oversamples_for_rfit, seed);
                     total_duration += std::time::Duration::from_secs_f64(time_taken);
-                    if fit_time_manual == 0.0 { // Capture on first iteration
-                        fit_time_manual = time_taken;
-                        fit_rss_delta_kb_manual = rss_mem_used;
-                        fit_virt_delta_kb_manual = virt_mem_used;
+                    if _i == 0 { // Capture on first iteration of this specific b.iter_custom call
+                        _fit_time_manual_capture = time_taken;
+                        _fit_rss_delta_kb_manual_capture = rss_mem_used;
+                        _fit_virt_delta_kb_manual_capture = virt_mem_used;
                     }
                 }
                 total_duration
             });
         });
         fit_group.finish();
+        
+        // Assign captured values to non-mutable underscored variables for BenchResult
+        let _fit_time_manual = _fit_time_manual_capture;
+        let _fit_rss_delta_kb_manual = _fit_rss_delta_kb_manual_capture;
+        let _fit_virt_delta_kb_manual = _fit_virt_delta_kb_manual_capture;
 
         // --- RFIT Benchmark ---
         let rfit_group_name = format!("rfit/{}", name);
@@ -374,9 +379,9 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             scenario_name: name.to_string(),
             n_samples,
             n_features,
-            fit_time: fit_time_manual,
-            fit_rss_delta_kb: fit_rss_delta_kb_manual, 
-            fit_virt_delta_kb: fit_virt_delta_kb_manual,
+            fit_time: _fit_time_manual,
+            fit_rss_delta_kb: _fit_rss_delta_kb_manual, 
+            fit_virt_delta_kb: _fit_virt_delta_kb_manual,
             rfit_time: rfit_time_manual,
             rfit_rss_delta_kb: rfit_rss_delta_kb_manual, 
             rfit_virt_delta_kb: rfit_virt_delta_kb_manual,
