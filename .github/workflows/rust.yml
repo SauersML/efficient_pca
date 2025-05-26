@@ -50,7 +50,7 @@ jobs:
           pip install numpy scikit-learn scipy
 
       - name: Install OpenBLAS
-        if: matrix.backend == 'openblas'
+        if: matrix.backend == 'openblas' || matrix.backend == 'faer'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libopenblas-dev
