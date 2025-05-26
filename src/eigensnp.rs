@@ -267,6 +267,11 @@ pub struct EigenSNPCoreAlgorithmConfig {
     pub global_pca_sketch_oversampling: usize,
     /// Number of power iterations for the global RSVD on the condensed feature matrix.
     pub global_pca_num_power_iterations: usize,
+    
+    /// Number of additional random dimensions for sketching in the local RSVD stage (L_local = c_p + this).
+    pub local_rsvd_sketch_oversampling: usize, 
+    /// Number of power iterations for the local RSVD stage.
+    pub local_rsvd_num_power_iterations: usize,
 
     /// Seed for the random number generator used in RSVD stages.
     pub random_seed: u64,
@@ -283,6 +288,8 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             target_num_global_pcs: 15,
             global_pca_sketch_oversampling: 10,
             global_pca_num_power_iterations: 2,
+            local_rsvd_sketch_oversampling: 10, 
+            local_rsvd_num_power_iterations: 1, 
             random_seed: 2025,
         }
     }
@@ -512,27 +519,31 @@ impl EigenSNPCoreAlgorithm {
                         });
                     }
                     
-                    let genotype_block_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
-                    let snp_covariance_matrix_f64 = genotype_block_f64.dot(&genotype_block_f64.t());
-                    
-                    let backend = LinAlgBackendProvider::<f64>::new(); // Use LinAlgBackendProvider for f64
-                    // .eigh returns eigenvalues in ascending order; we slice the last 'num_components_to_extract'
-                    // to get the eigenvectors corresponding to the largest eigenvalues.
-                    let eigh_output_f64 = backend.eigh_upper(&snp_covariance_matrix_f64)
-                        .map_err(|e_linalg| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Eigendecomposition failed (via backend) for block ID {:?} ({}): {}", block_list_id, block_spec.user_defined_block_tag, e_linalg))) as ThreadSafeStdError)?;
-                    // Eigenvalues from ndarray-linalg eigh are already sorted ascending.
-                    // Eigenvectors are columns corresponding to eigenvalues.
-                    let selected_eigenvectors_f64 = eigh_output_f64.eigenvectors.slice_axis(
-                        Axis(1),
-                        ndarray::Slice::from((actual_num_snps_in_block - num_components_to_extract)..actual_num_snps_in_block),
-                    );
+                    // Generate a local seed for RSVD, ensuring it varies per block
+                    let local_seed = self.config.random_seed.wrapping_add(block_idx_val as u64);
 
-                    let local_basis_vectors_f32 = selected_eigenvectors_f64.mapv(|x_val| x_val as f32);
+                    // genotype_block_for_subset_samples is SNPs x Samples (M_p x N_s)
+                    // We want U from SVD(A), which is M_p x c_p (SNP loadings for the block)
+                    let local_basis_vectors_f32 = Self::perform_randomized_svd_for_loadings(
+                        &genotype_block_for_subset_samples.view(),
+                        num_components_to_extract,
+                        self.config.local_rsvd_sketch_oversampling,
+                        self.config.local_rsvd_num_power_iterations,
+                        local_seed,
+                    ).map_err(|e_rsvd| -> ThreadSafeStdError {
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "Local RSVD failed for block ID {:?} ({}): {}",
+                                block_list_id, block_spec.user_defined_block_tag, e_rsvd
+                            ),
+                        ))
+                    })?;
 
-                    trace!("Block ID {:?} ({}): extracted {} local components.", block_list_id, block_spec.user_defined_block_tag, num_components_to_extract);
+                    trace!("Block ID {:?} ({}): extracted {} local components via rSVD.", block_list_id, block_spec.user_defined_block_tag, num_components_to_extract);
                     Ok(PerBlockLocalSnpBasis {
                         block_list_id,
-                        basis_vectors: local_basis_vectors_f32.into_owned(),
+                        basis_vectors: local_basis_vectors_f32, // Already owned Array2<f32>
                     })
                 })
                 .collect();
@@ -612,8 +623,10 @@ impl EigenSNPCoreAlgorithm {
         &self,
         standardized_condensed_features: &StandardizedCondensedFeatures,
     ) -> Result<InitialSamplePcScores, ThreadSafeStdError> {
+        // Note: The original `perform_randomized_svd_for_scores` returned V (scores directly related to V_A).
+        // Here we are consistent with that, requesting V (right singular vectors of A).
         let sample_scores_n_by_k = Self::perform_randomized_svd_for_scores(
-            &standardized_condensed_features.data.view(),
+            &standardized_condensed_features.data.view(), // A is M x N (features x samples)
             self.config.target_num_global_pcs,
             self.config.global_pca_sketch_oversampling,
             self.config.global_pca_num_power_iterations,
@@ -622,100 +635,62 @@ impl EigenSNPCoreAlgorithm {
         Ok(InitialSamplePcScores { scores: sample_scores_n_by_k })
     }
 
-    fn perform_randomized_svd_for_scores(
+    /// Computes the right singular vectors (V_A_approx, sample scores) of a matrix A using rSVD.
+    /// A is M features x N samples. Output is N x K_eff.
+    pub fn perform_randomized_svd_for_scores(
         matrix_features_by_samples: &ArrayView2<f32>, 
         num_components_target_k: usize,
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
-        let num_features = matrix_features_by_samples.nrows();
-        let num_samples = matrix_features_by_samples.ncols();
+        let (_u_opt, _s_opt, v_opt) = Self::_internal_perform_rsvd(
+            matrix_features_by_samples,
+            num_components_target_k,
+            sketch_oversampling_count,
+            num_power_iterations,
+            random_seed,
+            false, // request_u_components
+            false, // request_s_components
+            true,  // request_v_components
+        )?;
 
-        if num_features == 0 || num_samples == 0 || num_components_target_k == 0 {
-            return Ok(Array2::zeros((num_samples, 0)));
-        }
-
-        let sketch_dimension = (num_components_target_k + sketch_oversampling_count)
-            .min(num_features.min(num_samples));
-
-        if sketch_dimension == 0 {
-            return Ok(Array2::zeros((num_samples, 0)));
-        }
-        trace!(
-            "RSVD for scores: Target_K={}, Sketch_L={}, Input_Features={}, Input_Samples={}",
-            num_components_target_k, sketch_dimension, num_features, num_samples
-        );
-
-        let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
-        let normal_dist = Normal::new(0.0, 1.0)
-            .map_err(|e_normal| -> ThreadSafeStdError {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to create normal distribution for RSVD: {}", e_normal),
-                ).into() // .into() can now infer its target type as ThreadSafeStdError
-            })?;
-
-        let random_projection_matrix_samples_by_sketch = Array2::from_shape_fn((num_samples, sketch_dimension), |_| {
-            normal_dist.sample(&mut rng) as f32
-        });
-        
-        let backend = LinAlgBackendProvider::<f32>::new(); // Use LinAlgBackendProvider for f32
-        let orthonormal_basis_candidate = matrix_features_by_samples.dot(&random_projection_matrix_samples_by_sketch);
-
-        if orthonormal_basis_candidate.ncols() == 0 {
-            warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension);
-            return Ok(Array2::zeros((num_samples, 0)));
-        }
-        let mut orthonormal_basis_features_by_sketch = backend.qr_q_factor(&orthonormal_basis_candidate)
-            .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch failed in RSVD (via backend): {}", e_qr))) as ThreadSafeStdError)?;
-        
-        for iter_idx in 0..num_power_iterations {
-            if orthonormal_basis_features_by_sketch.ncols() == 0 { break; } 
-            trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
-            
-            let projected_onto_samples_candidate = matrix_features_by_samples.t().dot(&orthonormal_basis_features_by_sketch); 
-            if projected_onto_samples_candidate.ncols() == 0 { 
-                orthonormal_basis_features_by_sketch = Array2::zeros((orthonormal_basis_features_by_sketch.nrows(),0)); 
-                break; 
-            }
-            // No QR needed for projected_onto_samples_candidate if it's just an intermediate product for the next Y.
-            
-            let orthonormal_basis_candidate_next = matrix_features_by_samples.dot(&projected_onto_samples_candidate);
-            if orthonormal_basis_candidate_next.ncols() == 0 {
-                 orthonormal_basis_features_by_sketch = Array2::zeros((orthonormal_basis_features_by_sketch.nrows(),0));
-                 break;
-            }
-            orthonormal_basis_features_by_sketch = backend.qr_q_factor(&orthonormal_basis_candidate_next)
-                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition during power iteration {} failed in RSVD (via backend): {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
-        }
-        
-        if orthonormal_basis_features_by_sketch.ncols() == 0 {
-            warn!("RSVD: Refined sketch Q_basis for left singular vectors has zero columns. Returning empty scores.");
-            return Ok(Array2::zeros((num_samples, 0)));
-        }
-        
-        let projected_onto_sketch_basis_sketch_dim_by_samples = orthonormal_basis_features_by_sketch.t().dot(matrix_features_by_samples);
-        // Consuming SVD for projected_onto_sketch_basis_sketch_dim_by_samples
-        let svd_output_b = backend.svd_into(projected_onto_sketch_basis_sketch_dim_by_samples.into_owned(), false, true) 
-            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD (via backend): {}", e_svd))) as ThreadSafeStdError)?;
-        
-        let right_singular_vectors_transposed_of_b = svd_output_b.vt
-            .ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "V^T from SVD of B was not computed in RSVD (via backend).")) as ThreadSafeStdError)?;
-        
-        let computed_sample_scores_samples_by_rank_b = right_singular_vectors_transposed_of_b.t().into_owned();
-
-        let num_components_to_return = num_components_target_k.min(computed_sample_scores_samples_by_rank_b.ncols());
-        // Slice the columns of computed_sample_scores_samples_by_rank_b from the beginning up to num_components_to_return.
-        // The slice_axis method expects an ndarray::Slice for the specific axis being sliced.
-        let final_sample_scores_n_by_k = computed_sample_scores_samples_by_rank_b.slice_axis(
-            Axis(1),
-            ndarray::Slice::from(0..num_components_to_return)
-        ).to_owned();        
-        trace!("RSVD successfully computed scores. Shape: {:?}", final_sample_scores_n_by_k.dim());
-        Ok(final_sample_scores_n_by_k)
+        v_opt.ok_or_else(|| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Scores (V matrix) not computed or available from _internal_perform_rsvd",
+            )) as ThreadSafeStdError
+        })
     }
 
+    /// Computes the left singular vectors (U_A_approx, feature loadings) of a matrix A using rSVD.
+    /// A is M features x N samples. Output is M x K_eff.
+    pub fn perform_randomized_svd_for_loadings(
+        matrix_features_by_samples: &ArrayView2<f32>,
+        num_components_target_k: usize,
+        sketch_oversampling_count: usize,
+        num_power_iterations: usize,
+        random_seed: u64,
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        let (u_opt, _s_opt, _v_opt) = Self::_internal_perform_rsvd(
+            matrix_features_by_samples,
+            num_components_target_k,
+            sketch_oversampling_count,
+            num_power_iterations,
+            random_seed,
+            true,  // request_u_components
+            false, // request_s_components
+            false, // request_v_components
+        )?;
+
+        u_opt.ok_or_else(|| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Loadings (U matrix) not computed or available from _internal_perform_rsvd",
+            )) as ThreadSafeStdError
+        })
+    }
+    
     fn compute_refined_snp_loadings<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
@@ -888,5 +863,189 @@ impl EigenSNPCoreAlgorithm {
         debug!("Computed final eigenvalues: {:?}", computed_final_pc_eigenvalues);
         info!("Computed final sample scores. Shape: {:?}", computed_final_sample_scores_samples_by_components.dim());
         Ok((computed_final_sample_scores_samples_by_components, computed_final_pc_eigenvalues))
+    }
+
+    /// Performs randomized SVD on a matrix A (matrix_features_by_samples, M x N).
+    /// Returns (Option<U_A_approx>, Option<S_A_approx>, Option<V_A_approx>)
+    /// U_A_approx: M x K_eff (Left singular vectors of A)
+    /// S_A_approx: K_eff (Singular values of A)
+    /// V_A_approx: N x K_eff (Right singular vectors of A)
+    #[allow(clippy::too_many_arguments)]
+    fn _internal_perform_rsvd(
+        matrix_features_by_samples: &ArrayView2<f32>, // Input matrix A (M features x N samples)
+        num_components_target_k: usize,              // Desired K
+        sketch_oversampling_count: usize,            // p (for L = K+p)
+        num_power_iterations: usize,                 // q
+        random_seed: u64,
+        request_u_components: bool, // True if U (left singular vectors) is needed
+        request_s_components: bool, // True if S (singular values) is needed
+        request_v_components: bool  // True if V (right singular vectors) is needed
+    ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
+        let num_features_m = matrix_features_by_samples.nrows();
+        let num_samples_n = matrix_features_by_samples.ncols();
+
+        if num_features_m == 0 || num_samples_n == 0 || num_components_target_k == 0 {
+            debug!("RSVD: Input matrix empty or K=0. M={}, N={}, K={}", num_features_m, num_samples_n, num_components_target_k);
+            let u_res = if request_u_components { Some(Array2::zeros((num_features_m, 0))) } else { None };
+            let s_res = if request_s_components { Some(Array1::zeros(0)) } else { None };
+            let v_res = if request_v_components { Some(Array2::zeros((num_samples_n, 0))) } else { None };
+            return Ok((u_res, s_res, v_res));
+        }
+
+        let sketch_dimension_l = (num_components_target_k + sketch_oversampling_count)
+            .min(num_features_m.min(num_samples_n));
+
+        if sketch_dimension_l == 0 {
+            debug!("RSVD: Sketch dimension L=0. M={}, N={}, K={}, p={}", num_features_m, num_samples_n, num_components_target_k, sketch_oversampling_count);
+            let u_res = if request_u_components { Some(Array2::zeros((num_features_m, 0))) } else { None };
+            let s_res = if request_s_components { Some(Array1::zeros(0)) } else { None };
+            let v_res = if request_v_components { Some(Array2::zeros((num_samples_n, 0))) } else { None };
+            return Ok((u_res, s_res, v_res));
+        }
+        trace!(
+            "RSVD internal: Target_K={}, Sketch_L={}, Input_M(features)={}, Input_N(samples)={}",
+            num_components_target_k, sketch_dimension_l, num_features_m, num_samples_n
+        );
+
+        let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+        let normal_dist = Normal::new(0.0, 1.0)
+            .map_err(|e_normal| -> ThreadSafeStdError {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to create normal distribution for RSVD: {}", e_normal),
+                ).into()
+            })?;
+        
+        // Omega: N x L
+        let random_projection_matrix_omega = Array2::from_shape_fn((num_samples_n, sketch_dimension_l), |_| {
+            normal_dist.sample(&mut rng) as f32
+        });
+        
+        let backend = LinAlgBackendProvider::<f32>::new();
+        
+        // Y = A * Omega (M x N) * (N x L) -> (M x L)
+        let sketch_y = matrix_features_by_samples.dot(&random_projection_matrix_omega);
+
+        if sketch_y.ncols() == 0 {
+            warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension_l);
+            let u_res = if request_u_components { Some(Array2::zeros((num_features_m, 0))) } else { None };
+            let s_res = if request_s_components { Some(Array1::zeros(0)) } else { None };
+            let v_res = if request_v_components { Some(Array2::zeros((num_samples_n, 0))) } else { None };
+            return Ok((u_res, s_res, v_res));
+        }
+        
+        // Q_basis = orth(Y) (M x L_actual_y)
+        let mut q_basis_m_by_l_actual = backend.qr_q_factor(&sketch_y)
+            .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch Y failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?;
+        
+        // Power iterations
+        for iter_idx in 0..num_power_iterations {
+            if q_basis_m_by_l_actual.ncols() == 0 { 
+                trace!("RSVD Power Iteration {}: Q_basis became empty, breaking.", iter_idx + 1);
+                break; 
+            }
+            trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
+            
+            // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
+            let q_tilde_candidate = matrix_features_by_samples.t().dot(&q_basis_m_by_l_actual);
+            if q_tilde_candidate.ncols() == 0 { 
+                q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0)); 
+                trace!("RSVD Power Iteration {}: Q_tilde_candidate became empty.", iter_idx + 1);
+                break; 
+            }
+            // Q_tilde = orth(Q_tilde_candidate) (N x L_actual_tilde)
+            let q_tilde_n_by_l_actual = backend.qr_q_factor(&q_tilde_candidate)
+                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_tilde in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+
+            if q_tilde_n_by_l_actual.ncols() == 0 {
+                q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
+                trace!("RSVD Power Iteration {}: Q_tilde became empty after QR.", iter_idx + 1);
+                break;
+            }
+
+            // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
+            let q_basis_candidate_next = matrix_features_by_samples.dot(&q_tilde_n_by_l_actual);
+            if q_basis_candidate_next.ncols() == 0 {
+                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
+                 trace!("RSVD Power Iteration {}: Q_basis_candidate_next became empty.", iter_idx + 1);
+                 break;
+            }
+            // Q_basis = orth(Q_basis_candidate_next) (M x L_actual_final_iter)
+            q_basis_m_by_l_actual = backend.qr_q_factor(&q_basis_candidate_next)
+                .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_basis in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+        }
+        
+        if q_basis_m_by_l_actual.ncols() == 0 {
+            warn!("RSVD: Refined Q_basis has zero columns after power iterations. Target_K={}", num_components_target_k);
+            let u_res = if request_u_components { Some(Array2::zeros((num_features_m, 0))) } else { None };
+            let s_res = if request_s_components { Some(Array1::zeros(0)) } else { None };
+            let v_res = if request_v_components { Some(Array2::zeros((num_samples_n, 0))) } else { None };
+            return Ok((u_res, s_res, v_res));
+        }
+        
+        // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
+        let projected_b_l_actual_by_n = q_basis_m_by_l_actual.t().dot(matrix_features_by_samples);
+        
+        // SVD of B: B = U_B * S_B * V_B.T
+        // U_B is L_actual x rank_b
+        // S_B is rank_b
+        // V_B.T is rank_b x N
+        let compute_u_for_b = request_u_components; // U_A = Q_basis * U_B, so U_B is needed if U_A is.
+        let compute_v_for_b = request_v_components; // V_A = V_B, so V_B (from V_B.T) is needed if V_A is.
+
+        let svd_output_b = backend.svd_into(projected_b_l_actual_by_n.into_owned(), compute_u_for_b, compute_v_for_b)
+            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd))) as ThreadSafeStdError)?;
+        
+        let mut u_a_approx_opt: Option<Array2<f32>> = None;
+        let mut s_a_approx_opt: Option<Array1<f32>> = None;
+        let mut v_a_approx_opt: Option<Array2<f32>> = None;
+
+        let effective_rank_b = svd_output_b.s.as_ref().map_or(0, |s_vals| s_vals.len());
+        let num_k_to_return = num_components_target_k.min(effective_rank_b);
+
+        if request_s_components {
+            if let Some(s_b_values) = svd_output_b.s {
+                s_a_approx_opt = Some(s_b_values.slice(s![0..num_k_to_return]).to_owned());
+            } else {
+                // Should not happen if svd_into succeeds and effective_rank_b > 0, but handle defensively
+                s_a_approx_opt = Some(Array1::zeros(0));
+            }
+        }
+
+        if request_u_components {
+            if let Some(u_b_l_actual_by_rank_b) = svd_output_b.u {
+                if u_b_l_actual_by_rank_b.ncols() > 0 && q_basis_m_by_l_actual.ncols() > 0 {
+                    // U_A = Q_basis * U_B (M x L_actual) * (L_actual x rank_b) -> M x rank_b
+                    let u_a_approx_m_by_rank_b = q_basis_m_by_l_actual.dot(&u_b_l_actual_by_rank_b);
+                    u_a_approx_opt = Some(u_a_approx_m_by_rank_b.slice_axis(Axis(1), s![0..num_k_to_return]).to_owned());
+                } else {
+                     u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
+                }
+            } else {
+                u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));
+            }
+        }
+
+        if request_v_components {
+            if let Some(v_b_t_rank_b_by_n) = svd_output_b.vt {
+                if v_b_t_rank_b_by_n.nrows() > 0 { // effectively checks rank_b > 0
+                    // V_A = V_B. V_B is (N x rank_b). We have V_B.T (rank_b x N)
+                    let v_a_approx_n_by_rank_b = v_b_t_rank_b_by_n.t().into_owned();
+                    v_a_approx_opt = Some(v_a_approx_n_by_rank_b.slice_axis(Axis(1), s![0..num_k_to_return]).to_owned());
+                } else {
+                    v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
+                }
+            } else {
+                 v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
+            }
+        }
+        
+        trace!(
+            "RSVD internal successfully computed components. U_shape={:?}, S_len={}, V_shape={:?}",
+            u_a_approx_opt.as_ref().map(|m| m.dim()),
+            s_a_approx_opt.as_ref().map_or(0, |s| s.len()),
+            v_a_approx_opt.as_ref().map(|m| m.dim())
+        );
+        Ok((u_a_approx_opt, s_a_approx_opt, v_a_approx_opt))
     }
 }
