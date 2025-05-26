@@ -1,18 +1,17 @@
+// For your crate's PCA
 use crate::PCA;
-use ndarray::Axis;
-// ndarray_linalg specific imports might not be needed directly in all test files if
-// PCA internally uses the backend dispatch. UPLO might be used if tests construct matrices directly.
-// For now, let's assume they might be used by other tests in this file.
-use ndarray_linalg::{Eigh, QR, UPLO}; 
 
-// For numerical consistency test
-use approx::assert_abs_diff_eq;
-// serde::Deserialize, std::fs, std::path::Path are no longer needed
-use ndarray::{array, Array2}; // For creating the test data matrix easily & Array1 for direct comparison
-use rand::{Rng, SeedableRng};
+// For ndarray operations
+use ndarray::{array, Array1, Array2, Axis};
+
+// For Linfa PCA functionality
+use linfa::dataset::DatasetBase;
+use linfa::prelude::*;
+use linfa_reduction::Pca as LinfaPcaModel; // The PCA implementation from Linfa, aliased
+use ndarray_linalg::{Eigh, QR, UPLO};
+
 use rand_chacha::ChaCha8Rng;
-
-// PcaReferenceResults struct is no longer needed
+use rand::SeedableRng;  // The trait that provides .seed_from_u64()
 
 fn generate_random_data(n_samples: usize, n_features: usize, seed: u64) -> Array2<f64> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -1237,9 +1236,9 @@ mod pca_tests {
     use super::*; // This brings PcaReferenceResults into scope for this module if it's outside
     // use ndarray::array; // Already imported at top level of file
     use ndarray_rand::rand_distr::Distribution;
-    
+        
     #[test]
-    fn test_pca_fit_consistency_linfa() -> Result<(), Box<dyn Error>> {
+    fn test_pca_fit_consistency_linfa() -> Result<(), Box<dyn std::error::Error>> {
         const TOLERANCE: f64 = 1e-5; // Tolerance for float comparisons
     
         // Helper function to compare two vectors for approximate equality.
@@ -1251,7 +1250,10 @@ mod pca_tests {
         ) {
             assert_eq!(v1.len(), v2.len(), "Length mismatch for {}: expected {}, got {}", context_msg, v2.len(), v1.len());
             for i in 0..v1.len() {
-                assert_abs_diff_eq!(v1[i], v2[i], epsilon = tol, "Element mismatch at index {} in {}. v1[i]: {}, v2[i]: {}", i, context_msg, v1[i], v2[i]);
+                // Corrected assert_abs_diff_eq usage
+                if !approx::abs_diff_eq!(v1[i], v2[i], epsilon = tol) {
+                    panic!("Element mismatch at index {} in {}. v1[i]: {}, v2[i]: {}", i, context_msg, v1[i], v2[i]);
+                }
             }
         }
     
@@ -1263,7 +1265,7 @@ mod pca_tests {
             context_msg: &str,
         ) {
             assert_eq!(m1.shape(), m2.shape(), "Shape mismatch for {}: expected {:?}, got {:?}", context_msg, m2.shape(), m1.shape());
-            if m1.ncols() == 0 { // Both are empty with same shape
+            if m1.ncols() == 0 {
                 return;
             }
             for j in 0..m1.ncols() {
@@ -1271,28 +1273,23 @@ mod pca_tests {
                 let col2 = m2.column(j);
     
                 let mut col1_sum_sq = 0.0;
-                col1.for_each(|x| col1_sum_sq += x*x);
+                col1.for_each(|x| col1_sum_sq += x * x);
                 let col1_norm = col1_sum_sq.sqrt();
     
-                // Check if columns are close with same sign or opposite sign
-                // We sum absolute differences and compare against a tolerance scaled by vector norm or length
-                // to handle very small vectors where relative tolerance is less meaningful.
                 let diff_same_sign_sum_abs = (&col1 - &col2).mapv(f64::abs).sum();
                 let diff_flipped_sign_sum_abs = (&col1 + &col2).mapv(f64::abs).sum();
                 
-                // A simple heuristic for tolerance boundary, can be refined
-                let max_permissible_error_sum = tol * (col1_norm + col1.len() as f64);
-    
+                let max_permissible_error_sum = tol * (col1_norm + col1.len() as f64).max(1.0); // Ensure not dividing by zero or tiny norm effect
     
                 assert!(
                     diff_same_sign_sum_abs < max_permissible_error_sum || diff_flipped_sign_sum_abs < max_permissible_error_sum,
-                    "Column {} mismatch for {}. Sum diff_same_sign: {}, Sum diff_flipped_sign: {}. Max_err_sum: {}. col1: {:?.3}, col2: {:?.3}",
+                    // Corrected format specifier from {:?.3} to {:?} for ArrayView
+                    "Column {} mismatch for {}. Sum diff_same_sign: {}, Sum diff_flipped_sign: {}. Max_err_sum: {}. col1: {:?}, col2: {:?}",
                     j, context_msg, diff_same_sign_sum_abs, diff_flipped_sign_sum_abs, max_permissible_error_sum, col1, col2
                 );
             }
         }
     
-        // Data matrix from the original test
         let data_matrix_owned = array![
             [1., 2., 3.], 
             [4., 5., 6.], 
@@ -1302,9 +1299,8 @@ mod pca_tests {
     
         let n_samples = data_matrix_owned.nrows();
         let n_features = data_matrix_owned.ncols();
-        let k_components = n_features.min(n_samples); // For this 4x3 data, k_components = 3
+        let k_components = n_features.min(n_samples); 
     
-        // --- 1. efficient_pca - fit() method ---
         println!("Testing efficient_pca with fit()...");
         let mut pca_fit_eff = PCA::new();
         pca_fit_eff.fit(data_matrix_owned.clone(), None)?; 
@@ -1315,8 +1311,6 @@ mod pca_tests {
         let explained_variance_fit_eff = pca_fit_eff.explained_variance().expect("Explained variance missing after efficient_pca.fit()");
         let singular_values_from_fit_eff = explained_variance_fit_eff.mapv(|ev| (ev * (n_samples - 1) as f64).max(0.0).sqrt());
     
-    
-        // --- 2. efficient_pca - rfit() method ---
         println!("Testing efficient_pca with rfit()...");
         let mut pca_rfit_eff = PCA::new();
         let n_oversamples = 2; 
@@ -1334,14 +1328,11 @@ mod pca_tests {
         let explained_variance_rfit_eff = pca_rfit_eff.explained_variance().expect("Explained variance missing after efficient_pca.rfit()");
         let singular_values_from_rfit_eff = explained_variance_rfit_eff.mapv(|ev| (ev * (n_samples - 1) as f64).max(0.0).sqrt());
     
-    
-        // --- 3. linfa::Pca - Reference ---
         println!("Fitting LinfaPcaModel as reference...");
         let linfa_dataset = DatasetBase::from(data_matrix_owned.clone()); 
-        let linfa_rng_seed = 2025u64;
+        let linfa_rng_seed = 2025u64; 
         
         let linfa_pca_model = LinfaPcaModel::params(k_components)
-            .with_rng(StdRng::seed_from_u64(linfa_rng_seed)) 
             .fit(&linfa_dataset)?;
     
         let mean_linfa = linfa_pca_model.mean();
@@ -1349,15 +1340,11 @@ mod pca_tests {
         let transformed_linfa = linfa_pca_model.predict(&linfa_dataset);
         let singular_values_linfa = linfa_pca_model.singular_values();
     
-    
-        // --- 4. Comparisons ---
         println!("Starting comparisons with LinfaPCA...");
     
-        // Compare Means
         assert_vectors_approx_equal(mean_fit_eff, mean_linfa, TOLERANCE, "Mean (efficient_pca.fit vs linfa)");
         assert_vectors_approx_equal(mean_rfit_eff, mean_linfa, TOLERANCE, "Mean (efficient_pca.rfit vs linfa)");
     
-        // Compare Rotation Matrices / Components
         assert_matrices_approx_equal_columnwise_sign_agnostic(
             rotation_fit_eff,
             components_linfa,
@@ -1367,11 +1354,10 @@ mod pca_tests {
         assert_matrices_approx_equal_columnwise_sign_agnostic(
             rotation_rfit_eff,
             components_linfa,
-            TOLERANCE * 10.0, // higher tolerance for rPCA vs exact SVD from Linfa
+            TOLERANCE * 10.0, 
             "Rotation/Components (efficient_pca.rfit vs linfa)",
         );
         
-        // Compare Transformed Data
         assert_matrices_approx_equal_columnwise_sign_agnostic(
             &transformed_fit_eff,
             &transformed_linfa,
@@ -1381,14 +1367,10 @@ mod pca_tests {
         assert_matrices_approx_equal_columnwise_sign_agnostic(
             &transformed_rfit_eff,
             &transformed_linfa,
-            TOLERANCE * 10.0, // Potentially higher tolerance
+            TOLERANCE * 10.0, 
             "Transformed Data (efficient_pca.rfit vs linfa)",
         );
     
-        // Compare Singular Values (derived for efficient_pca, direct from linfa)
-        // Linfa's PCA standardizes data before SVD.
-        // The singular values obtained from both should thus correspond to standardized data.
-        // Sort them for stable comparison, especially for near-zero values.
         let mut sv_fit_sorted = singular_values_from_fit_eff.to_vec();
         sv_fit_sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         
@@ -1400,58 +1382,36 @@ mod pca_tests {
     
         assert_vectors_approx_equal(
             &Array1::from_vec(sv_fit_sorted), 
-            &Array1::from_vec(sv_linfa_sorted.clone()), // Clone as sv_linfa_sorted is used again
-            TOLERANCE * 10.0, // Singular values might differ more than components
+            &Array1::from_vec(sv_linfa_sorted.clone()), 
+            TOLERANCE * 10.0, 
             "Sorted Singular Values (efficient_pca.fit vs linfa)"
         );
         assert_vectors_approx_equal(
             &Array1::from_vec(sv_rfit_sorted), 
-            &Array1::from_vec(sv_linfa_sorted), 
-            TOLERANCE * 20.0, // RPCA can have larger deviations for singular values
+            &Array1::from_vec(sv_linfa_sorted.clone()), // Corrected: clone sv_linfa_sorted as it's used again if you had another comparison
+            TOLERANCE * 20.0, 
             "Sorted Singular Values (efficient_pca.rfit vs linfa)"
         );
     
-        // --- 5. Internal Consistency Check for efficient_pca.fit() explained_variance ---
-        // For the specific data_matrix, the first eigenvalue of Cov(X_scaled) should be 4.0.
-        if explained_variance_fit_eff.len() > 0 {
-            assert_abs_diff_eq!(
-                explained_variance_fit_eff[0], 
-                4.0, 
-                epsilon = TOLERANCE,
-                "Efficient PCA (fit) first explained variance for hardcoded data should be 4.0. Got: {}",
-                explained_variance_fit_eff[0]
-            );
-        }
-
-    
-        // --- 6. Compare Explained Variance and Ratios (with caution for raw values) ---
         println!("Comparing Explained Variance values and ratios...");
-    
-        // Retrieve raw explained variance values
-        // efficient_pca's EV: eigenvalues of Cov(X_scaled), i.e., s_scaled^2 / (N-1)
-        // linfa's EV: s_linfa^2 / (k-1), where k is number of components
     
         let ev_fit_eff = pca_fit_eff.explained_variance().expect("Explained variance from efficient_pca.fit missing");
         let ev_rfit_eff = pca_rfit_eff.explained_variance().expect("Explained variance from efficient_pca.rfit missing");
-        let ev_linfa = linfa_pca_model.explained_variance(); // Directly from linfa
+        let ev_linfa = linfa_pca_model.explained_variance(); 
     
         println!("[INFO] Raw Explained Variances (definitions differ across libraries):");
-        println!("  EfficientPCA (fit):  {:?.3}", ev_fit_eff);
-        println!("  EfficientPCA (rfit): {:?.3}", ev_rfit_eff);
-        println!("  LinfaPCA:            {:?.3}", ev_linfa);
+        // Corrected format specifiers from {:?.3} to {:?}
+        println!("  EfficientPCA (fit):  {:?}", ev_fit_eff);
+        println!("  EfficientPCA (rfit): {:?}", ev_rfit_eff);
+        println!("  LinfaPCA:            {:?}", ev_linfa);
         println!("  Note: Linfa's explained_variance uses sigma^2/(k-1), efficient_pca's uses sigma_scaled^2/(N-1).");
         println!("        Direct equality is not expected for raw values due to different denominators.");
-    
-        // Compare Explained Variance Ratios
-        // Ratio for efficient_pca: ev_i / sum(ev) = (s_scaled_i^2 / (N-1)) / sum(s_scaled_j^2 / (N-1)) = s_scaled_i^2 / sum(s_scaled_j^2)
-        // Ratio for linfa: linfa_pca_model.explained_variance_ratio() = (s_linfa_i^2 / (k-1)) / sum(s_linfa_j^2 / (k-1)) = s_linfa_i^2 / sum(s_linfa_j^2)
-        // If s_scaled and s_linfa are comparable (derived from similarly standardized data), their ratios should be comparable.
     
         let sum_ev_fit_eff = ev_fit_eff.sum();
         let ratio_fit_eff = if sum_ev_fit_eff.abs() > f64::EPSILON {
             ev_fit_eff.mapv(|v| v / sum_ev_fit_eff)
         } else {
-            Array1::zeros(ev_fit_eff.len()) // Avoid division by zero if sum is zero
+            Array1::zeros(ev_fit_eff.len())
         };
     
         let sum_ev_rfit_eff = ev_rfit_eff.sum();
@@ -1464,23 +1424,31 @@ mod pca_tests {
         let ratio_linfa = linfa_pca_model.explained_variance_ratio();
     
         println!("[DEBUG] Explained Variance Ratios:");
-        println!("  EfficientPCA (fit) ratio:  {:?.3}", ratio_fit_eff);
-        println!("  EfficientPCA (rfit) ratio: {:?.3}", ratio_rfit_eff);
-        println!("  LinfaPCA ratio:            {:?.3}", ratio_linfa);
+        // Corrected format specifiers from {:?.3} to {:?}
+        println!("  EfficientPCA (fit) ratio:  {:?}", ratio_fit_eff);
+        println!("  EfficientPCA (rfit) ratio: {:?}", ratio_rfit_eff);
+        println!("  LinfaPCA ratio:            {:?}", ratio_linfa);
     
         assert_vectors_approx_equal(
             &ratio_fit_eff, 
             &ratio_linfa, 
-            TOLERANCE * 10.0, // Ratios can also be sensitive
+            TOLERANCE * 10.0, 
             "Explained Variance Ratio (efficient_pca.fit vs linfa)"
         );
         assert_vectors_approx_equal(
             &ratio_rfit_eff, 
             &ratio_linfa, 
-            TOLERANCE * 20.0, // RPCA ratios might differ more
+            TOLERANCE * 20.0, 
             "Explained Variance Ratio (efficient_pca.rfit vs linfa)"
         );
     
+        if ev_fit_eff.len() > 0 {
+            // Corrected assert_abs_diff_eq! usage
+            if !approx::abs_diff_eq!(ev_fit_eff[0], 4.0, epsilon = TOLERANCE) {
+                panic!("Efficient PCA (fit) first explained variance for hardcoded data should be 4.0. Got: {}", ev_fit_eff[0]);
+            }
+        }
+        
         println!("Test 'test_pca_fit_consistency_linfa' (comparing with Linfa) passed!");
         Ok(())
     }
