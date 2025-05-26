@@ -1,14 +1,14 @@
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use efficient_pca::PCA;
 use ndarray::Array2;
-use rand::distributions::{Distribution, Uniform}; // Added Distribution for Uniform
+use rand::distributions::{Uniform}; // Added Distribution for Uniform
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant; // Keep for benchmark_pca internal timing, though Criterion handles overall.
-use sysinfo::{System, SystemExt, ProcessExt, PidExt}; // Added SystemExt, ProcessExt, PidExt for sysinfo
+use sysinfo::{System, Process, Pid}; // Added SystemExt, ProcessExt, PidExt for sysinfo
 
 // Enum to specify the type of data source for benchmarks.
 #[derive(Clone, Debug)] // Added Clone and Debug for DataSource
@@ -34,7 +34,7 @@ struct BenchResult {
     rfit_time: f64,
     rfit_memory_kb: u64,
     backend_name: String,
-    num_components_override: Option<usize>,
+    n_components_override: Option<usize>,
 }
 
 /// Generates random data of shape (n_samples x n_features) with values 0, 1, or 2 (as f64), seeded for reproducibility.
@@ -82,7 +82,7 @@ fn generate_low_variance_data(
 
     let mut data_vec = Vec::with_capacity(n_samples * n_features);
 
-    for j in 0..n_features {
+    for _j in 0..n_features {
         let is_low_var_feature = rng.gen::<f64>() < fraction_low_var_feats;
         for _i in 0..n_samples {
             if is_low_var_feature {
@@ -194,7 +194,7 @@ fn append_results_to_csv(
     }
 
     for r in results {
-        let n_comp_str = r.num_components_override.map_or_else(|| "Default".to_string(), |k| k.to_string());
+        let n_comp_str = r.n_components_override.map_or_else(|| "Default".to_string(), |k| k.to_string());
         writeln!(
             file,
             "{},{},{},{},{:.3},{},{:.3},{},{}",
@@ -223,7 +223,7 @@ fn print_summary_table(results: &[BenchResult]) {
         "----------+----------+----------+---------+------------+------------+------------+------------+----------"
     );
     for r in results {
-        let n_comp_disp = r.num_components_override.map_or_else(|| "Def".to_string(), |k| k.to_string());
+        let n_comp_disp = r.n_components_override.map_or_else(|| "Def".to_string(), |k| k.to_string());
         println!(
             "{:<10} | {:>8} | {:>8} | {:<7} | {:>10.3} | {:>10} | {:>10.3} | {:>10} | {:>8}",
             r.scenario_name,
@@ -284,7 +284,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         let input_size_bytes = (n_samples * n_features * std::mem::size_of::<f64>()) as u64;
         group.throughput(Throughput::Bytes(input_size_bytes));
 
-        group.bench_with_input(fit_benchmark_id, data.clone(), |b, data_to_bench| {
+        group.bench_with_input(fit_benchmark_id, &data.clone(), |b, data_to_bench| {
             b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
                 for _i in 0..iters {
@@ -310,7 +310,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         // Set throughput for RFIT (same as FIT)
         group.throughput(Throughput::Bytes(input_size_bytes));
 
-        group.bench_with_input(rfit_benchmark_id, data.clone(), |b, data_to_bench| {
+        group.bench_with_input(rfit_benchmark_id, &data.clone(), |b, data_to_bench| {
              b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
                 for _i in 0..iters {
@@ -335,7 +335,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             rfit_time: rfit_time_manual,
             rfit_memory_kb: rfit_mem_kb_manual,
             backend_name,
-            num_components_override,
+            n_components_override,
         });
     }
     
