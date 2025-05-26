@@ -1369,17 +1369,66 @@ mod pca_tests {
     
         let rotation_fit_eff_cols_vec: Vec<Vec<f64>> = rotation_fit_eff_v161.columns().into_iter().map(|col| col.to_vec()).collect();
         let rotation_rfit_eff_cols_vec: Vec<Vec<f64>> = rotation_rfit_eff_v161.columns().into_iter().map(|col| col.to_vec()).collect();
-        let components_linfa_cols_vec: Vec<Vec<f64>> = components_linfa_v15.columns().into_iter().map(|col| col.to_vec()).collect();
     
-        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(&rotation_fit_eff_cols_vec, &components_linfa_cols_vec, TOLERANCE, "Rotation/Components (fit vs linfa)");
-        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(&rotation_rfit_eff_cols_vec, &components_linfa_cols_vec, TOLERANCE * 10.0, "Rotation/Components (rfit vs linfa)");
+        // Linfa's .components() method returns a matrix of shape (n_actual_components, n_features),
+        // where each ROW is a principal component vector. For the rank-1 data used in this test,
+        // Linfa correctly identifies 1 actual component, so components_linfa_v15 will have shape (1, 3).
+        let linfa_component_vectors: Vec<Vec<f64>> = components_linfa_v15.rows().into_iter().map(|row| row.to_vec()).collect();
     
+        // --- Comparison for 'fit' vs Linfa Rotation/Components ---
+        // We will compare only up to the number of components Linfa provides, so we compare actual component vectors.
+        let num_components_to_compare_fit = std::cmp::min(rotation_fit_eff_cols_vec.len(), linfa_component_vectors.len());
+        let rotation_fit_eff_common_components: Vec<Vec<f64>> = rotation_fit_eff_cols_vec.iter().take(num_components_to_compare_fit).cloned().collect();
+        let linfa_common_components_for_fit: Vec<Vec<f64>> = linfa_component_vectors.iter().take(num_components_to_compare_fit).cloned().collect();
+    
+        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(
+            &rotation_fit_eff_common_components,
+            &linfa_common_components_for_fit,
+            TOLERANCE,
+            "Rotation/Components (fit vs linfa - common components)"
+        );
+    
+        // --- Comparison for 'rfit' vs Linfa Rotation/Components ---
+        // Similarly for 'rfit', compare only the common components with Linfa.
+        // 'rfit' is requested with k_components (3). Linfa effectively finds 1 for this data.
+        let num_components_to_compare_rfit = std::cmp::min(rotation_rfit_eff_cols_vec.len(), linfa_component_vectors.len());
+        let rotation_rfit_eff_common_components: Vec<Vec<f64>> = rotation_rfit_eff_cols_vec.iter().take(num_components_to_compare_rfit).cloned().collect();
+        let linfa_common_components_for_rfit: Vec<Vec<f64>> = linfa_component_vectors.iter().take(num_components_to_compare_rfit).cloned().collect();
+    
+        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(
+            &rotation_rfit_eff_common_components,
+            &linfa_common_components_for_rfit,
+            TOLERANCE * 10.0, // Tolerance for rfit might be higher
+            "Rotation/Components (rfit vs linfa - common components)"
+        );
+            
+        // --- Comparison for Transformed Data (fit vs Linfa) ---
+        // Transformed data will have n_samples rows and k_components columns.
         let transformed_fit_eff_cols_vec: Vec<Vec<f64>> = transformed_fit_eff_v161.columns().into_iter().map(|col| col.to_vec()).collect();
-        let transformed_rfit_eff_cols_vec: Vec<Vec<f64>> = transformed_rfit_eff_v161.columns().into_iter().map(|col| col.to_vec()).collect();
-        let transformed_linfa_cols_vec: Vec<Vec<f64>> = transformed_linfa_v15.columns().into_iter().map(|col| col.to_vec()).collect();
+        let transformed_linfa_cols_from_linfa_model: Vec<Vec<f64>> = transformed_linfa_v15.columns().into_iter().map(|col| col.to_vec()).collect(); // Linfa's transformed data has k_actual_linfa columns.
     
-        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(&transformed_fit_eff_cols_vec, &transformed_linfa_cols_vec, TOLERANCE, "Transformed Data (fit vs linfa)");
-        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(&transformed_rfit_eff_cols_vec, &transformed_linfa_cols_vec, TOLERANCE * 10.0, "Transformed Data (rfit vs linfa)");
+        let common_transformed_fit_eff: Vec<Vec<f64>> = transformed_fit_eff_cols_vec.iter().take(num_components_to_compare_fit).cloned().collect();
+        let common_transformed_linfa_for_fit: Vec<Vec<f64>> = transformed_linfa_cols_from_linfa_model.iter().take(num_components_to_compare_fit).cloned().collect();
+    
+        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(
+            &common_transformed_fit_eff,
+            &common_transformed_linfa_for_fit,
+            TOLERANCE,
+            "Transformed Data (fit vs linfa - common components)"
+        );
+    
+        // --- Comparison for Transformed Data (rfit vs Linfa) ---
+        // Use num_components_to_compare_rfit determined from rotation matrices comparison.
+        let transformed_rfit_eff_cols_vec: Vec<Vec<f64>> = transformed_rfit_eff_v161.columns().into_iter().map(|col| col.to_vec()).collect();
+        let common_transformed_rfit_eff: Vec<Vec<f64>> = transformed_rfit_eff_cols_vec.iter().take(num_components_to_compare_rfit).cloned().collect();
+        let common_transformed_linfa_for_rfit: Vec<Vec<f64>> = transformed_linfa_cols_from_linfa_model.iter().take(num_components_to_compare_rfit).cloned().collect();
+    
+        assert_matrix_cols_vec_approx_equal_columnwise_sign_agnostic(
+            &common_transformed_rfit_eff,
+            &common_transformed_linfa_for_rfit,
+            TOLERANCE * 10.0,
+            "Transformed Data (rfit vs linfa - common components)"
+        );
     
         let mut sv_fit_sorted_vec: Vec<f64> = singular_values_from_fit_eff_v161.to_vec();
         sv_fit_sorted_vec.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
