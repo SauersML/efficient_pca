@@ -191,7 +191,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
             };
-            let eig = faer_mat_view.as_ref().selfadjoint_eigendecomposition(faer::Side::Upper);
+            let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
             let eigenvalues_faer_colref = eig.s();
             let eigenvectors_faer_matref = eig.u();
             Ok(EighOutput {
@@ -224,7 +224,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 )));
             };
             let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
-            let q_thin_faer_mat = qr_decomp.compute_thin_q(); // This returns an owned Mat<T>
+            let q_thin_faer_mat = qr_decomp.compute_thin_Q(); // This returns an owned Mat<T>
             Ok(faer_mat_to_ndarray(q_thin_faer_mat.as_ref())) // Pass as MatRef
         }
     }
@@ -263,7 +263,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 .map_err(|e| to_dyn_error_faer(format!("Faer SVD computation failed: {:?}", e)))?;
 
             let s_diag_ref = svd_solver_instance.S(); 
-            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.as_col().as_ref());
+            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.column_vector());
 
             let u_ndarray = if compute_u {
                 Some(faer_mat_to_ndarray(svd_solver_instance.U().as_ref()))
@@ -304,7 +304,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                     "Input ndarray matrix ({}x{}) is non-contiguous and cannot be directly viewed by faer. Consider making a contiguous copy.", nrows, ncols
                 )));
             };
-            let eig = faer_mat_view.as_ref().selfadjoint_eigendecomposition(faer::Side::Upper);
+            let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
             let eigenvalues_faer_colref = eig.s();
             let eigenvectors_faer_matref = eig.u();
             Ok(EighOutput {
@@ -337,7 +337,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 )));
             };
             let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
-            let q_thin_faer_mat = qr_decomp.compute_thin_q(); // This returns an owned Mat<T>
+            let q_thin_faer_mat = qr_decomp.compute_thin_Q(); // This returns an owned Mat<T>
             Ok(faer_mat_to_ndarray(q_thin_faer_mat.as_ref())) // Pass as MatRef
         }
     }
@@ -376,7 +376,7 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
                 .map_err(|e| to_dyn_error_faer(format!("Faer SVD computation failed: {:?}", e)))?;
 
             let s_diag_ref = svd_solver_instance.S();
-            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.as_col().as_ref());
+            let s_ndarray = faer_col_to_ndarray_vec(s_diag_ref.column_vector());
 
             let u_ndarray = if compute_u {
                 Some(faer_mat_to_ndarray(svd_solver_instance.U().as_ref()))
