@@ -29,7 +29,7 @@ jobs:
             rustflags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
           - backend: faer
             feature: backend_faer
-            rustflags: ""
+            rustflags: "--cfg openblas"
 
     steps:
       - uses: actions/checkout@v4
