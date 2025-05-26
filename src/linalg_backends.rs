@@ -55,7 +55,6 @@ pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
 
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
-// use ndarray::ScalarOperand; // Removed as not directly used by trait impls
 use ndarray_linalg::{Lapack, Eigh, QR, SVDInto, UPLO};
 #[cfg(feature = "backend_faer")]
 use ndarray_linalg::Scalar;
@@ -485,7 +484,6 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
 
 // Import concrete backend types for the provider
 #[cfg(feature = "backend_faer")]
-// // use self::faer_specific_code::FaerLinAlgBackend; // Path adjusted to inner module - This line is removed
 
 // NdarrayLinAlgBackend is already defined in this file.
 
