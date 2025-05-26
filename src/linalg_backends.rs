@@ -76,7 +76,7 @@ where
     F: Scalar + 'static + Copy + Send + Sync,
 {
     fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        let (eigvals, eigvecs) = matrix.eigh(UPLO::Upper).map_err(to_dyn_error)?;
+        let (eigvals, eigvecs) = NdLinalgEigh::eigh(matrix, UPLO::Upper).map_err(to_dyn_error)?;
         Ok(EighOutput { eigenvalues: eigvals, eigenvectors: eigvecs })
     }
 }
@@ -91,7 +91,7 @@ where
             return Ok(Array2::zeros((0, 0)));
         }
         let k = nrows.min(ncols); // Re-introduce k
-        let (q_full, _) = matrix.qr().map_err(to_dyn_error)?;
+        let (q_full, _) = NdLinalgQR::qr(matrix).map_err(to_dyn_error)?;
         // Return q_full.slice_move(s![.., 0..k])
         Ok(q_full.slice_move(s![.., 0..k]))
     }
@@ -107,7 +107,7 @@ where
         compute_u: bool,
         compute_v: bool,
     ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        let (u, s, vt) = matrix.svd_into(compute_u, compute_v).map_err(to_dyn_error)?;
+        let (u, s, vt) = NdLinalgSVDInto::svd_into(matrix, compute_u, compute_v).map_err(to_dyn_error)?;
         Ok(SVDOutput { u, s, vt })
     }
 }
@@ -559,5 +559,3 @@ where
 }
 
 pub use NdarrayLinAlgBackend;
-#[cfg(feature = "backend_faer")]
-pub use faer_specific_code::FaerLinAlgBackend;
