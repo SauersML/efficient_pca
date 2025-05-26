@@ -1422,8 +1422,66 @@ mod pca_tests {
                 explained_variance_fit_eff[0]
             );
         }
+
     
-        println!("Test 'test_pca_fit_consistency_linfa' (now comparing with Linfa) passed!");
+        // --- 6. Compare Explained Variance and Ratios (with caution for raw values) ---
+        println!("Comparing Explained Variance values and ratios...");
+    
+        // Retrieve raw explained variance values
+        // efficient_pca's EV: eigenvalues of Cov(X_scaled), i.e., s_scaled^2 / (N-1)
+        // linfa's EV: s_linfa^2 / (k-1), where k is number of components
+    
+        let ev_fit_eff = pca_fit_eff.explained_variance().expect("Explained variance from efficient_pca.fit missing");
+        let ev_rfit_eff = pca_rfit_eff.explained_variance().expect("Explained variance from efficient_pca.rfit missing");
+        let ev_linfa = linfa_pca_model.explained_variance(); // Directly from linfa
+    
+        println!("[INFO] Raw Explained Variances (definitions differ across libraries):");
+        println!("  EfficientPCA (fit):  {:?.3}", ev_fit_eff);
+        println!("  EfficientPCA (rfit): {:?.3}", ev_rfit_eff);
+        println!("  LinfaPCA:            {:?.3}", ev_linfa);
+        println!("  Note: Linfa's explained_variance uses sigma^2/(k-1), efficient_pca's uses sigma_scaled^2/(N-1).");
+        println!("        Direct equality is not expected for raw values due to different denominators.");
+    
+        // Compare Explained Variance Ratios
+        // Ratio for efficient_pca: ev_i / sum(ev) = (s_scaled_i^2 / (N-1)) / sum(s_scaled_j^2 / (N-1)) = s_scaled_i^2 / sum(s_scaled_j^2)
+        // Ratio for linfa: linfa_pca_model.explained_variance_ratio() = (s_linfa_i^2 / (k-1)) / sum(s_linfa_j^2 / (k-1)) = s_linfa_i^2 / sum(s_linfa_j^2)
+        // If s_scaled and s_linfa are comparable (derived from similarly standardized data), their ratios should be comparable.
+    
+        let sum_ev_fit_eff = ev_fit_eff.sum();
+        let ratio_fit_eff = if sum_ev_fit_eff.abs() > f64::EPSILON {
+            ev_fit_eff.mapv(|v| v / sum_ev_fit_eff)
+        } else {
+            Array1::zeros(ev_fit_eff.len()) // Avoid division by zero if sum is zero
+        };
+    
+        let sum_ev_rfit_eff = ev_rfit_eff.sum();
+        let ratio_rfit_eff = if sum_ev_rfit_eff.abs() > f64::EPSILON {
+            ev_rfit_eff.mapv(|v| v / sum_ev_rfit_eff)
+        } else {
+            Array1::zeros(ev_rfit_eff.len())
+        };
+        
+        let ratio_linfa = linfa_pca_model.explained_variance_ratio();
+    
+        println!("[DEBUG] Explained Variance Ratios:");
+        println!("  EfficientPCA (fit) ratio:  {:?.3}", ratio_fit_eff);
+        println!("  EfficientPCA (rfit) ratio: {:?.3}", ratio_rfit_eff);
+        println!("  LinfaPCA ratio:            {:?.3}", ratio_linfa);
+    
+        assert_vectors_approx_equal(
+            &ratio_fit_eff, 
+            &ratio_linfa, 
+            TOLERANCE * 10.0, // Ratios can also be sensitive
+            "Explained Variance Ratio (efficient_pca.fit vs linfa)"
+        );
+        assert_vectors_approx_equal(
+            &ratio_rfit_eff, 
+            &ratio_linfa, 
+            TOLERANCE * 20.0, // RPCA ratios might differ more
+            "Explained Variance Ratio (efficient_pca.rfit vs linfa)"
+        );
+    
+        println!("Test 'test_pca_fit_consistency_linfa' (comparing with Linfa) passed!");
         Ok(())
     }
 
