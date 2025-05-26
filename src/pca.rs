@@ -30,20 +30,20 @@ use std::path::Path;
 pub struct PCA {
     /// The rotation matrix (principal components).
     /// Shape: (n_features, k_components)
-    pub(crate) rotation: Option<Array2<f64>>,
+    pub rotation: Option<Array2<f64>>,
     /// Mean vector of the original training data.
     /// Shape: (n_features)
-    pub(crate) mean: Option<Array1<f64>>,
+    pub mean: Option<Array1<f64>>,
     /// Sanitized scale vector, representing standard deviations of the original training data.
     /// This vector is guaranteed to contain only positive values.
     /// When set via `fit` or `rfit`, original standard deviations `s` where `s.abs() < 1e-9` are replaced by `1.0`.
     /// When set via `with_model`, input `raw_standard_deviations` `s` where `!s.is_finite()` or `s <= 1e-9` are replaced by `1.0`.
     /// Loaded models are also validated so scale factors are positive.
     /// Shape: (n_features)
-    pub(crate) scale: Option<Array1<f64>>,
+    pub scale: Option<Array1<f64>>,
     /// Explained variance for each principal component (eigenvalues of the covariance matrix).
     /// Shape: (k_components)
-    pub(crate) explained_variance: Option<Array1<f64>>,
+    pub explained_variance: Option<Array1<f64>>,
 }
 
 impl Default for PCA {
