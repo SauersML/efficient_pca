@@ -1,21 +1,22 @@
 // In tests/eigensnp_tests.rs
 
-use ndarray::{arr1, arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis, Ix1, Ix2};
+use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis}; // Removed arr1, Ix1, Ix2, and ArrayView2
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput, LdBlockSpecification,
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, // Removed EigenSNPCoreOutput
     PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError, reorder_array_owned, reorder_columns_owned,
 };
 use rand::SeedableRng;
+use rand::Rng; // Added for the .sample() method
 use rand_chacha::ChaCha8Rng;
 use std::process::{Command, Stdio};
 use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 
-const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
-const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // looser for cross-implementation comparison
 
 // Helper function for comparing Array2<f32>
 fn assert_f32_arrays_are_close(
@@ -64,8 +65,8 @@ fn assert_f64_arrays_are_close(
 
 // Helper for comparing Array2<f32> allowing for sign flips per column
 fn assert_f32_arrays_are_close_with_sign_flips(
-    arr1: &Array2<f32>,
-    arr2: &Array2<f32>,
+    arr1: ndarray::ArrayView2<f32>, // Qualified with ndarray::
+    arr2: ndarray::ArrayView2<f32>, // Qualified with ndarray::
     tolerance: f32,
     context: &str,
 ) {
@@ -78,8 +79,8 @@ fn assert_f32_arrays_are_close_with_sign_flips(
     }
 
     for c_idx in 0..arr1.ncols() {
-        let col1 = arr1.column(c_idx);
-        let col2 = arr2.column(c_idx);
+        let col1 = arr1.column(c_idx); // .column() on ArrayView2 is fine
+        let col2 = arr2.column(c_idx); // .column() on ArrayView2 is fine
         
         let mut direct_match = true;
         for r_idx in 0..col1.len() {
@@ -255,7 +256,7 @@ mod eigensnp_integration_tests {
                 let eig_array2 = parse_section::<f64>(&mut lines, Some(1))?;
                 // Convert N_eig x 1 Array2 to Array1 of length N_eig
             let eig_len = eig_array2.len(); // Store length before move
-            py_eigenvalues = Some(eig_array2.into_shape(eig_len).unwrap());
+            py_eigenvalues = Some(eig_array2.into_shape((eig_len,)).unwrap()); // Use tuple for shape
             }
         }
         
@@ -345,14 +346,14 @@ mod eigensnp_integration_tests {
         assert_eq!(py_eigenvalues_k.len(), k_components, "Python effective components (eigenvalues) mismatch");
 
         assert_f32_arrays_are_close_with_sign_flips(
-            &rust_result.final_snp_principal_component_loadings,
-            &py_loadings_d_x_k,
+            rust_result.final_snp_principal_component_loadings.view(), // Use .view()
+            py_loadings_d_x_k.view(), // Use .view()
             DEFAULT_FLOAT_TOLERANCE_F32,
             "SNP Loadings (Rust vs Python)"
         );
         assert_f32_arrays_are_close_with_sign_flips(
-            &rust_result.final_sample_principal_component_scores,
-            &py_scores_n_x_k,
+            rust_result.final_sample_principal_component_scores.view(), // Use .view()
+            py_scores_n_x_k.view(), // Use .view()
             DEFAULT_FLOAT_TOLERANCE_F32,
             "Sample Scores (Rust vs Python)"
         );
@@ -646,14 +647,14 @@ mod eigensnp_integration_tests {
 
         if num_pcs_to_compare > 0 {
             assert_f32_arrays_are_close_with_sign_flips(
-                &rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]),
-                &py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]), // Remove &
+                py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]), // Remove &
                 DEFAULT_FLOAT_TOLERANCE_F32 * 10.0, 
                 "SNP Loadings (Low-Rank)"
             );
             assert_f32_arrays_are_close_with_sign_flips(
-                &rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]),
-                &py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]), // Remove &
+                py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]), // Remove &
                 DEFAULT_FLOAT_TOLERANCE_F32 * 10.0,
                 "Sample Scores (Low-Rank)"
             );
