@@ -13,7 +13,7 @@ use rand_distr::{Distribution, Normal};
 
 /// A thread-safe wrapper for standard dynamic errors,
 /// so they implement `Send` and `Sync`.
-type ThreadSafeStdError = Box<dyn Error + Send + Sync + 'static>;
+pub type ThreadSafeStdError = Box<dyn Error + Send + Sync + 'static>;
 
 // --- Core Index Types ---
 
@@ -283,6 +283,28 @@ pub fn reorder_array_owned<T: Clone>(array: &Array1<T>, order: &[usize]) -> Arra
 
 /// Orchestrates the EigenSNP PCA algorithm.
 /// Holds the configuration and provides the main execution method.
+///
+/// ## Numerical Precision
+/// This algorithm primarily utilizes `f32` (single-precision floating point) numbers
+/// for its matrix operations to optimize for memory efficiency and performance,
+/// which are critical for large genomic datasets.
+///
+/// Key considerations regarding precision:
+/// - **General Matrix Operations:** Most internal matrix multiplications, especially those
+///   performed via `ndarray::dot()` (which typically delegates to BLAS `sgemm` routines),
+///   use `f32` for both the elements and the internal accumulation during the dot product.
+///   For very large matrices (e.g., a large number of samples $N$ or SNPs $D$), this `f32`
+///   accumulation can lead to some loss of precision compared to an `f64` accumulation.
+/// - **Specific `f64` Accumulation:** For certain critical intermediate sums where precision
+///   is paramount and the number of summed elements can be particularly large (e.g.,
+///   the construction of the $S_{int} = X V_{QR}^*$ matrix in
+///   `compute_rotated_final_outputs`), the algorithm explicitly uses `f64` for accumulation
+///   of `f32` intermediate products. This helps mitigate precision loss for these specific sums.
+/// - **Output Precision:** Final PC scores and SNP loadings are returned as `f32` matrices.
+///   Eigenvalues, however, are returned as an `f64` array.
+///
+/// This design represents a practical trade-off between computational resources and numerical
+/// precision for typical PCA applications in genomics.
 #[derive(Debug, Clone)]
 pub struct EigenSNPCoreAlgorithm {
     config: EigenSNPCoreAlgorithmConfig,
@@ -316,6 +338,13 @@ pub struct EigenSNPCoreAlgorithmConfig {
 
     /// Seed for the random number generator used in RSVD stages.
     pub random_seed: u64,
+
+    /// Defines the number of SNPs to process in each parallel strip/chunk during
+    /// stages like refined SNP loading calculation and intermediate score calculation.
+    /// This helps manage memory for very large SNP datasets by processing them
+    /// in smaller, more manageable vertical strips.
+    /// Must be greater than 0. A typical value might be 2000-10000.
+    pub snp_processing_strip_size: usize,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -332,6 +361,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             local_rsvd_sketch_oversampling: 10, 
             local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
+            snp_processing_strip_size: 2000, // Default based on previous hardcoded value
         }
     }
 }
@@ -608,6 +638,13 @@ impl EigenSNPCoreAlgorithm {
         all_local_bases: &[PerBlockLocalSnpBasis], 
         num_total_qc_samples: usize,
     ) -> Result<RawCondensedFeatures, ThreadSafeStdError> {
+        assert_eq!(
+            ld_block_specs.len(),
+            all_local_bases.len(),
+            "Mismatch between LD block specifications count ({}) and learned local bases count ({}). Ensure each LD block has a corresponding local basis entry.",
+            ld_block_specs.len(),
+            all_local_bases.len()
+        );
         info!(
             "Projecting {} total QC samples onto local bases to construct condensed feature matrix.",
             num_total_qc_samples
@@ -740,6 +777,17 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         initial_sample_pc_scores: &InitialSamplePcScores,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        // Computes $V_{QR}^* = X U_{scores}^*$, where $X$ is D_blocked x N and $U_{scores}^*$ is N x K_initial.
+        // The result $V_{QR}^*$ is D_blocked x K_initial.
+        // This is then orthogonalized via QR decomposition to get $V_{QR}$ (D_blocked x K_initial_eff).
+        //
+        // ## Numerical Precision
+        // The core matrix multiplication $X_{strip} U_{scores}^*$ is performed using the
+        // `dot_product_mixed_precision_f32_f64acc` helper function. This function
+        // calculates each element of the resulting matrix by summing products of `f32`
+        // elements in an `f64` accumulator, and then casts the final sum back to `f32`.
+        // This approach enhances numerical precision for the sum over the $N$ dimension
+        // (number of samples) compared to a pure `f32` accumulation (e.g., via `sgemm`).
         let initial_scores_n_by_k_initial = &initial_sample_pc_scores.scores; 
         let num_qc_samples = initial_scores_n_by_k_initial.nrows();
         let num_computed_initial_pcs = initial_scores_n_by_k_initial.ncols();
@@ -763,7 +811,10 @@ impl EigenSNPCoreAlgorithm {
             Array2::<f32>::zeros((num_total_pca_snps, num_computed_initial_pcs));
         let all_qc_sample_ids: Vec<QcSampleId> = (0..num_qc_samples).map(QcSampleId).collect();
         
-        let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
+        // Use the configured strip size, ensuring it's at least 1 and not more than total SNPs.
+        let snp_processing_strip_size = self.config.snp_processing_strip_size
+            .min(num_total_pca_snps)
+            .max(1);
         
         if snp_processing_strip_size > 0 {
             snp_loadings_before_ortho_pca_snps_by_components
@@ -786,7 +837,11 @@ impl EigenSNPCoreAlgorithm {
                         &all_qc_sample_ids,
                     ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during refined SNP loading for strip index {}: {}", strip_index, e_accessor))) as ThreadSafeStdError)?;
                         
-                    let snp_loadings_for_strip = genotype_data_strip_snps_by_samples.dot(initial_scores_n_by_k_initial);
+                    // Perform dot product with f64 accumulation
+                    let snp_loadings_for_strip = Self::dot_product_mixed_precision_f32_f64acc(
+                        &genotype_data_strip_snps_by_samples.view(),
+                        &initial_scores_n_by_k_initial.view(), // initial_scores_n_by_k_initial is &Array2<f32>
+                    )?;
                     loadings_strip_view_mut.assign(&snp_loadings_for_strip);
                     Ok(())
                 })?;
@@ -851,7 +906,10 @@ impl EigenSNPCoreAlgorithm {
         }
 
         // --- B. Calculate Intermediate Scores (S_intermediate = X^T · V_qr) with f64 Accumulation ---
-        let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
+        // Use the configured strip size, ensuring it's at least 1 and not more than total SNPs.
+        let snp_processing_strip_size = self.config.snp_processing_strip_size
+            .min(num_total_pca_snps)
+            .max(1);
         let all_qc_sample_ids_for_scores: Vec<QcSampleId> =
             (0..num_total_qc_samples).map(QcSampleId).collect();
 
@@ -873,7 +931,7 @@ impl EigenSNPCoreAlgorithm {
                 let genotype_data_strip_f32 = genotype_data.get_standardized_snp_sample_block(
                     &snp_ids_in_strip,
                     &all_qc_sample_ids_for_scores,
-                ).map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get genotype block for strip {}-{}", strip_start_snp_idx, strip_end_snp_idx))) as ThreadSafeStdError)?; // D_strip x N (f32)
+                ).map_err(|_e_original_error| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get genotype block for strip {}-{}", strip_start_snp_idx, strip_end_snp_idx))) as ThreadSafeStdError)?; // D_strip x N (f32)
                 
                 let v_qr_loadings_for_strip_f32 = v_qr_loadings_d_by_k
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // D_strip x K_initial (f32)
@@ -910,7 +968,7 @@ impl EigenSNPCoreAlgorithm {
                         (_, Err(e)) => Err(e),
                     }
                 },
-            )??; // Two question marks: one for reduce's Result, one for fold's inner Result.
+            )?; // Corrected: Only one ? needed as reduce itself returns a single Result.
 
         // --- C. Perform SVD on S_intermediate ---
         let s_intermediate_n_by_k_initial_f32_for_svd = s_intermediate_n_by_k_initial_f64.mapv(|x| x as f32);
@@ -943,8 +1001,26 @@ impl EigenSNPCoreAlgorithm {
 
         // --- D. Calculate Final Scores, Loadings, and Eigenvalues ---
         // Final Sample Scores: S_final = U_rot * diag(s_prime) (N x k_eff)
-        let diag_s_prime = Array2::from_diag(&s_prime_singular_values_k_eff);
-        let final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff.dot(&diag_s_prime);
+        // This is S_final^* = U_small * Sigma_small
+        // We will achieve this by scaling columns of U_small (u_rot_n_by_k_eff) by Sigma_small (s_prime_singular_values_k_eff)
+        let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // u_rot_n_by_k_eff is N x k_eff
+
+        let num_effective_components_k_eff = final_sample_scores_n_by_k_eff_f32.ncols();
+        if num_effective_components_k_eff > 0 && s_prime_singular_values_k_eff.len() == num_effective_components_k_eff {
+            for k_idx in 0..num_effective_components_k_eff {
+                let singular_value_for_scaling = s_prime_singular_values_k_eff[k_idx];
+                let mut score_column_to_scale = final_sample_scores_n_by_k_eff_f32.column_mut(k_idx);
+                score_column_to_scale.mapv_inplace(|element_val| element_val * singular_value_for_scaling);
+            }
+        } else if num_effective_components_k_eff > 0 {
+            // This case implies a mismatch in expected dimensions, which shouldn't happen if SVD output is consistent.
+            // Log a warning, and the scores will remain unscaled from U_rot.
+            warn!(
+                "Mismatch between k_eff from U_rot ({} cols) and length of s_prime ({}). Scores will not be scaled by singular values.",
+                num_effective_components_k_eff,
+                s_prime_singular_values_k_eff.len()
+            );
+        }
 
         // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x k_eff) -> D x k_eff
         let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned();
@@ -991,6 +1067,28 @@ impl EigenSNPCoreAlgorithm {
     /// U_A_approx: M x K_eff (Left singular vectors of A)
     /// S_A_approx: K_eff (Singular values of A)
     /// V_A_approx: N x K_eff (Right singular vectors of A)
+    ///
+    /// ## Numerical Precision
+    /// The matrix multiplications performed within this function, such as:
+    /// * `matrix_features_by_samples.dot(&random_projection_matrix_omega)` (A * Omega)
+    /// * `matrix_features_by_samples.t().dot(&q_basis_m_by_l_actual)` (A.T * Q_basis)
+    /// * `matrix_features_by_samples.dot(&q_tilde_n_by_l_actual)` (A * Q_tilde)
+    /// * `q_basis_m_by_l_actual.t().dot(matrix_features_by_samples)` (Q_basis.T * A)
+    /// are all `f32` operations. When these operations involve very large dimensions
+    /// (either M or N of the input matrix, or the sketch dimension L), the internal
+    /// accumulation (typically handled by `sgemm` in BLAS) is also likely to be in `f32`.
+    /// This can lead to some loss of precision, especially if the number of elements being
+    /// summed is extremely large. This is a standard trade-off for performance and memory
+    /// efficiency in large-scale numerical computations.
+    ///
+    /// While some precision loss is possible in these `f32` operations, the Randomized SVD
+    /// algorithm incorporates steps like QR decomposition for orthogonalization, which contribute
+    /// to its overall numerical stability. Furthermore, in the context of the full Hybrid EigenSNP
+    /// PCA workflow, the outputs of this rSVD step (e.g., $U_p^*$ for local bases or $U_{scores}^*$
+    /// for initial global scores) are often intermediate. The subsequent Score-Guided Refinement (SR)
+    /// phase is designed to refine these components using higher precision for critical calculations
+    /// (e.g., `f64` accumulation for $S_{int}$, and mixed-precision `f32`/`f64` for $L_{raw}^*$),
+    /// thereby helping to mitigate or compensate for minor inaccuracies introduced during this rSVD stage.
     #[allow(clippy::too_many_arguments)]
     fn _internal_perform_rsvd(
         matrix_features_by_samples: &ArrayView2<f32>, // Input matrix A (M features x N samples)
@@ -1176,5 +1274,59 @@ impl EigenSNPCoreAlgorithm {
             v_a_approx_opt.as_ref().map(|m| m.dim())
         );
         Ok((u_a_approx_opt, s_a_approx_opt, v_a_approx_opt))
+    }
+
+    /// Performs matrix multiplication of two f32 matrices (A * B) using f64 accumulation
+    /// for each element of the resulting f32 matrix.
+    /// A (a_matrix_view): M x P
+    /// B (b_matrix_view): P x K
+    /// Result: M x K
+    fn dot_product_mixed_precision_f32_f64acc(
+        a_matrix_view: &ArrayView2<f32>,
+        b_matrix_view: &ArrayView2<f32>,
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        let m_dim = a_matrix_view.nrows();
+        let p_common_dim_a = a_matrix_view.ncols();
+        let p_common_dim_b = b_matrix_view.nrows();
+        let k_dim = b_matrix_view.ncols();
+
+        if p_common_dim_a != p_common_dim_b {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Dimension mismatch for mixed-precision dot product: A.ncols ({}) != B.nrows ({}).",
+                    p_common_dim_a, p_common_dim_b
+                ),
+            )) as ThreadSafeStdError);
+        }
+
+        if m_dim == 0 || p_common_dim_a == 0 || k_dim == 0 {
+             // Handle empty inputs gracefully, return matrix of zeros with correct output shape.
+             // If p_common_dim_a is 0, all dot products will be 0.
+            return Ok(Array2::<f32>::zeros((m_dim, k_dim)));
+        }
+        
+        let mut result_matrix_f32 = Array2::<f32>::zeros((m_dim, k_dim));
+
+        // Parallelize over the rows of the output matrix A
+        result_matrix_f32
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(i_row_idx, mut output_row_view)| {
+                let a_row_i = a_matrix_view.row(i_row_idx); // This is efficient for row-major A
+                for j_col_idx in 0..k_dim {
+                    let mut accumulator_f64: f64 = 0.0;
+                    // To get b_col_j efficiently, it's better if B is column-major,
+                    // or we extract the column once. Ndarray views are flexible.
+                    // For now, direct indexing is okay but less cache-friendly for B.
+                    for p_idx in 0..p_common_dim_a {
+                        accumulator_f64 += (a_row_i[p_idx] as f64) * (b_matrix_view[[p_idx, j_col_idx]] as f64);
+                    }
+                    output_row_view[j_col_idx] = accumulator_f64 as f32;
+                }
+            });
+            
+        Ok(result_matrix_f32)
     }
 }

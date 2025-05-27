@@ -1,16 +1,17 @@
 // In tests/eigensnp_tests.rs
 
-use ndarray::{arr1, arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis, Ix1, Ix2};
+use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis}; // Removed arr1, Ix1, Ix2, and ArrayView2
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput, LdBlockSpecification,
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, // Removed EigenSNPCoreOutput
     PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError, reorder_array_owned, reorder_columns_owned,
 };
 use rand::SeedableRng;
+use rand::Rng; // Added for the .sample() method
 use rand_chacha::ChaCha8Rng;
 use std::process::{Command, Stdio};
-use std::io::{Write, BufReader, BufRead};
+use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 
@@ -42,14 +43,14 @@ fn assert_f32_arrays_are_close(
 
 // Helper function for comparing Array1<f64>
 fn assert_f64_arrays_are_close(
-    arr1: &Array1<f64>,
-    arr2: &Array1<f64>,
+    arr1: ArrayView1<f64>, // Changed from &Array1<f64>
+    arr2: ArrayView1<f64>, // Changed from &Array1<f64>
     tolerance: f64,
     context: &str,
 ) {
     assert_eq!(arr1.dim(), arr2.dim(), "Array dimensions differ for {}. Left: {:?}, Right: {:?}", context, arr1.dim(), arr2.dim());
     for (i, val1) in arr1.iter().enumerate() {
-        let val2 = arr2[i];
+        let val2 = arr2[i]; // Indexing on ArrayView1 is fine
         assert!(
             (val1 - val2).abs() < tolerance,
             "Mismatch at index {} for {}: {} vs {} (diff: {})",
@@ -64,8 +65,8 @@ fn assert_f64_arrays_are_close(
 
 // Helper for comparing Array2<f32> allowing for sign flips per column
 fn assert_f32_arrays_are_close_with_sign_flips(
-    arr1: &Array2<f32>,
-    arr2: &Array2<f32>,
+    arr1: ndarray::ArrayView2<f32>, // Qualified with ndarray::
+    arr2: ndarray::ArrayView2<f32>, // Qualified with ndarray::
     tolerance: f32,
     context: &str,
 ) {
@@ -78,8 +79,8 @@ fn assert_f32_arrays_are_close_with_sign_flips(
     }
 
     for c_idx in 0..arr1.ncols() {
-        let col1 = arr1.column(c_idx);
-        let col2 = arr2.column(c_idx);
+        let col1 = arr1.column(c_idx); // .column() on ArrayView2 is fine
+        let col2 = arr2.column(c_idx); // .column() on ArrayView2 is fine
         
         let mut direct_match = true;
         for r_idx in 0..col1.len() {
@@ -254,7 +255,8 @@ mod eigensnp_integration_tests {
                 // Eigenvalues are printed as a single column matrix by pca.py, parse_section handles it as Array2
                 let eig_array2 = parse_section::<f64>(&mut lines, Some(1))?;
                 // Convert N_eig x 1 Array2 to Array1 of length N_eig
-                py_eigenvalues = Some(eig_array2.into_shape(eig_array2.len()).unwrap());
+            let eig_len = eig_array2.len(); // Store length before move
+            py_eigenvalues = Some(eig_array2.into_shape((eig_len,)).unwrap()); // Use tuple for shape
             }
         }
         
@@ -344,20 +346,20 @@ mod eigensnp_integration_tests {
         assert_eq!(py_eigenvalues_k.len(), k_components, "Python effective components (eigenvalues) mismatch");
 
         assert_f32_arrays_are_close_with_sign_flips(
-            &rust_result.final_snp_principal_component_loadings,
-            &py_loadings_d_x_k,
+            rust_result.final_snp_principal_component_loadings.view(), // Use .view()
+            py_loadings_d_x_k.view(), // Use .view()
             DEFAULT_FLOAT_TOLERANCE_F32,
             "SNP Loadings (Rust vs Python)"
         );
         assert_f32_arrays_are_close_with_sign_flips(
-            &rust_result.final_sample_principal_component_scores,
-            &py_scores_n_x_k,
+            rust_result.final_sample_principal_component_scores.view(), // Use .view()
+            py_scores_n_x_k.view(), // Use .view()
             DEFAULT_FLOAT_TOLERANCE_F32,
             "Sample Scores (Rust vs Python)"
         );
         assert_f64_arrays_are_close(
-            &rust_result.final_principal_component_eigenvalues,
-            &py_eigenvalues_k,
+            rust_result.final_principal_component_eigenvalues.view(), // Use .view()
+            py_eigenvalues_k.view(), // Use .view()
             DEFAULT_FLOAT_TOLERANCE_F64,
             "Eigenvalues (Rust vs Python)"
         );
@@ -645,20 +647,20 @@ mod eigensnp_integration_tests {
 
         if num_pcs_to_compare > 0 {
             assert_f32_arrays_are_close_with_sign_flips(
-                &rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]),
-                &py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]), // Remove &
+                py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]), // Remove &
                 DEFAULT_FLOAT_TOLERANCE_F32 * 10.0, 
                 "SNP Loadings (Low-Rank)"
             );
             assert_f32_arrays_are_close_with_sign_flips(
-                &rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]),
-                &py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]), // Remove &
+                py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]), // Remove &
                 DEFAULT_FLOAT_TOLERANCE_F32 * 10.0,
                 "Sample Scores (Low-Rank)"
             );
             assert_f64_arrays_are_close(
-                &rust_output.final_principal_component_eigenvalues.slice(s![0..num_pcs_to_compare]),
-                &py_eigenvalues_k.slice(s![0..num_pcs_to_compare]),
+                rust_output.final_principal_component_eigenvalues.slice(s![0..num_pcs_to_compare]), // Remove &
+                py_eigenvalues_k.slice(s![0..num_pcs_to_compare]), // Remove &
                 DEFAULT_FLOAT_TOLERANCE_F64 * 10.0, 
                 "Eigenvalues (Low-Rank)"
             );
@@ -682,9 +684,9 @@ mod eigensnp_integration_tests {
 
 
 // Original tests for reorder utils
-use efficient_pca::eigensnp::{reorder_array_owned, reorder_columns_owned};
+// use efficient_pca::eigensnp::{reorder_array_owned, reorder_columns_owned}; // Removed
 
-use ndarray::{Array1, Array2, arr2};
+// use ndarray::{Array1, Array2, arr2}; // Removed
 
 #[test]
 fn test_reorder_array_basic() {
