@@ -1,17 +1,27 @@
+// Global allocator setup for jemalloc
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+use jemallocator::Jemalloc;
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use efficient_pca::PCA;
 use ndarray::Array2;
-use rand::distributions::{Uniform}; // Added Distribution for Uniform
+use rand::distributions::{Uniform};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Write, BufWriter};
 use std::path::Path;
-use std::time::Instant; // Keep for benchmark_pca internal timing, though Criterion handles overall.
-use sysinfo::System; // Added SystemExt, ProcessExt, PidExt for sysinfo
+use std::time::Instant;
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+use jemalloc_ctl::{epoch, stats};
 
 // Enum to specify the type of data source for benchmarks.
-#[derive(Clone, Debug)] // Added Clone and Debug for DataSource
+#[derive(Clone, Debug)]
 enum DataSource {
     Dense012,
     Sparse012(f64), // Parameter is sparsity level (e.g., 0.95 for 95% zeros)
@@ -23,21 +33,6 @@ enum DataSource {
     },
 }
 
-// Holds results for a single benchmark scenario.
-#[derive(Debug)] // Added Debug for BenchResult
-struct BenchResult {
-    scenario_name: String,
-    n_samples: usize,
-    n_features: usize,
-    fit_time: f64,
-    fit_rss_delta_kb: u64,
-    fit_virt_delta_kb: u64,
-    rfit_time: f64,
-    rfit_rss_delta_kb: u64,
-    rfit_virt_delta_kb: u64,
-    backend_name: String,
-    n_components_override: Option<usize>,
-}
 
 /// Generates random data of shape (n_samples x n_features) with values 0, 1, or 2 (as f64), seeded for reproducibility.
 fn generate_random_data(n_samples: usize, n_features: usize, seed: u64) -> Array2<f64> {
@@ -124,12 +119,19 @@ fn benchmark_pca(
     n_oversamples_for_rfit: usize,
     seed_for_rfit: u64,
 ) -> (f64, u64, u64) {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let pid = sysinfo::get_current_pid().expect("Unable to get current PID");
-    let process_start = sys.process(pid).expect("Unable to get current process");
-    let initial_mem = process_start.memory();
-    let initial_virt_mem = process_start.virtual_memory();
+    // Memory stats using jemalloc_ctl
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    epoch::advance().unwrap();
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    let resident_before = stats::resident::read().unwrap();
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    let active_before = stats::active::read().unwrap(); // active is closer to virtual memory used by application
+
+    // Fallback for non-jemalloc or msvc builds - RSS and Virt will be 0
+    #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
+    let resident_before = 0;
+    #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
+    let active_before = 0;
 
     let start_time = Instant::now();
 
@@ -162,82 +164,73 @@ fn benchmark_pca(
 
     let duration = start_time.elapsed().as_secs_f64();
 
-    sys.refresh_all();
-    let process_end = sys
-        .process(pid)
-        .expect("Unable to get current process at end");
-    let final_mem = process_end.memory();
-    let final_virt_mem = process_end.virtual_memory();
-    let rss_used_bytes = final_mem.saturating_sub(initial_mem);
-    let virt_used_bytes = final_virt_mem.saturating_sub(initial_virt_mem);
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    epoch::advance().unwrap();
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    let resident_after = stats::resident::read().unwrap();
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    let active_after = stats::active::read().unwrap();
 
-    (duration, rss_used_bytes / 1024, virt_used_bytes / 1024) // Convert bytes to KB
+    #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
+    let resident_after = 0;
+    #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
+    let active_after = 0;
+
+    let rss_delta_bytes = resident_after.saturating_sub(resident_before);
+    let virt_delta_bytes = active_after.saturating_sub(active_before);
+
+    (duration, rss_delta_bytes / 1024, virt_delta_bytes / 1024) // Convert bytes to KB
 }
 
-/// Appends benchmark results to a CSV file. Creates the file and writes headers if it doesn't exist.
-fn append_results_to_csv(
-    results: &[BenchResult],
+
+
+fn write_raw_data_to_tsv(
+    raw_data: &[RawBenchDataPoint],
     filename: &str,
 ) -> Result<(), std::io::Error> {
-    let path = Path::new(filename);
-    let file_exists = path.exists();
+    let file = File::create(filename)?;
+    let mut writer = BufWriter::new(file);
 
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)?;
+    // Write header
+    writeln!(
+        writer,
+        "ScenarioName	NumSamples	NumFeatures	BackendName	Iteration	RunType	TimeSec	RSSDeltaKB	VirtDeltaKB	NumComponentsOverride"
+    )?;
 
-    if !file_exists {
+    // Write data
+    for point in raw_data {
+        let n_comp_str = point.n_components_override
+                            .map_or_else(|| "None".to_string(), |k| k.to_string());
         writeln!(
-            file,
-            "Scenario,Samples,Features,Backend,FitTimeSec,FitRSSDeltaKB,FitVirtDeltaKB,RFitTimeSec,RFitRSSDeltaKB,RFitVirtDeltaKB,NumComponentsOverride"
-        )?;
-    }
-
-    for r in results {
-        let n_comp_str = r.n_components_override.map_or_else(|| "Default".to_string(), |k| k.to_string());
-        writeln!(
-            file,
-            "{},{},{},{},{:.3},{},{},{:.3},{},{},{}",
-            r.scenario_name,
-            r.n_samples,
-            r.n_features,
-            r.backend_name,
-            r.fit_time,
-            r.fit_rss_delta_kb,
-            r.fit_virt_delta_kb,
-            r.rfit_time,
-            r.rfit_rss_delta_kb,
-            r.rfit_virt_delta_kb,
+            writer,
+            "{}	{}	{}	{}	{}	{}	{:.6}	{}	{}	{}", // Using {:.6} for TimeSec for precision
+            point.scenario_name,
+            point.n_samples,
+            point.n_features,
+            point.backend_name,
+            point.iteration_idx,
+            point.run_type,
+            point.time_sec,
+            point.rss_delta_kb,
+            point.virt_delta_kb,
             n_comp_str
         )?;
     }
     Ok(())
 }
 
-/// Prints a final summary table of all scenario results.
-fn print_summary_table(results: &[BenchResult]) {
-    println!("\n===== FINAL SUMMARY TABLE (from CSV data) =====");
-    println!("{:<10} | {:>8} | {:>8} | {:<7} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>8}", "Scenario", "Samples", "Features", "Backend", "fit (s)", "fit RSSΔ", "fit VirtΔ", "rfit (s)", "rfit RSSΔ", "rfit VirtΔ", "CompsReq");
-    println!("----------+----------+----------+---------+------------+------------+------------+------------+------------+------------+----------");
-    for r in results {
-        let n_comp_disp = r.n_components_override.map_or_else(|| "Def".to_string(), |k| k.to_string());
-        println!(
-            "{:<10} | {:>8} | {:>8} | {:<7} | {:>10.3} | {:>10} | {:>10} | {:>10.3} | {:>10} | {:>10} | {:>8}",
-            r.scenario_name,
-            r.n_samples,
-            r.n_features,
-            r.backend_name,
-            r.fit_time,
-            format_memory_kb(r.fit_rss_delta_kb),
-            format_memory_kb(r.fit_virt_delta_kb),
-            r.rfit_time,
-            format_memory_kb(r.rfit_rss_delta_kb),
-            format_memory_kb(r.rfit_virt_delta_kb),
-            n_comp_disp
-        );
-    }
-    println!("===================================================================================================================");
+#[derive(Debug, Clone)]
+struct RawBenchDataPoint {
+    scenario_name: String,
+    n_samples: usize,
+    n_features: usize,
+    backend_name: String,
+    iteration_idx: u64, // Criterion's iteration count (from 0 to iters-1)
+    run_type: String,    // "fit" or "rfit"
+    time_sec: f64,
+    rss_delta_kb: u64,
+    virt_delta_kb: u64,
+    n_components_override: Option<usize>,
 }
 
 fn determine_appropriate_sample_size(
@@ -266,6 +259,9 @@ fn determine_appropriate_sample_size(
 }
 
 fn criterion_benchmark_runner(c: &mut Criterion) {
+    let mut all_raw_data = Vec::<RawBenchDataPoint>::new();
+    let current_backend_name = if cfg!(feature = "backend_faer") { "faer".to_string() } else { "ndarray".to_string() };
+
     let scenarios = vec![
         ("Small", 100, 50, 1234, DataSource::Dense012, None),
         ("Medium", 1000, 500, 1234, DataSource::Dense012, None),
@@ -274,7 +270,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         ("Tall", 10000, 500, 1234, DataSource::Dense012, None),
         ("Wide", 500, 10000, 1234, DataSource::Dense012, None),
         ("Wide-L", 100, 50000, 1234, DataSource::Dense012, None),
-        ("Wide-XL", 88, 100000, 1234, DataSource::Dense012, None), // Adjusted samples to match test
+        ("Wide-XL", 88, 100000, 1234, DataSource::Dense012, None),
         ("Sparse-W", 500, 20000, 1234, DataSource::Sparse012(0.95), None),
         ("LowVar-W", 500, 10000, 1234, DataSource::LowVariance012 { fraction_low_var_feats: 0.5, majority_val_in_low_var_feat: 0.95 }, None),
         ("Wide-k10", 500, 10000, 1234, DataSource::Dense012, Some(10)),
@@ -282,7 +278,6 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         ("Wide-k200", 500, 10000, 1234, DataSource::Dense012, Some(200)),
     ];
 
-    let mut collected_results_for_csv = Vec::new();
 
     for (name, n_samples, n_features, seed, data_source_type, n_components_override) in scenarios {
         // Clone data_source_type if it's captured by multiple closures or used after move.
@@ -296,13 +291,7 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
         let oversamples_for_rfit = 0;
 
         // --- FIT Benchmark ---
-        let fit_benchmark_id = BenchmarkId::new(
-            "fit", // Use "fit" as function_id
-            format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
-        );
-        let mut fit_time_manual = 0.0;
-        let mut fit_rss_delta_kb_manual = 0;
-        let mut fit_virt_delta_kb_manual = 0;
+
 
         // --- FIT Benchmark ---
         let fit_group_name = format!("fit/{}", name);
@@ -316,31 +305,33 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             "fit", // Use "fit" as function_id
             format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
         );
-        let mut _fit_time_manual_capture = 0.0; // Temp vars for capture
-        let mut _fit_rss_delta_kb_manual_capture = 0;
-        let mut _fit_virt_delta_kb_manual_capture = 0;
 
         fit_group.bench_with_input(_fit_benchmark_id, &data.clone(), |b, data_to_bench| {
             b.iter_custom(|iters| {
-                let mut total_duration = std::time::Duration::new(0,0);
-                for _i in 0..iters {
+                let mut total_duration = std::time::Duration::new(0, 0);
+                for i in 0..iters { // Use 'i' for iteration_idx
                     let (time_taken, rss_mem_used, virt_mem_used) = benchmark_pca(false, data_to_bench, n_components_override, oversamples_for_rfit, seed);
                     total_duration += std::time::Duration::from_secs_f64(time_taken);
-                    if _i == 0 { // Capture on first iteration of this specific b.iter_custom call
-                        _fit_time_manual_capture = time_taken;
-                        _fit_rss_delta_kb_manual_capture = rss_mem_used;
-                        _fit_virt_delta_kb_manual_capture = virt_mem_used;
-                    }
+                    
+                    all_raw_data.push(RawBenchDataPoint {
+                        scenario_name: name.to_string(),
+                        n_samples,
+                        n_features,
+                        backend_name: current_backend_name.clone(),
+                        iteration_idx: i,
+                        run_type: "fit".to_string(),
+                        time_sec: time_taken,
+                        rss_delta_kb: rss_mem_used,
+                        virt_delta_kb: virt_mem_used,
+                        n_components_override,
+                    });
+
                 }
                 total_duration
             });
         });
         fit_group.finish();
         
-        // Assign captured values to non-mutable underscored variables for BenchResult
-        let _fit_time_manual = _fit_time_manual_capture;
-        let _fit_rss_delta_kb_manual = _fit_rss_delta_kb_manual_capture;
-        let _fit_virt_delta_kb_manual = _fit_virt_delta_kb_manual_capture;
 
         // --- RFIT Benchmark ---
         let rfit_group_name = format!("rfit/{}", name);
@@ -353,47 +344,38 @@ fn criterion_benchmark_runner(c: &mut Criterion) {
             "rfit", // Use "rfit" as function_id
             format!("{}_s{}_f{}_c{:?}", name, n_samples, n_features, n_components_override) // Parameter string
         );
-        let mut rfit_time_manual = 0.0;
-        let mut rfit_rss_delta_kb_manual = 0;
-        let mut rfit_virt_delta_kb_manual = 0;
         
         rfit_group.bench_with_input(rfit_benchmark_id, &data.clone(), |b, data_to_bench| {
              b.iter_custom(|iters| {
                 let mut total_duration = std::time::Duration::new(0,0);
-                for _i in 0..iters {
+                for i in 0..iters { // Use 'i' for iteration_idx
                     let (time_taken, rss_mem_used, virt_mem_used) = benchmark_pca(true, data_to_bench, n_components_override, oversamples_for_rfit, seed);
                     total_duration += std::time::Duration::from_secs_f64(time_taken);
-                    if rfit_time_manual == 0.0 { // Capture on first iteration
-                        rfit_time_manual = time_taken;
-                        rfit_rss_delta_kb_manual = rss_mem_used;
-                        rfit_virt_delta_kb_manual = virt_mem_used;
-                    }
+
+                    all_raw_data.push(RawBenchDataPoint {
+                        scenario_name: name.to_string(),
+                        n_samples,
+                        n_features,
+                        backend_name: current_backend_name.clone(),
+                        iteration_idx: i,
+                        run_type: "rfit".to_string(),
+                        time_sec: time_taken,
+                        rss_delta_kb: rss_mem_used,
+                        virt_delta_kb: virt_mem_used,
+                        n_components_override,
+                    });
+                    
                 }
                 total_duration
             });
         });
         rfit_group.finish();
 
-        let backend_name = if cfg!(feature = "backend_faer") { "faer".to_string() } else { "ndarray".to_string() };
-        collected_results_for_csv.push(BenchResult {
-            scenario_name: name.to_string(),
-            n_samples,
-            n_features,
-            fit_time: _fit_time_manual,
-            fit_rss_delta_kb: _fit_rss_delta_kb_manual, 
-            fit_virt_delta_kb: _fit_virt_delta_kb_manual,
-            rfit_time: rfit_time_manual,
-            rfit_rss_delta_kb: rfit_rss_delta_kb_manual, 
-            rfit_virt_delta_kb: rfit_virt_delta_kb_manual,
-            backend_name,
-            n_components_override,
-        });
     }
     
-    // After all benchmarks, print and save CSV
-    print_summary_table(&collected_results_for_csv);
-    if let Err(e) = append_results_to_csv(&collected_results_for_csv, "benchmark_results.csv") {
-        eprintln!("Failed to write benchmark results to CSV: {}", e);
+
+    if let Err(e) = write_raw_data_to_tsv(&all_raw_data, "benchmark_raw_results.tsv") {
+        eprintln!("Failed to write raw benchmark data to TSV: {}", e);
     }
 }
 
