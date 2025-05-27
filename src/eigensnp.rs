@@ -989,10 +989,14 @@ impl EigenSNPCoreAlgorithm {
         let vt_rot_k_eff_by_k_initial_from_svd = svd_output.vt.ok_or_else(||
              Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V_rot.T (from S_intermediate) not returned")) as ThreadSafeStdError)?;
 
+        let mut u_rot_n_by_k_eff = u_rot_n_by_k_eff_from_svd;
+        let mut s_prime_singular_values_k_eff = s_prime_singular_values_k_eff_from_svd;
+        let mut vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial_from_svd;
+
         // --- Determine consistent number of effective components (num_components_to_process) ---
-        let k_eff_from_u = u_rot_n_by_k_eff_from_svd.ncols();
-        let k_eff_from_s = s_prime_singular_values_k_eff_from_svd.len();
-        // vt_rot_k_eff_by_k_initial_from_svd is k_eff_from_s x K_initial. 
+        let k_eff_from_u = u_rot_n_by_k_eff.ncols();
+        let k_eff_from_s = s_prime_singular_values_k_eff.len();
+        // vt_rot_k_eff_by_k_initial is k_eff_from_s x K_initial.
         // The number of components it implies for V_rot (its transpose's columns) is k_eff_from_s.
         
         let num_components_to_process = k_eff_from_u.min(k_eff_from_s);
@@ -1016,19 +1020,24 @@ impl EigenSNPCoreAlgorithm {
 
         // Slice SVD outputs if necessary to ensure consistent dimensions
         if k_eff_from_u > num_components_to_process {
-            u_rot_n_by_k_eff = u_rot_n_by_k_eff.slice_axis(Axis(1), s![0..num_components_to_process]).into_owned();
+            // Assign to the mutable variable u_rot_n_by_k_eff
+            u_rot_n_by_k_eff = u_rot_n_by_k_eff.slice_axis(Axis(1), ndarray::Slice::from(0..num_components_to_process)).into_owned();
         }
         if k_eff_from_s > num_components_to_process {
+            // Assign to the mutable variable s_prime_singular_values_k_eff
             s_prime_singular_values_k_eff = s_prime_singular_values_k_eff.slice(s![0..num_components_to_process]).into_owned();
-            vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial.slice_axis(Axis(0), s![0..num_components_to_process]).into_owned();
+            // Assign to the mutable variable vt_rot_k_eff_by_k_initial
+            vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial.slice_axis(Axis(0), ndarray::Slice::from(0..num_components_to_process)).into_owned();
         }
         
         // Final Sample Scores: S_final^* = U_small * Sigma_small
         // Achieved by scaling columns of U_small by Sigma_small
+        // u_rot_n_by_k_eff is already mutable and correctly sliced.
         let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // Now N x num_components_to_process
 
         if num_components_to_process > 0 {
             for k_idx in 0..num_components_to_process {
+                // s_prime_singular_values_k_eff is already mutable and correctly sliced.
                 let singular_value_for_scaling = s_prime_singular_values_k_eff[k_idx];
                 let mut score_column_to_scale = final_sample_scores_n_by_k_eff_f32.column_mut(k_idx);
                 score_column_to_scale.mapv_inplace(|element_val| element_val * singular_value_for_scaling);
@@ -1036,12 +1045,14 @@ impl EigenSNPCoreAlgorithm {
         }
         
         // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x num_components_to_process) -> D x num_components_to_process
+        // vt_rot_k_eff_by_k_initial is already mutable and correctly sliced.
         let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned(); // Now K_initial x num_components_to_process
         let final_snp_loadings_d_by_k_eff_f32 = v_qr_loadings_d_by_k.dot(&v_rot_k_initial_by_k_eff);
         
         // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (num_components_to_process length, f64)
+        // s_prime_singular_values_k_eff is already mutable and correctly sliced.
         let denominator_n_minus_1 = (num_total_qc_samples as f64 - 1.0).max(1.0);
-        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| { // s_prime_singular_values_k_eff is now num_components_to_process long
+        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| {
             let s_val_f64 = s_val as f64;
             (s_val_f64 * s_val_f64) / denominator_n_minus_1
         });
@@ -1221,7 +1232,7 @@ impl EigenSNPCoreAlgorithm {
         let compute_u_for_b = request_u_components; // U_A = Q_basis * U_B, so U_B is needed if U_A is.
         let compute_v_for_b = request_v_components; // V_A = V_B, so V_B (from V_B.T) is needed if V_A is.
 
-        use crate::linalg_backends::LinAlgSvdOutput; // Ensure this type is available or use its definition
+        use crate::linalg_backends::SVDOutput; // Ensure this type is available or use its definition
 
         let svd_result_b = backend.svd_into(projected_b_l_actual_by_n.into_owned(), compute_u_for_b, compute_v_for_b);
     
@@ -1237,7 +1248,7 @@ impl EigenSNPCoreAlgorithm {
                         e_svd
                     );
                     // Create an empty SvdOutput structure
-                    LinAlgSvdOutput {
+                    SVDOutput {
                         u: if compute_u_for_b { Some(Array2::zeros((q_basis_m_by_l_actual.ncols(), 0))) } else { None },
                         s: Array1::<f32>::zeros(0), // Assuming f32 context, A::Real would be f32
                         vt: if compute_v_for_b { Some(Array2::zeros((0, matrix_features_by_samples.ncols()))) } else { None },
