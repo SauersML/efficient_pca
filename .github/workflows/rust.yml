@@ -44,37 +44,80 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/rust.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy scikit-learn scipy
 
+      - name: Cache gfortran apt package
+        uses: actions/cache@v4
+        id: cache-gfortran
+        if: matrix.backend == 'openblas' || matrix.backend == 'faer' # Only run this step if gfortran is needed
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: ${{ runner.os }}-apt-gfortran-${{ hashFiles('**/rust.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-gfortran-
+
       - name: Install Fortran compiler
         if: matrix.backend == 'openblas' || matrix.backend == 'faer'
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y gfortran
+          if [[ "${{ steps.cache-gfortran.outputs.cache-hit }}" != 'true' ]]; then
+            sudo apt-get update -qq
+          fi
+          sudo apt-get install -y gfortran
 
-      - name: Install Intel MKL
+      - name: Setup Intel MKL Repository
         if: matrix.backend == 'mkl'
         run: |
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | 
             sudo gpg --dearmor --output /usr/share/keyrings/intel-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/intel-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | 
             sudo tee /etc/apt/sources.list.d/oneAPI.list
-          sudo apt-get update -qq
+
+      - name: Cache Intel MKL apt package
+        uses: actions/cache@v4
+        id: cache-mkl
+        if: matrix.backend == 'mkl'
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: ${{ runner.os }}-apt-mkl-${{ hashFiles('**/rust.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-mkl-
+
+      - name: Install Intel MKL
+        if: matrix.backend == 'mkl'
+        run: |
+          if [[ "${{ steps.cache-mkl.outputs.cache-hit }}" != 'true' ]]; then
+            sudo apt-get update -qq
+          fi
           sudo apt-get install -y intel-oneapi-mkl-devel
           echo "MKL_ROOT=/opt/intel/oneapi/mkl/latest" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib/intel64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
-      - name: Cache dependencies
+      - name: Cache Cargo registry, git, and target directories
         uses: actions/cache@v4
+        id: cache-cargo
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.backend }}-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.backend }}-${{ hashFiles('**/Cargo.toml') }}-
             ${{ runner.os }}-cargo-${{ matrix.backend }}-
             ${{ runner.os }}-cargo-
 
