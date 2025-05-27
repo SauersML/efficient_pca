@@ -256,7 +256,7 @@ mod eigensnp_integration_tests {
                 let eig_array2 = parse_section::<f64>(&mut lines, Some(1))?;
                 // Convert N_eig x 1 Array2 to Array1 of length N_eig
             let eig_len = eig_array2.len(); // Store length before move
-            py_eigenvalues = Some(eig_array2.into_shape_with_order((eig_len,), ndarray::Order::C).expect("Failed to reshape py_eigenvalues"));
+            py_eigenvalues = Some(eig_array2.into_shape_with_order((eig_len,)).expect("Failed to reshape py_eigenvalues"));
             }
         }
         
