@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.stats as stats
-import itertools # Added for combinations
+import itertools # for combinations
 import glob
 import os
 import re
@@ -251,9 +251,6 @@ def generate_plots(df_raw, stats_results_df):
 
                 for run_type_to_annotate in run_types_in_plot: # e.g., 'fit', then 'rfit'
                     # Determine the x-offset for this specific run_type's violins
-                    # If 'fit' is typically left (-offset) and 'rfit' is right (+offset)
-                    # This assumes 'fit' and 'rfit' are the only two run types and are ordered consistently
-                    # Or, more robustly, map run_type to its offset if there could be more or different runtypes
                     x_offset_for_run_type = -violin_hue_offset if run_type_to_annotate == 'fit' else violin_hue_offset
                     # A small check if only one run_type is present, then center it (offset=0)
                     if len(run_types_in_plot) == 1: x_offset_for_run_type = 0
@@ -624,10 +621,6 @@ def main():
 
     print("\nStatistical Test Summary:")
     if stats_results_df is not None and not stats_results_df.empty:
-        # Optionally filter or sort before printing/saving for clarity
-        # For example, to see only Mann-Whitney results for plots:
-        # mw_results = stats_results_df[stats_results_df['TestType'] == 'Mann-Whitney U (fit vs rfit)']
-        # print(mw_results.to_string())
         print(stats_results_df.to_string())
         stats_file_path = os.path.join(OUTPUT_DIR, "statistical_analysis_summary.tsv")
         try:
