@@ -212,7 +212,7 @@ jobs:
   analyze_benchmarks:
     runs-on: ubuntu-latest
     needs: test
-    if: success() # Ensures 'test' job (all matrix legs) completed successfully
+    if: success() # 'test' job (all matrix legs) completed successfully
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
         with:
           # Pattern to download all raw benchmark TSVs from different backends
           pattern: raw-benchmark-results-*.tsv 
-          path: benches/benchmark_artifacts/ # Ensure this matches script's input dir
+          path: benches/benchmark_artifacts/ # this matches script's input dir
           # 'merge-multiple' is true by default if 'name' is not given and 'pattern' is.
           # This should place all downloaded files into the 'path' directory.
 
