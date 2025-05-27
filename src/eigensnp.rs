@@ -1212,8 +1212,36 @@ impl EigenSNPCoreAlgorithm {
         let compute_u_for_b = request_u_components; // U_A = Q_basis * U_B, so U_B is needed if U_A is.
         let compute_v_for_b = request_v_components; // V_A = V_B, so V_B (from V_B.T) is needed if V_A is.
 
-        let svd_output_b = backend.svd_into(projected_b_l_actual_by_n.into_owned(), compute_u_for_b, compute_v_for_b)
-            .map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of projected matrix B failed in RSVD: {}", e_svd))) as ThreadSafeStdError)?;
+        use crate::linalg_backends::LinAlgSvdOutput; // Ensure this type is available or use its definition
+
+        let svd_result_b = backend.svd_into(projected_b_l_actual_by_n.into_owned(), compute_u_for_b, compute_v_for_b);
+    
+        let svd_output_b = match svd_result_b {
+            Ok(output) => output,
+            Err(e_svd) => {
+                // Check if the error message string contains typical ndarray-linalg error indicators
+                // This is a bit heuristic as we don't have the exact error type here easily.
+                let error_string = format!("{}", e_svd);
+                if error_string.contains("LinalgError") || error_string.contains("NonConverged") || error_string.contains("IllegalParameter") {
+                    warn!(
+                        "RSVD: SVD of projected matrix B failed (likely due to low rank or numerical issues): {}. Proceeding with 0 components from this SVD.",
+                        e_svd
+                    );
+                    // Create an empty SvdOutput structure
+                    LinAlgSvdOutput {
+                        u: if compute_u_for_b { Some(Array2::zeros((q_basis_m_by_l_actual.ncols(), 0))) } else { None },
+                        s: Array1::<f32>::zeros(0), // Assuming f32 context, A::Real would be f32
+                        vt: if compute_v_for_b { Some(Array2::zeros((0, matrix_features_by_samples.ncols()))) } else { None },
+                    }
+                } else {
+                    // If it's some other error, propagate it
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("SVD of projected matrix B failed in RSVD: {}", e_svd),
+                    )) as ThreadSafeStdError);
+                }
+            }
+        };
         
         let mut u_a_approx_opt: Option<Array2<f32>> = None;
         let mut s_a_approx_opt: Option<Array1<f32>> = None;
