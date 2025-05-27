@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.stats as stats
+import itertools # for combinations
 import glob
 import os
 import re
@@ -165,29 +166,47 @@ def generate_plots(df_raw, stats_results_df):
             ax.tick_params(axis='y', labelsize=10)
             
             current_handles, current_labels = ax.get_legend_handles_labels()
-            num_hue_levels = len(scenario_df['RunType'].unique())
-            if len(current_handles) > num_hue_levels: # Avoid duplicate legend items from stripplot
+            num_hue_levels = len(scenario_df['RunType'].unique()) # Expected: fit, rfit
+            run_types_in_plot = scenario_df['RunType'].unique() # Actual run types in current data
+
+            if len(current_handles) > num_hue_levels: 
                  ax.legend(current_handles[:num_hue_levels], current_labels[:num_hue_levels], title='Run Type', loc='upper right')
             else:
                  ax.legend(title='Run Type', loc='upper right')
 
-
+            # Initial y-limit calculations based on data
             y_min_data, y_max_data = scenario_df[metric].min(), scenario_df[metric].max()
-            if pd.isna(y_min_data) or pd.isna(y_max_data): # If metric data is all NaN
-                y_min_data, y_max_data = ax.get_ylim() # Fallback to current plot limits
+            if pd.isna(y_min_data) or pd.isna(y_max_data): 
+                y_min_data_current, y_max_data_current = ax.get_ylim()
+                y_min_data = y_min_data_current if pd.isna(y_min_data) else y_min_data
+                y_max_data = y_max_data_current if pd.isna(y_max_data) else y_max_data
+
 
             plot_y_range = y_max_data - y_min_data
-            if plot_y_range == 0 or pd.isna(plot_y_range): plot_y_range = abs(y_max_data) if pd.notna(y_max_data) else 1.0
+            if pd.isna(plot_y_range) or plot_y_range == 0: plot_y_range = abs(y_max_data) if pd.notna(y_max_data) else 1.0
+
+            # --- Annotation Y-Positioning Setup ---
+            # Global max Y used by any annotation, starts above the highest data point
+            current_overall_max_y_annotations = y_max_data + plot_y_range * 0.05 
+            # Vertical step for stacking annotations
+            annotation_y_step_vertical = plot_y_range * 0.03 
+            # Small horizontal offset for violin centers if comparing within a backend group
+            violin_hue_offset = 0.2 
 
 
-            annotation_y_offset_initial = plot_y_range * 0.05 
-            annotation_y_step = plot_y_range * 0.03 
-            current_max_y_for_annotations = y_max_data 
+            # --- 1. Intra-Backend Annotations (fit vs rfit) ---
+            for i, backend_name_to_annotate in enumerate(backend_order):
+                # Max data point for this specific backend (across its fit/rfit)
+                # This helps place the first annotation for this backend relative to its own data.
+                backend_specific_max_y = scenario_df[scenario_df['BackendName'] == backend_name_to_annotate][metric].max()
+                if pd.isna(backend_specific_max_y): backend_specific_max_y = y_max_data # Fallback
 
-            for i, backend_name in enumerate(backend_order):
+                # Initial line_y for this backend's annotation, ensuring it's above its data AND current global max annotation y
+                line_y = max(backend_specific_max_y + plot_y_range * 0.05, current_overall_max_y_annotations + annotation_y_step_vertical)
+                
                 test_result_row = stats_results_df[
                     (stats_results_df['ScenarioName'] == scenario) &
-                    (stats_results_df['BackendName'] == backend_name) &
+                    (stats_results_df['BackendName'] == backend_name_to_annotate) & # Note: This was 'backend_name' before, changed to 'backend_name_to_annotate' for clarity
                     (stats_results_df['Metric'] == metric) &
                     (stats_results_df['TestType'] == 'Mann-Whitney U (fit vs rfit)')
                 ]
@@ -205,26 +224,76 @@ def generate_plots(df_raw, stats_results_df):
                         # print(f"Skipping annotation for {scenario}/{backend_name}/{metric} (p-value is NaN, no error reported)")
                         annotation_text = "n/a (no test)" # p-value is NaN, no specific error
 
-                    # Determine y for annotation elements
-                    backend_metric_data = scenario_df[(scenario_df['BackendName'] == backend_name)][metric]
-                    y_max_for_backend = backend_metric_data.max() if not backend_metric_data.empty else y_max_data
-                    if pd.isna(y_max_for_backend): y_max_for_backend = y_max_data
-
-                    line_y = max(y_max_for_backend + annotation_y_offset_initial, current_max_y_for_annotations + annotation_y_step)
-                    text_y = line_y + annotation_y_step * 0.5 
+                    # Determine y for annotation elements (line_y already calculated)
+                    text_y = line_y + annotation_y_step_vertical * 0.5                     
                     
-                    x1 = i - 0.2  # Approximate x for 'fit' (left violin of the pair)
-                    x2 = i + 0.2  # Approximate x for 'rfit' (right violin of the pair)
+                    # X-coordinates for the 'fit' and 'rfit' violins within this backend group
+                    x_fit = i - violin_hue_offset  
+                    x_rfit = i + violin_hue_offset 
                     
                     cap_height = plot_y_range * 0.01
-                    ax.plot([x1, x1, x2, x2], [line_y - cap_height, line_y, line_y, line_y - cap_height], lw=1.0, color='dimgray')
-                    ax.text((x1 + x2) / 2, text_y, annotation_text, ha='center', va='bottom', fontsize=8, color='dimgray') # Smaller font
+                    ax.plot([x_fit, x_fit, x_rfit, x_rfit], [line_y - cap_height, line_y, line_y, line_y - cap_height], lw=1.0, color='dimgray')
+                    ax.text((x_fit + x_rfit) / 2, text_y, annotation_text, ha='center', va='bottom', fontsize=8, color='dimgray') 
                     
-                    current_max_y_for_annotations = text_y # Update for next annotation to be placed above this one
+                    current_overall_max_y_annotations = max(current_overall_max_y_annotations, text_y) # Update global max Y
+
+            # --- 2. Inter-Backend Annotations (BackendA vs BackendB for each RunType) ---
+            # Filter for inter-backend test results for the current scenario and metric
+            inter_backend_stats = stats_results_df[
+                (stats_results_df['ScenarioName'] == scenario) &
+                (stats_results_df['Metric'] == metric) &
+                (stats_results_df['TestType'] == 'Mann-Whitney U (inter-backend)')
+            ]
+
+            if not inter_backend_stats.empty:
+                # Increment y position to start inter-backend annotations above intra-backend ones
+                current_overall_max_y_annotations += annotation_y_step_vertical * 2 # Add a larger gap
+
+                for run_type_to_annotate in run_types_in_plot: # e.g., 'fit', then 'rfit'
+                    # Determine the x-offset for this specific run_type's violins
+                    x_offset_for_run_type = -violin_hue_offset if run_type_to_annotate == 'fit' else violin_hue_offset
+                    # A small check if only one run_type is present, then center it (offset=0)
+                    if len(run_types_in_plot) == 1: x_offset_for_run_type = 0
+
+
+                    backend_pairs = itertools.combinations(backend_order, 2)
+                    for b1_name, b2_name in backend_pairs:
+                        idx1 = backend_order.index(b1_name)
+                        idx2 = backend_order.index(b2_name)
+
+                        # Retrieve p-value, checking both (b1,b2) and (b2,b1) for Backend1/Backend2
+                        p_value_row = inter_backend_stats[
+                            (inter_backend_stats['RunType'] == run_type_to_annotate) &
+                            (
+                                ((inter_backend_stats['Backend1'] == b1_name) & (inter_backend_stats['Backend2'] == b2_name)) |
+                                ((inter_backend_stats['Backend1'] == b2_name) & (inter_backend_stats['Backend2'] == b1_name))
+                            )
+                        ]
+
+                        if not p_value_row.empty:
+                            p_value = p_value_row['P-Value'].iloc[0]
+                            error_msg = p_value_row['Error'].iloc[0] if 'Error' in p_value_row.columns and pd.notna(p_value_row['Error'].iloc[0]) else None
+                            
+                            annotation_text = "Test Error" if error_msg else (format_p_value(p_value) if pd.notna(p_value) else "n/a (inter)")
+
+                            # Position new annotation line
+                            line_y = current_overall_max_y_annotations + annotation_y_step_vertical
+                            text_y = line_y + annotation_y_step_vertical * 0.5
+
+                            # X-coordinates for the violins of specific run_type being compared
+                            x1_anno = idx1 + x_offset_for_run_type
+                            x2_anno = idx2 + x_offset_for_run_type
+                            
+                            cap_height = plot_y_range * 0.01
+                            ax.plot([x1_anno, x1_anno, x2_anno, x2_anno], [line_y - cap_height, line_y, line_y, line_y - cap_height], lw=1.0, color='darkslateblue') # Different color
+                            ax.text((x1_anno + x2_anno) / 2, text_y, annotation_text, ha='center', va='bottom', fontsize=8, color='darkslateblue')
+                            
+                            current_overall_max_y_annotations = text_y # Update global max Y
 
             # Adjust overall plot limits after all annotations
-            final_y_min, final_y_max = ax.get_ylim()
-            ax.set_ylim(final_y_min, max(final_y_max, current_max_y_for_annotations + annotation_y_offset_initial))
+            final_y_min, final_y_max = ax.get_ylim() # Get current limits which might have been auto-adjusted by plot calls
+            # Ensure final y_max accommodates all annotations, and y_min is the data minimum
+            ax.set_ylim(y_min_data - plot_y_range * 0.05, max(final_y_max, current_overall_max_y_annotations + plot_y_range * 0.05) )
             
             plt.tight_layout()
             
@@ -239,8 +308,9 @@ def generate_plots(df_raw, stats_results_df):
 
 def perform_statistical_tests(df_raw):
     """
-    Performs Kruskal-Wallis tests for overall backend comparison (within a run_type for key scenarios)
-    and pairwise Mann-Whitney U tests comparing 'fit' vs 'rfit' for each backend (for all scenarios).
+    Performs Kruskal-Wallis tests for overall backend comparison (within a run_type for key scenarios),
+    pairwise Mann-Whitney U tests comparing 'fit' vs 'rfit' for each backend (for all scenarios),
+    and pairwise Mann-Whitney U tests comparing all unique backend combinations (for all scenarios and runtypes).
     """
     if df_raw.empty:
         print("Warning: Raw data is empty. Skipping statistical tests.")
@@ -314,10 +384,83 @@ def perform_statistical_tests(df_raw):
                     results_list.append({**base_record, 'U-Statistic': u_stat, 'P-Value': p_value, 'Error': None})
                 except ValueError as e: 
                     results_list.append({**base_record, 'U-Statistic': np.nan, 'P-Value': np.nan, 'Error': str(e)})
+
+    # Pairwise Mann-Whitney U tests (Inter-Backend comparisons for each Scenario, RunType, Metric)
+    for scenario in all_scenarios:
+        for run_type in all_runtypes:
+            for metric in metrics_to_test:
+                # Filter data for the current scenario, run_type, and metric
+                current_data_df = df_raw[
+                    (df_raw['ScenarioName'] == scenario) &
+                    (df_raw['RunType'] == run_type) &
+                    df_raw[metric].notna()
+                ]
+
+                if current_data_df.empty:
+                    continue
+
+                unique_backends_for_test = current_data_df['BackendName'].unique()
+                if len(unique_backends_for_test) < 2:
+                    continue # Not enough backends to compare
+
+                # Generate combinations of backends
+                backend_pairs = itertools.combinations(unique_backends_for_test, 2)
+
+                for backend1_name, backend2_name in backend_pairs:
+                    base_record_inter_backend = {
+                        'ScenarioName': scenario, 
+                        'RunType': run_type, 
+                        'Metric': metric,
+                        'TestType': 'Mann-Whitney U (inter-backend)',
+                        'Backend1': backend1_name,
+                        'Backend2': backend2_name
+                    }
+
+                    data1 = current_data_df[current_data_df['BackendName'] == backend1_name][metric]
+                    data2 = current_data_df[current_data_df['BackendName'] == backend2_name][metric]
+
+                    if data1.empty or data2.empty:
+                        results_list.append({
+                            **base_record_inter_backend, 
+                            'U-Statistic': np.nan, 'P-Value': np.nan, 
+                            'Error': f'Insufficient data for {backend1_name} or {backend2_name}'
+                        })
+                        continue
+                    
+                    # Check for zero variance edge case (both groups constant and equal)
+                    # This might be handled by newer scipy, but explicit check can be robust
+                    if len(np.unique(data1)) == 1 and len(np.unique(data2)) == 1 and np.unique(data1)[0] == np.unique(data2)[0]:
+                        results_list.append({
+                            **base_record_inter_backend, 
+                            'U-Statistic': 0, # Or specific U for this case
+                            'P-Value': 1.0, 
+                            'Error': 'Both groups constant and equal'
+                        })
+                        continue
+
+                    try:
+                        u_stat, p_value = stats.mannwhitneyu(data1, data2, alternative='two-sided', use_continuity=True)
+                        results_list.append({
+                            **base_record_inter_backend, 
+                            'U-Statistic': u_stat, 'P-Value': p_value, 'Error': None
+                        })
+                    except ValueError as e:
+                        results_list.append({
+                            **base_record_inter_backend, 
+                            'U-Statistic': np.nan, 'P-Value': np.nan, 'Error': str(e)
+                        })
     
     if not results_list: # Ensure a DataFrame with correct columns is returned even if empty
+        # Update columns to include Backend1 and Backend2 for inter-backend tests
         return pd.DataFrame(columns=['ScenarioName', 'RunType', 'BackendName', 'Metric', 'TestType', 
-                                     'H-Statistic', 'P-Value', 'Error', 'U-Statistic', 'RunTypeComparison'])
+                                     'H-Statistic', 'P-Value', 'Error', 'U-Statistic', 'RunTypeComparison',
+                                     'Backend1', 'Backend2']) # Added Backend1, Backend2
+    
+    # Create DataFrame from results_list. Pandas will handle missing columns by filling with NaN.
+    # For example, Kruskal-Wallis results won't have 'Backend1', 'Backend2', 'RunTypeComparison'.
+    # Mann-Whitney (fit vs rfit) won't have 'Backend1', 'Backend2', 'H-Statistic'.
+    # Mann-Whitney (inter-backend) won't have 'BackendName' (overall), 'H-Statistic', 'RunTypeComparison'.
+    # This is acceptable as long as analysis of the output TSV handles these NaNs appropriately.
     return pd.DataFrame(results_list)
 
 
@@ -478,10 +621,6 @@ def main():
 
     print("\nStatistical Test Summary:")
     if stats_results_df is not None and not stats_results_df.empty:
-        # Optionally filter or sort before printing/saving for clarity
-        # For example, to see only Mann-Whitney results for plots:
-        # mw_results = stats_results_df[stats_results_df['TestType'] == 'Mann-Whitney U (fit vs rfit)']
-        # print(mw_results.to_string())
         print(stats_results_df.to_string())
         stats_file_path = os.path.join(OUTPUT_DIR, "statistical_analysis_summary.tsv")
         try:
