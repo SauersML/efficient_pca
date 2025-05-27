@@ -96,20 +96,6 @@ fn generate_low_variance_data(
         .expect("Shape mismatch in generate_low_variance_data")
 }
 
-
-/// Formats a memory size in KB into KB/MB/GB with 3 decimals where reasonable.
-fn format_memory_kb(mem_kb: u64) -> String {
-    if mem_kb < 1024 {
-        return format!("{} KB", mem_kb);
-    }
-    let mb = mem_kb as f64 / 1024.0;
-    if mb < 1024.0 {
-        return format!("{:.3} MB", mb);
-    }
-    let gb = mb / 1024.0;
-    format!("{:.3} GB", gb)
-}
-
 /// Runs `fit` or `rfit` on the provided data, returns (time_secs, memory_kb) measured.
 fn benchmark_pca(
     use_rfit: bool,
