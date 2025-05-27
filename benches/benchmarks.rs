@@ -12,9 +12,8 @@ use ndarray::Array2;
 use rand::distributions::{Uniform};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Write, BufWriter};
-use std::path::Path;
 use std::time::Instant;
 
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
@@ -179,7 +178,7 @@ fn benchmark_pca(
     let rss_delta_bytes = resident_after.saturating_sub(resident_before);
     let virt_delta_bytes = active_after.saturating_sub(active_before);
 
-    (duration, rss_delta_bytes / 1024, virt_delta_bytes / 1024) // Convert bytes to KB
+    (duration, (rss_delta_bytes / 1024) as u64, (virt_delta_bytes / 1024) as u64) // Convert bytes to KB
 }
 
 
