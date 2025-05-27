@@ -316,6 +316,13 @@ pub struct EigenSNPCoreAlgorithmConfig {
 
     /// Seed for the random number generator used in RSVD stages.
     pub random_seed: u64,
+
+    /// Defines the number of SNPs to process in each parallel strip/chunk during
+    /// stages like refined SNP loading calculation and intermediate score calculation.
+    /// This helps manage memory for very large SNP datasets by processing them
+    /// in smaller, more manageable vertical strips.
+    /// Must be greater than 0. A typical value might be 2000-10000.
+    pub snp_processing_strip_size: usize,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -332,6 +339,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             local_rsvd_sketch_oversampling: 10, 
             local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
+            snp_processing_strip_size: 2000, // Default based on previous hardcoded value
         }
     }
 }
@@ -608,6 +616,13 @@ impl EigenSNPCoreAlgorithm {
         all_local_bases: &[PerBlockLocalSnpBasis], 
         num_total_qc_samples: usize,
     ) -> Result<RawCondensedFeatures, ThreadSafeStdError> {
+        assert_eq!(
+            ld_block_specs.len(),
+            all_local_bases.len(),
+            "Mismatch between LD block specifications count ({}) and learned local bases count ({}). Ensure each LD block has a corresponding local basis entry.",
+            ld_block_specs.len(),
+            all_local_bases.len()
+        );
         info!(
             "Projecting {} total QC samples onto local bases to construct condensed feature matrix.",
             num_total_qc_samples
@@ -763,7 +778,10 @@ impl EigenSNPCoreAlgorithm {
             Array2::<f32>::zeros((num_total_pca_snps, num_computed_initial_pcs));
         let all_qc_sample_ids: Vec<QcSampleId> = (0..num_qc_samples).map(QcSampleId).collect();
         
-        let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
+        // Use the configured strip size, ensuring it's at least 1 and not more than total SNPs.
+        let snp_processing_strip_size = self.config.snp_processing_strip_size
+            .min(num_total_pca_snps)
+            .max(1);
         
         if snp_processing_strip_size > 0 {
             snp_loadings_before_ortho_pca_snps_by_components
@@ -851,7 +869,10 @@ impl EigenSNPCoreAlgorithm {
         }
 
         // --- B. Calculate Intermediate Scores (S_intermediate = X^T · V_qr) with f64 Accumulation ---
-        let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
+        // Use the configured strip size, ensuring it's at least 1 and not more than total SNPs.
+        let snp_processing_strip_size = self.config.snp_processing_strip_size
+            .min(num_total_pca_snps)
+            .max(1);
         let all_qc_sample_ids_for_scores: Vec<QcSampleId> =
             (0..num_total_qc_samples).map(QcSampleId).collect();
 
@@ -910,7 +931,7 @@ impl EigenSNPCoreAlgorithm {
                         (_, Err(e)) => Err(e),
                     }
                 },
-            )??; // Two question marks: one for reduce's Result, one for fold's inner Result.
+            )?; // Corrected: Only one ? needed as reduce itself returns a single Result.
 
         // --- C. Perform SVD on S_intermediate ---
         let s_intermediate_n_by_k_initial_f32_for_svd = s_intermediate_n_by_k_initial_f64.mapv(|x| x as f32);
@@ -943,8 +964,26 @@ impl EigenSNPCoreAlgorithm {
 
         // --- D. Calculate Final Scores, Loadings, and Eigenvalues ---
         // Final Sample Scores: S_final = U_rot * diag(s_prime) (N x k_eff)
-        let diag_s_prime = Array2::from_diag(&s_prime_singular_values_k_eff);
-        let final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff.dot(&diag_s_prime);
+        // This is S_final^* = U_small * Sigma_small
+        // We will achieve this by scaling columns of U_small (u_rot_n_by_k_eff) by Sigma_small (s_prime_singular_values_k_eff)
+        let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // u_rot_n_by_k_eff is N x k_eff
+
+        let num_effective_components_k_eff = final_sample_scores_n_by_k_eff_f32.ncols();
+        if num_effective_components_k_eff > 0 && s_prime_singular_values_k_eff.len() == num_effective_components_k_eff {
+            for k_idx in 0..num_effective_components_k_eff {
+                let singular_value_for_scaling = s_prime_singular_values_k_eff[k_idx];
+                let mut score_column_to_scale = final_sample_scores_n_by_k_eff_f32.column_mut(k_idx);
+                score_column_to_scale.mapv_inplace(|element_val| element_val * singular_value_for_scaling);
+            }
+        } else if num_effective_components_k_eff > 0 {
+            // This case implies a mismatch in expected dimensions, which shouldn't happen if SVD output is consistent.
+            // Log a warning, and the scores will remain unscaled from U_rot.
+            warn!(
+                "Mismatch between k_eff from U_rot ({} cols) and length of s_prime ({}). Scores will not be scaled by singular values.",
+                num_effective_components_k_eff,
+                s_prime_singular_values_k_eff.len()
+            );
+        }
 
         // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x k_eff) -> D x k_eff
         let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned();
