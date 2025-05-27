@@ -894,7 +894,7 @@ impl EigenSNPCoreAlgorithm {
                 let genotype_data_strip_f32 = genotype_data.get_standardized_snp_sample_block(
                     &snp_ids_in_strip,
                     &all_qc_sample_ids_for_scores,
-                ).map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get genotype block for strip {}-{}", strip_start_snp_idx, strip_end_snp_idx))) as ThreadSafeStdError)?; // D_strip x N (f32)
+                ).map_err(|_e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get genotype block for strip {}-{}", strip_start_snp_idx, strip_end_snp_idx))) as ThreadSafeStdError)?; // D_strip x N (f32)
                 
                 let v_qr_loadings_for_strip_f32 = v_qr_loadings_d_by_k
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // D_strip x K_initial (f32)
