@@ -40,7 +40,7 @@ rayon = "1.10.0"
 serde = { version = "1.0.219", features = ["derive"] }
 sysinfo = "0.33.1"
 tempfile = "3.20.0"
-jemalloc_ctl = "0.5"
+jemalloc-ctl = { version = "0.5.4", optional = true }
 
 [lib]
 name = "efficient_pca"
@@ -60,7 +60,7 @@ jemallocator = "0.5"
 
 [features]
 default = ["backend_openblas"]
-jemalloc = []
+jemalloc = ["jemalloc-ctl"]
 backend_openblas = ["ndarray-linalg/openblas-static"]
 backend_mkl = ["ndarray-linalg/intel-mkl-static"]
 backend_faer = ["faer_links_ndarray_static_openblas"]
