@@ -15,8 +15,8 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 
-const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // looser for cross-implementation comparison
-const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
 // Helper function for comparing Array2<f32>
 fn assert_f32_arrays_are_close(
@@ -256,7 +256,7 @@ mod eigensnp_integration_tests {
                 let eig_array2 = parse_section::<f64>(&mut lines, Some(1))?;
                 // Convert N_eig x 1 Array2 to Array1 of length N_eig
             let eig_len = eig_array2.len(); // Store length before move
-            py_eigenvalues = Some(eig_array2.into_shape((eig_len,)).unwrap()); // Use tuple for shape
+            py_eigenvalues = Some(eig_array2.into_shape_with_order((eig_len,), ndarray::Order::C).expect("Failed to reshape py_eigenvalues"));
             }
         }
         
@@ -575,9 +575,20 @@ mod eigensnp_integration_tests {
                 raw_genos[[r,c]] = rng.sample(Uniform::new(0.0, 3.0));
             }
         }
-        raw_genos.row_mut(2).assign(&(raw_genos.row(0).mapv(|x| x*0.5) + raw_genos.row(1).mapv(|x| x*0.2)));
-        raw_genos.row_mut(3).assign(&(raw_genos.row(0).mapv(|x| x*0.1) - raw_genos.row(1).mapv(|x| x*0.3)));
-        raw_genos.row_mut(4).assign(&(raw_genos.row(0).mapv(|x| x*0.8)));
+
+        // Fix for E0502: Separate RHS computation from LHS mutable borrow.
+        let row0_val_for_row2 = raw_genos.row(0).mapv(|x| x * 0.5);
+        let row1_val_for_row2 = raw_genos.row(1).mapv(|x| x * 0.2);
+        let rhs_for_row2 = &row0_val_for_row2 + &row1_val_for_row2;
+        raw_genos.row_mut(2).assign(&rhs_for_row2);
+
+        let row0_val_for_row3 = raw_genos.row(0).mapv(|x| x * 0.1);
+        let row1_val_for_row3 = raw_genos.row(1).mapv(|x| x * 0.3);
+        let rhs_for_row3 = &row0_val_for_row3 - &row1_val_for_row3;
+        raw_genos.row_mut(3).assign(&rhs_for_row3);
+
+        let rhs_for_row4 = raw_genos.row(0).mapv(|x| x * 0.8);
+        raw_genos.row_mut(4).assign(&rhs_for_row4);
         
         let standardized_genos = standardize_features_across_samples(raw_genos.clone());
         let test_data = TestDataAccessor::new(standardized_genos.clone());
