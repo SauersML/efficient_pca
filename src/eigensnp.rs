@@ -980,64 +980,73 @@ impl EigenSNPCoreAlgorithm {
             true, // compute V_rot_transposed
         ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of S_intermediate failed: {}", e_svd))) as ThreadSafeStdError)?;
 
-        let u_rot_n_by_k_eff = svd_output.u.ok_or_else(|| 
+        // Step C (SVD results) - Use original variable names as they are in the file
+        let u_rot_n_by_k_eff_from_svd = svd_output.u.ok_or_else(|| 
             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U_rot (from S_intermediate) not returned")) as ThreadSafeStdError)?;
         
-        let s_prime_singular_values_k_eff = svd_output.s; // k_eff length Array1<f32>
+        let s_prime_singular_values_k_eff_from_svd = svd_output.s; 
         
-        let vt_rot_k_eff_by_k_initial = svd_output.vt.ok_or_else(||
+        let vt_rot_k_eff_by_k_initial_from_svd = svd_output.vt.ok_or_else(||
              Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V_rot.T (from S_intermediate) not returned")) as ThreadSafeStdError)?;
 
-        let k_eff = s_prime_singular_values_k_eff.len();
-        if k_eff == 0 {
-            debug!("SVD of S_intermediate resulted in k_eff = 0 components. Returning empty results.");
+        // --- Determine consistent number of effective components (num_components_to_process) ---
+        let k_eff_from_u = u_rot_n_by_k_eff_from_svd.ncols();
+        let k_eff_from_s = s_prime_singular_values_k_eff_from_svd.len();
+        // vt_rot_k_eff_by_k_initial_from_svd is k_eff_from_s x K_initial. 
+        // The number of components it implies for V_rot (its transpose's columns) is k_eff_from_s.
+        
+        let num_components_to_process = k_eff_from_u.min(k_eff_from_s);
+
+        if k_eff_from_u != k_eff_from_s {
+            warn!(
+                "SVD of S_intermediate resulted in inconsistent k_eff: U_rot has {} components, S_prime has {} components. Processing minimum: {}.",
+                k_eff_from_u, k_eff_from_s, num_components_to_process
+            );
+        }
+        
+        if num_components_to_process == 0 {
+            debug!("SVD of S_intermediate resulted in num_components_to_process = 0. Returning empty results.");
             return Ok((
                 Array2::zeros((num_total_qc_samples, 0)),
                 Array1::zeros(0),
                 Array2::zeros((num_total_pca_snps, 0)),
             ));
         }
-        info!("SVD of S_intermediate yielded {} effective components (k_eff).", k_eff);
+        // --- D. Calculate Final Scores, Loadings, and Eigenvalues using num_components_to_process ---
 
-        // --- D. Calculate Final Scores, Loadings, and Eigenvalues ---
-        // Final Sample Scores: S_final = U_rot * diag(s_prime) (N x k_eff)
-        // This is S_final^* = U_small * Sigma_small
-        // We will achieve this by scaling columns of U_small (u_rot_n_by_k_eff) by Sigma_small (s_prime_singular_values_k_eff)
-        let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // u_rot_n_by_k_eff is N x k_eff
+        // Slice SVD outputs if necessary to ensure consistent dimensions
+        if k_eff_from_u > num_components_to_process {
+            u_rot_n_by_k_eff = u_rot_n_by_k_eff.slice_axis(Axis(1), s![0..num_components_to_process]).into_owned();
+        }
+        if k_eff_from_s > num_components_to_process {
+            s_prime_singular_values_k_eff = s_prime_singular_values_k_eff.slice(s![0..num_components_to_process]).into_owned();
+            vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial.slice_axis(Axis(0), s![0..num_components_to_process]).into_owned();
+        }
+        
+        // Final Sample Scores: S_final^* = U_small * Sigma_small
+        // Achieved by scaling columns of U_small by Sigma_small
+        let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // Now N x num_components_to_process
 
-        let num_effective_components_k_eff = final_sample_scores_n_by_k_eff_f32.ncols();
-        if num_effective_components_k_eff > 0 && s_prime_singular_values_k_eff.len() == num_effective_components_k_eff {
-            for k_idx in 0..num_effective_components_k_eff {
+        if num_components_to_process > 0 {
+            for k_idx in 0..num_components_to_process {
                 let singular_value_for_scaling = s_prime_singular_values_k_eff[k_idx];
                 let mut score_column_to_scale = final_sample_scores_n_by_k_eff_f32.column_mut(k_idx);
                 score_column_to_scale.mapv_inplace(|element_val| element_val * singular_value_for_scaling);
             }
-        } else if num_effective_components_k_eff > 0 {
-            // This case implies a mismatch in expected dimensions, which shouldn't happen if SVD output is consistent.
-            // Log a warning, and the scores will remain unscaled from U_rot.
-            warn!(
-                "Mismatch between k_eff from U_rot ({} cols) and length of s_prime ({}). Scores will not be scaled by singular values.",
-                num_effective_components_k_eff,
-                s_prime_singular_values_k_eff.len()
-            );
         }
-
-        // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x k_eff) -> D x k_eff
-        let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned();
-        // We need to ensure V_qr (D x K_initial) and V_rot (K_initial x k_eff) are compatible.
-        // If K_initial from V_qr is different from K_initial from V_rot (vt_rot.nrows()), this is an issue.
-        // The SVD on S_intermediate (N x K_initial) gives V_rot.T (k_eff x K_initial), so V_rot is (K_initial x k_eff).
-        // This matches.
+        
+        // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x num_components_to_process) -> D x num_components_to_process
+        let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned(); // Now K_initial x num_components_to_process
         let final_snp_loadings_d_by_k_eff_f32 = v_qr_loadings_d_by_k.dot(&v_rot_k_initial_by_k_eff);
         
-        // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (k_eff length, f64)
-        let denominator_n_minus_1 = (num_total_qc_samples as f64 - 1.0).max(1.0); // Avoid division by zero if N=1 or N=0 (though N=0 handled)
-        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| {
+        // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (num_components_to_process length, f64)
+        let denominator_n_minus_1 = (num_total_qc_samples as f64 - 1.0).max(1.0);
+        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| { // s_prime_singular_values_k_eff is now num_components_to_process long
             let s_val_f64 = s_val as f64;
             (s_val_f64 * s_val_f64) / denominator_n_minus_1
         });
 
-        // --- E. Sort Outputs ---
+        // --- E. Sort Outputs (all based on num_components_to_process) ---
         let mut an_eigenvalue_index_pairs: Vec<(f64, usize)> = final_eigenvalues_k_eff_f64
             .iter()
             .enumerate()
