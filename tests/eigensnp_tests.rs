@@ -119,7 +119,7 @@ mod eigensnp_integration_tests {
 
     impl TestDataAccessor {
         pub fn new(standardized_data: Array2<f32>) -> Self {
-            let num_samples = standardized_data.ncols();
+            // The line `let num_samples = standardized_data.ncols();` has been removed.
             Self {
                 standardized_data,
             }

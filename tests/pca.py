@@ -29,7 +29,9 @@ def print_numpy_array_for_rust(arr):
         return
 
     if arr.ndim == 1:
-        print(" ".join(map(str, arr)))
+        # Print each element of the 1D array on a new line
+        for element in arr:
+            print(str(element))
     else: # 2D
         for row in arr:
             print(" ".join(map(str, row)))
