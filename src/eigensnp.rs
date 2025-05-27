@@ -237,6 +237,47 @@ fn standardize_raw_condensed_features(
     Ok(StandardizedCondensedFeatures { data: condensed_data_matrix })
 }
 
+// --- Helper functions for reordering ndarray structures ---
+
+/// Reorders the columns of a 2D array (`Array2`) based on a given slice of indices.
+/// Returns a new owned `Array2<T>` with columns in the specified order.
+///
+/// # Arguments
+/// * `matrix`: A reference to the `Array2<T>` whose columns are to be reordered.
+/// * `order`: A slice of `usize` representing the new order of columns.
+///            Each index in `order` refers to a column index in the original `matrix`.
+///
+/// # Panics
+/// This function will panic if any index in `order` is out of bounds for the columns of `matrix`.
+/// It also panics if `Array2::from_shape_vec` fails due to an invalid shape (e.g. for empty order).
+pub fn reorder_columns_owned<T: Clone>(matrix: &Array2<T>, order: &[usize]) -> Array2<T> {
+    if order.is_empty() {
+        // Return a matrix with the original number of rows but 0 columns.
+        // Ensure that if matrix.nrows() is 0, this still behaves correctly.
+        let shape = (matrix.nrows(), 0);
+        return Array2::from_shape_vec(shape, vec![]).expect("Shape error for empty order");
+    }
+    // `select` creates a view. We need an owned array.
+    matrix.select(Axis(1), order).to_owned()
+}
+
+/// Reorders the elements of a 1D array (`Array1`) based on a given slice of indices.
+/// Returns a new owned `Array1<T>` with elements in the specified order.
+///
+/// # Arguments
+/// * `array`: A reference to the `Array1<T>` whose elements are to be reordered.
+/// * `order`: A slice of `usize` representing the new order of elements.
+///            Each index in `order` refers to an element index in the original `array`.
+///
+/// # Panics
+/// This function will panic if any index in `order` is out of bounds for the elements of `array`.
+pub fn reorder_array_owned<T: Clone>(array: &Array1<T>, order: &[usize]) -> Array1<T> {
+    if order.is_empty() {
+        return Array1::from_vec(vec![]);
+    }
+    // `select` for Array1 is also along Axis(0).
+    array.select(Axis(0), order).to_owned()
+}
 
 // --- Main Algorithm Orchestrator Struct Definition ---
 
@@ -289,7 +330,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             global_pca_sketch_oversampling: 10,
             global_pca_num_power_iterations: 2,
             local_rsvd_sketch_oversampling: 10, 
-            local_rsvd_num_power_iterations: 1, 
+            local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
         }
     }
@@ -412,34 +453,37 @@ impl EigenSNPCoreAlgorithm {
 
         debug!("Starting Score-Guided Refinement with {} initial PCs.", num_computed_initial_pcs);
         let loadings_refinement_start_time = std::time::Instant::now();
-        let final_snp_loadings = self.compute_refined_snp_loadings(
+        let v_qr_snp_loadings = self.compute_refined_snp_loadings(
             genotype_data,
             &initial_sample_pc_scores,
         )?;
-        info!("Computed refined SNP loadings in {:?}", loadings_refinement_start_time.elapsed());
+        info!("Computed QR-based SNP loadings (intermediate V_qr) in {:?}", loadings_refinement_start_time.elapsed());
         
-        if final_snp_loadings.ncols() == 0 {
-            warn!("Refined SNP loadings resulted in 0 components. Returning empty PCA output.");
+        if v_qr_snp_loadings.ncols() == 0 {
+            warn!("Intermediate QR-based SNP loadings (V_qr) resulted in 0 components. Returning empty PCA output.");
             return Ok(EigenSNPCoreOutput {
-                final_snp_principal_component_loadings: final_snp_loadings, 
+                final_snp_principal_component_loadings: v_qr_snp_loadings, // This is D x 0
                 final_sample_principal_component_scores: Array2::zeros((num_total_qc_samples,0)),
                 final_principal_component_eigenvalues: Array1::zeros(0),
                 num_qc_samples_used: num_total_qc_samples,
-                num_pca_snps_used: num_total_pca_snps,
+                num_pca_snps_used: genotype_data.num_pca_snps(),
                 num_principal_components_computed: 0,
             });
         }
 
-        let final_scores_eigenvalues_start_time = std::time::Instant::now();
-        let (final_sample_scores, final_eigenvalues) =
-            self.compute_final_scores_and_eigenvalues(
-                genotype_data,
-                &final_snp_loadings.view(),
-                num_total_qc_samples,
-            )?;
-        info!("Computed final scores and eigenvalues in {:?}", final_scores_eigenvalues_start_time.elapsed());
+        let final_outputs_computation_start_time = std::time::Instant::now();
+        let (
+            final_sorted_sample_scores,
+            final_sorted_eigenvalues,
+            final_sorted_snp_loadings // This is the new, true final V
+        ) = self.compute_rotated_final_outputs(
+            genotype_data,
+            &v_qr_snp_loadings.view(), // Pass V_qr
+            num_total_qc_samples,
+        )?;
+        info!("Computed final rotated scores, eigenvalues, and loadings in {:?}", final_outputs_computation_start_time.elapsed());
 
-        let num_principal_components_computed_final = final_snp_loadings.ncols();
+        let num_principal_components_computed_final = final_sorted_snp_loadings.ncols();
 
         info!(
             "EigenSNP PCA completed in {:?}. Computed {} Principal Components.",
@@ -448,11 +492,11 @@ impl EigenSNPCoreAlgorithm {
         );
 
         Ok(EigenSNPCoreOutput {
-            final_snp_principal_component_loadings: final_snp_loadings,
-            final_sample_principal_component_scores: final_sample_scores,
-            final_principal_component_eigenvalues: final_eigenvalues,
+            final_snp_principal_component_loadings: final_sorted_snp_loadings,
+            final_sample_principal_component_scores: final_sorted_sample_scores,
+            final_principal_component_eigenvalues: final_sorted_eigenvalues,
             num_qc_samples_used: num_total_qc_samples,
-            num_pca_snps_used: num_total_pca_snps, // This should be D_blocked, need to track it
+            num_pca_snps_used: genotype_data.num_pca_snps(),
             num_principal_components_computed: num_principal_components_computed_final,
         })
     }
@@ -766,31 +810,44 @@ impl EigenSNPCoreAlgorithm {
         Ok(orthonormal_snp_loadings)
     }
 
-    fn compute_final_scores_and_eigenvalues<G: PcaReadyGenotypeAccessor>(
+    fn compute_rotated_final_outputs<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
-        orthonormal_snp_loadings_snps_by_components: &ArrayView2<f32>, 
+        v_qr_loadings_d_by_k: &ArrayView2<f32>, 
         num_total_qc_samples: usize,
-    ) -> Result<(Array2<f32>, Array1<f64>), ThreadSafeStdError> {
-        let num_total_pca_snps = orthonormal_snp_loadings_snps_by_components.nrows();
-        let num_final_computed_pcs = orthonormal_snp_loadings_snps_by_components.ncols();
+    ) -> Result<(Array2<f32>, Array1<f64>, Array2<f32>), ThreadSafeStdError> {
+        let num_total_pca_snps = v_qr_loadings_d_by_k.nrows();
+        let num_final_computed_pcs = v_qr_loadings_d_by_k.ncols();
 
         info!(
-            "Computing final sample scores ({} samples, {} PCs) and eigenvalues.",
+            "Computing final rotated outputs (scores, eigenvalues, loadings) for {} samples, {} PCs.",
             num_total_qc_samples, num_final_computed_pcs
         );
 
         if num_final_computed_pcs == 0 {
-            debug!("No final PCs to compute scores/eigenvalues for, returning empty results.");
-            return Ok((Array2::zeros((num_total_qc_samples, 0)), Array1::zeros(0)));
+            debug!("No final PCs to compute rotated outputs for, returning empty results.");
+            // Return types need to match the new signature (Array2<f32>, Array1<f64>, Array2<f32>)
+            return Ok((
+                Array2::zeros((num_total_qc_samples, 0)), 
+                Array1::zeros(0),
+                Array2::zeros((num_total_pca_snps, 0)) 
+            ));
         }
         if num_total_pca_snps == 0 {
-            debug!("No PCA SNPs available for final scores, returning empty results for {} PCs.", num_final_computed_pcs);
-            return Ok((Array2::zeros((num_total_qc_samples, num_final_computed_pcs)), Array1::zeros(num_final_computed_pcs)));
+            debug!("No PCA SNPs available for final rotated outputs, returning empty results for {} PCs.", num_final_computed_pcs);
+            return Ok((
+                Array2::zeros((num_total_qc_samples, num_final_computed_pcs)), 
+                Array1::zeros(num_final_computed_pcs),
+                Array2::zeros((0, num_final_computed_pcs))
+            ));
         }
         if num_total_qc_samples == 0 {
-            debug!("No QC samples available for final scores, returning empty results for {} PCs.", num_final_computed_pcs);
-            return Ok((Array2::zeros((0, num_final_computed_pcs)), Array1::zeros(num_final_computed_pcs)));
+            debug!("No QC samples available for final rotated outputs, returning empty results for {} PCs.", num_final_computed_pcs);
+            return Ok((
+                Array2::zeros((0, num_final_computed_pcs)), 
+                Array1::zeros(num_final_computed_pcs),
+                Array2::zeros((num_total_pca_snps, num_final_computed_pcs))
+            ));
         }
 
         let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
@@ -818,23 +875,23 @@ impl EigenSNPCoreAlgorithm {
                 let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
                     &snp_ids_in_strip_as_pca_ids,
                     &all_qc_sample_ids_for_final_scores,
-                ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final score computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor))) as ThreadSafeStdError)?; // M_strip x N
+                ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final rotated output computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor))) as ThreadSafeStdError)?; // M_strip x N
                 
-                let loadings_for_strip_snps_by_components = orthonormal_snp_loadings_snps_by_components
+                let v_qr_loadings_for_strip_d_by_k = v_qr_loadings_d_by_k
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
                 
-                // S_final_strip = X_strip^T V_final_strip
+                // S_unrotated_strip = X_strip^T V_qr_strip
                 // (M_strip x N)^T dot (M_strip x K) -> (N x M_strip) dot (M_strip x K) -> N x K
-                let scores_contribution_from_strip_n_by_k =
-                    genotype_data_strip_snps_by_samples.t().dot(&loadings_for_strip_snps_by_components);
+                let unrotated_scores_contribution_from_strip_n_by_k =
+                    genotype_data_strip_snps_by_samples.t().dot(&v_qr_loadings_for_strip_d_by_k);
                 
-                Ok(scores_contribution_from_strip_n_by_k)
+                Ok(unrotated_scores_contribution_from_strip_n_by_k)
             })
             .collect(); // Collects into Result<Vec<Array2<f32>>, ThreadSafeStdError>
 
         // Sum the contributions. If any map failed, propagate the error from collecting results.
         // Otherwise, reduce the vector of matrices.
-        let computed_final_sample_scores_samples_by_components: Array2<f32> = strip_score_contributions_results? // Yields Vec<Array2<f32>> or propagates error
+        let unrotated_sample_scores_n_by_k: Array2<f32> = strip_score_contributions_results? // Yields Vec<Array2<f32>> or propagates error
             .into_par_iter() // Convert Vec<Array2<f32>> to ParIter<Item = Array2<f32>>
             .reduce( // Reduce on ParIter. Returns Self::Item (i.e., Array2<f32>).
                 // The identity function provides the initial value for reduction tasks,
@@ -846,23 +903,43 @@ impl EigenSNPCoreAlgorithm {
                 },
             ); // The result of reduce is directly Array2<f32>.
 
-        let mut computed_final_pc_eigenvalues = Array1::<f64>::zeros(num_final_computed_pcs);
+        // Now, perform SVD on S_unrotated = U_S * Sigma_S * V_S^T
+        // S_unrotated is N x K
+        // U_S (final scores) will be N x K
+        // Sigma_S (sqrt of eigenvalues) will be K
+        // V_S (rotation matrix) will be K x K
+        let backend = LinAlgBackendProvider::<f32>::new();
+        let svd_of_unrotated_scores = backend.svd_into(
+            unrotated_sample_scores_n_by_k, // Consumes the matrix
+            true, // request U
+            true  // request V (which is V_S.T here)
+        ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of unrotated scores failed: {}", e_svd))) as ThreadSafeStdError)?;
+
+        let final_sorted_sample_scores_n_by_k = svd_of_unrotated_scores.u.ok_or_else(|| 
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U (final scores) not returned")) as ThreadSafeStdError)?;
+        
+        let singular_values_s_k = svd_of_unrotated_scores.s; // This is sigma_S_k
+
+        let rotation_matrix_v_s_k_by_k = svd_of_unrotated_scores.vt.ok_or_else(||
+             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V.T (rotation matrix) not returned")) as ThreadSafeStdError)?.t().into_owned();
+
+        // Calculate final eigenvalues: lambda_k = sigma_S_k^2 / (N-1)
+        let mut final_sorted_eigenvalues_k = Array1::<f64>::zeros(num_final_computed_pcs);
         if num_total_qc_samples > 1 {
             for k_idx in 0..num_final_computed_pcs {
-                let pc_scores_column_f64 = computed_final_sample_scores_samples_by_components
-                    .column(k_idx)
-                    .mapv(|val| val as f64);
-                
-                let sum_of_squares: f64 = pc_scores_column_f64.iter().map(|&val| val.powi(2)).sum();
-                computed_final_pc_eigenvalues[k_idx] = sum_of_squares / (num_total_qc_samples as f64 - 1.0);
+                final_sorted_eigenvalues_k[k_idx] = (singular_values_s_k[k_idx] as f64).powi(2) / (num_total_qc_samples as f64 - 1.0);
             }
-        } else if num_total_qc_samples == 1 && num_final_computed_pcs > 0 { 
-            computed_final_pc_eigenvalues.fill(0.0);
-        }
+        } // Else, eigenvalues remain 0.0 if N <= 1
 
-        debug!("Computed final eigenvalues: {:?}", computed_final_pc_eigenvalues);
-        info!("Computed final sample scores. Shape: {:?}", computed_final_sample_scores_samples_by_components.dim());
-        Ok((computed_final_sample_scores_samples_by_components, computed_final_pc_eigenvalues))
+        // Calculate final SNP loadings: V_final = V_qr * V_S
+        // (D x K) = (D x K) * (K x K)
+        let final_sorted_snp_loadings_d_by_k = v_qr_loadings_d_by_k.dot(&rotation_matrix_v_s_k_by_k);
+        
+        debug!("Computed final sorted eigenvalues: {:?}", final_sorted_eigenvalues_k);
+        info!("Computed final sorted sample scores. Shape: {:?}", final_sorted_sample_scores_n_by_k.dim());
+        info!("Computed final sorted SNP loadings. Shape: {:?}", final_sorted_snp_loadings_d_by_k.dim());
+
+        Ok((final_sorted_sample_scores_n_by_k, final_sorted_eigenvalues_k, final_sorted_snp_loadings_d_by_k))
     }
 
     /// Performs randomized SVD on a matrix A (matrix_features_by_samples, M x N).
