@@ -1,6 +1,6 @@
 // In tests/eigensnp_tests.rs
 
-use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis}; // Removed arr1, Ix1, Ix2, and ArrayView2
+use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // Added ArrayView2
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
