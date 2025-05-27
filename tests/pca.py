@@ -70,6 +70,7 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
 
         num_snps_d = data_snps_by_samples.shape[0]
         num_samples_n = data_snps_by_samples.shape[1]
+        print(f"DEBUG PYTHON received data_snps_by_samples (D_snps x N_samples, shape {data_snps_by_samples.shape}):\n{data_snps_by_samples}", file=sys.stderr)
 
         if num_snps_d == 0 or num_samples_n == 0:
             k_eff = 0 
@@ -81,10 +82,13 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
             print_numpy_array_for_rust(np.array([]))
             return
 
-        data_samples_by_snps = data_snps_by_samples.T
+        data_samples_by_snps = data_snps_by_samples.T # This is N_samples x D_snps
         
-        scaler = StandardScaler(with_mean=True, with_std=True)
-        data_standardized = scaler.fit_transform(data_samples_by_snps)
+        # Data is assumed to be already standardized by the Rust test.
+        # scaler = StandardScaler(with_mean=True, with_std=True)
+        # data_standardized = scaler.fit_transform(data_samples_by_snps)
+        # Directly use data_samples_by_snps as it's already standardized (N_samples x D_snps)
+        data_to_pca = data_samples_by_snps
 
         effective_n_components = min(n_components_val, num_samples_n, num_snps_d)
         if effective_n_components <= 0 : 
@@ -97,7 +101,8 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
             return
 
         pca = PCA(n_components=effective_n_components, svd_solver='full')
-        scores = pca.fit_transform(data_standardized)
+        # scores = pca.fit_transform(data_standardized)
+        scores = pca.fit_transform(data_to_pca) # Use the (already standardized) N_samples x D_snps data
         loadings = pca.components_
         eigenvalues = pca.explained_variance_
 
