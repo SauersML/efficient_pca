@@ -129,6 +129,8 @@ def generate_plots(df_raw):
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
+    sns.set_theme(style="whitegrid", palette="pastel") # Global Seaborn style
+
     for scenario in KEY_SCENARIOS_FOR_PLOTS_STATS:
         for run_type in ["fit", "rfit"]:
             scenario_df = df_raw[(df_raw['ScenarioName'] == scenario) & (df_raw['RunType'] == run_type)]
@@ -139,12 +141,15 @@ def generate_plots(df_raw):
             # TimeSec plot
             plt.figure(figsize=(10, 6))
             sns.boxplot(x='BackendName', y='TimeSec', data=scenario_df)
-            plt.title(f'Time Comparison for {scenario} - {run_type}')
-            plt.ylabel('Time (seconds)')
-            plt.xlabel('Backend')
+            plt.title(f'Execution Time: {scenario} - {run_type}', fontsize=16)
+            plt.ylabel('Time (seconds)', fontsize=12)
+            plt.xlabel('Backend', fontsize=12)
+            plt.xticks(fontsize=10)
+            plt.yticks(fontsize=10)
+            plt.tight_layout()
             plot_filename_time = os.path.join(OUTPUT_DIR, f'plot_time_{scenario}_{run_type}.png')
             try:
-                plt.savefig(plot_filename_time)
+                plt.savefig(plot_filename_time, dpi=150)
                 print(f"Saved plot: {plot_filename_time}")
             except Exception as e:
                 print(f"Error saving plot {plot_filename_time}: {e}")
@@ -153,12 +158,15 @@ def generate_plots(df_raw):
             # RSSDeltaKB plot
             plt.figure(figsize=(10, 6))
             sns.boxplot(x='BackendName', y='RSSDeltaKB', data=scenario_df)
-            plt.title(f'RSS Memory Comparison for {scenario} - {run_type}')
-            plt.ylabel('RSS Delta (KB)')
-            plt.xlabel('Backend')
+            plt.title(f'RSS Memory Usage: {scenario} - {run_type}', fontsize=16)
+            plt.ylabel('RSS Delta (KB)', fontsize=12)
+            plt.xlabel('Backend', fontsize=12)
+            plt.xticks(fontsize=10)
+            plt.yticks(fontsize=10)
+            plt.tight_layout()
             plot_filename_rss = os.path.join(OUTPUT_DIR, f'plot_rss_{scenario}_{run_type}.png')
             try:
-                plt.savefig(plot_filename_rss)
+                plt.savefig(plot_filename_rss, dpi=150)
                 print(f"Saved plot: {plot_filename_rss}")
             except Exception as e:
                 print(f"Error saving plot {plot_filename_rss}: {e}")
