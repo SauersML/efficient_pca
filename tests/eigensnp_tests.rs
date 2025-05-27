@@ -181,7 +181,7 @@ mod eigensnp_integration_tests {
     }
 
     // Function to write results to TSV
-    fn write_results_to_tsv() -> Result<(), std::io::Error> {
+    pub fn write_results_to_tsv() -> Result<(), std::io::Error> {
         let results = TEST_RESULTS.lock().unwrap();
         if results.is_empty() {
             return Ok(()); // No results to write
@@ -352,7 +352,7 @@ mod eigensnp_integration_tests {
             .map_err(|e| format!("Failed to create Array2: {}", e))
     }
 
-    fn parse_pca_py_output(output_str: &str) -> Result<(Array2<f32>, Array2<f32>, Array1<f64>), String> {
+    pub fn parse_pca_py_output(output_str: &str) -> Result<(Array2<f32>, Array2<f32>, Array1<f64>), String> {
         let mut lines = output_str.lines().peekable();
         
         let mut py_loadings: Option<Array2<f32>> = None;
@@ -389,7 +389,7 @@ mod eigensnp_integration_tests {
     }
 
     // Helper function for PC scores orthogonality tests to avoid code duplication
-    fn run_pc_scores_orthogonality_test(
+    pub fn run_pc_scores_orthogonality_test(
         test_name_str: &str,
         num_snps: usize,
         num_samples: usize,
@@ -559,7 +559,7 @@ mod eigensnp_integration_tests {
     }
 
     // Helper function for SNP loadings orthonormality tests
-    fn run_snp_loadings_orthonormality_test(
+    pub fn run_snp_loadings_orthonormality_test(
         test_name_str: &str,
         num_snps: usize,
         num_samples: usize,
@@ -707,7 +707,7 @@ mod eigensnp_integration_tests {
     }
 
     // Helper function for eigenvalue-score variance correspondence tests
-    fn run_eigenvalue_score_variance_correspondence_test(
+    pub fn run_eigenvalue_score_variance_correspondence_test(
         test_name_str: &str,
         num_snps: usize,
         num_samples: usize,
@@ -1182,11 +1182,11 @@ mod eigensnp_integration_tests {
 }
 
 // Helper function for Pearson Correlation
-fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f32> {
+pub fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f32> {
     if v1.len() != v2.len() || v1.is_empty() {
         return None;
     }
-    let n = v1.len() as f32;
+    let _n = v1.len() as f32; // Changed n to _n
     let mean1 = v1.mean().unwrap_or(0.0);
     let mean2 = v2.mean().unwrap_or(0.0);
     let mut cov = 0.0;
@@ -1220,7 +1220,7 @@ fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f32> 
 }
 
 // Helper function for PC correlation tests
-fn run_pc_correlation_with_truth_set_test(
+pub fn run_pc_correlation_with_truth_set_test(
     test_name_str: &str,
     num_snps: usize,      // D
     num_samples: usize,   // N
@@ -1417,7 +1417,7 @@ fn test_pc_correlation_with_truth_set_large_1000x200() {
 }
 
 // Helper function for generic large matrix execution tests
-fn run_generic_large_matrix_test(
+pub fn run_generic_large_matrix_test(
     test_name_str: &str,
     num_snps: usize,      // D
     num_samples: usize,   // N
@@ -1546,7 +1546,7 @@ fn test_large_matrix_1000x100_k5_blocksize_variation() {
 }
 
 // Helper function for sample projection accuracy tests
-fn run_sample_projection_accuracy_test(
+pub fn run_sample_projection_accuracy_test(
     test_name_str: &str,
     num_snps: usize,          // D
     num_samples_total: usize, // N_total

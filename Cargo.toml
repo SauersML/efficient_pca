@@ -57,7 +57,7 @@ linfa = "0.7.1"
 linfa-reduction = "0.7.1"
 ndarray_v15 = { version = "0.15.6", package = "ndarray" }
 jemallocator = "0.5"
-lazy_static = "1.4.0"
+lazy_static = "1.5.0"
 
 [features]
 default = ["backend_openblas"]
