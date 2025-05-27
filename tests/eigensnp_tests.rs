@@ -15,8 +15,8 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 
-const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
-const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // looser for cross-implementation comparison
+const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // looser for cross-implementation comparison
 
 // Helper function for comparing Array2<f32>
 fn assert_f32_arrays_are_close(
