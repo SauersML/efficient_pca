@@ -68,6 +68,7 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
             print_numpy_array_for_rust(np.array([]).reshape(num_samples_n_fallback, 0))
             print("EIGENVALUES:")
             print_numpy_array_for_rust(np.array([]))
+            print("DEBUG: PCA_PY Exiting early - data_snps_by_samples.size is 0", file=sys.stderr)
             return
 
         num_snps_d = data_snps_by_samples.shape[0]
@@ -81,6 +82,7 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
             print_numpy_array_for_rust(np.array([]).reshape(num_samples_n, k_eff))
             print("EIGENVALUES:")
             print_numpy_array_for_rust(np.array([]))
+            print("DEBUG: PCA_PY Exiting early - num_snps_d or num_samples_n is 0", file=sys.stderr)
             return
 
         data_samples_by_snps = data_snps_by_samples.T
@@ -96,19 +98,25 @@ def run_reference_pca_mode(n_components_val): # Renamed from run_rust_test_mode
             print_numpy_array_for_rust(np.array([]).reshape(num_samples_n, 0))
             print("EIGENVALUES:")
             print_numpy_array_for_rust(np.array([]))
+            print("DEBUG: PCA_PY Exiting early - effective_n_components <= 0", file=sys.stderr)
             return
 
         pca = PCA(n_components=effective_n_components, svd_solver='full')
         scores = pca.fit_transform(data_standardized)
         loadings = pca.components_
         eigenvalues = pca.explained_variance_
+        print(f"DEBUG: PCA_PY Computed shapes: Loadings {loadings.shape}, Scores {scores.shape}, Eigenvalues {eigenvalues.shape}", file=sys.stderr)
 
+        print("DEBUG: PCA_PY Pre-Loadings", file=sys.stderr)
         print("LOADINGS:")
         print_numpy_array_for_rust(loadings)
+        print("DEBUG: PCA_PY Post-Loadings, Pre-Scores", file=sys.stderr)
         print("SCORES:")
         print_numpy_array_for_rust(scores)
+        print("DEBUG: PCA_PY Post-Scores, Pre-Eigenvalues", file=sys.stderr)
         print("EIGENVALUES:")
         print_numpy_array_for_rust(eigenvalues)
+        print("DEBUG: PCA_PY Post-Eigenvalues", file=sys.stderr)
 
     except ValueError as e:
         print(f"Error in run_reference_pca_mode: {e}", file=sys.stderr)
