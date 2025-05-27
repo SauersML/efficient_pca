@@ -232,7 +232,8 @@ jobs:
         with:
           # Pattern to download all raw benchmark TSVs from different backends
           pattern: raw-benchmark-results-*.tsv 
-          path: benches/benchmark_artifacts # Changed this line
+          path: benches/benchmark_artifacts 
+          merge-multiple: true # Explicitly add this line
           # 'merge-multiple' is true by default if 'name' is not given and 'pattern' is.
           # This should place all downloaded files into the 'path' directory.
 

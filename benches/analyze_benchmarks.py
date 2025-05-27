@@ -256,15 +256,6 @@ def main():
     raw_df = load_data(ARTIFACTS_DIR)
     if raw_df.empty:
         print(f"No data loaded from {ARTIFACTS_DIR}. Exiting analysis script.")
-        # Create empty placeholder files to satisfy GitHub Actions if it expects them
-        placeholder_agg_file = os.path.join(OUTPUT_DIR, "consolidated_benchmark_analysis.tsv")
-        placeholder_stats_file = os.path.join(OUTPUT_DIR, "statistical_analysis_summary.tsv")
-        if not os.path.exists(placeholder_agg_file):
-             pd.DataFrame().to_csv(placeholder_agg_file, sep='\t', index=False)
-             print(f"Created empty placeholder: {placeholder_agg_file}")
-        if not os.path.exists(placeholder_stats_file):
-             pd.DataFrame().to_csv(placeholder_stats_file, sep='\t', index=False)
-             print(f"Created empty placeholder: {placeholder_stats_file}")
         return
 
     raw_df = clean_data(raw_df)
@@ -277,11 +268,6 @@ def main():
         print(f"Consolidated analysis TSV saved to: {agg_file_path}")
     else:
         print("Aggregated data is empty. Skipping saving consolidated_benchmark_analysis.tsv.")
-        # Create empty placeholder if it doesn't exist
-        placeholder_agg_file = os.path.join(OUTPUT_DIR, "consolidated_benchmark_analysis.tsv")
-        if not os.path.exists(placeholder_agg_file):
-             pd.DataFrame().to_csv(placeholder_agg_file, sep='\t', index=False)
-             print(f"Created empty placeholder: {placeholder_agg_file}")
 
 
     generate_plots(raw_df) 
@@ -295,11 +281,6 @@ def main():
         print(f"Statistical analysis summary saved to: {stats_file_path}")
     else:
         print("No statistical tests performed or no results generated.")
-        # Create empty placeholder if it doesn't exist
-        placeholder_stats_file = os.path.join(OUTPUT_DIR, "statistical_analysis_summary.tsv")
-        if not os.path.exists(placeholder_stats_file):
-             pd.DataFrame().to_csv(placeholder_stats_file, sep='\t', index=False)
-             print(f"Created empty placeholder: {placeholder_stats_file}")
 
 
 if __name__ == "__main__":
