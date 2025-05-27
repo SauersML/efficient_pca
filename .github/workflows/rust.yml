@@ -142,6 +142,14 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
           RUST_BACKTRACE: 1
 
+      - name: Upload eigensnp test summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eigensnp-test-results-${{ matrix.backend }}
+          path: target/test_artifacts/eigensnp_summary_results.tsv
+          retention-days: 7 # Optional: Keep for 7 days
+
       - name: Benchmark
         run: |
           if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
