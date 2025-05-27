@@ -511,7 +511,7 @@ mod eigensnp_integration_tests {
                     outcome_details: outcome_details.clone(),
                     notes,
                 };
-                TEST_RESULTS.lock().unwrap().push(record);
+                eigensnp_integration_tests::TEST_RESULTS.lock().unwrap().push(record);
 
             }
             Ok(Err(e)) => { // PCA computation itself failed
@@ -527,7 +527,7 @@ mod eigensnp_integration_tests {
                     outcome_details: outcome_details.clone(),
                     notes,
                 };
-                TEST_RESULTS.lock().unwrap().push(record);
+                eigensnp_integration_tests::TEST_RESULTS.lock().unwrap().push(record);
             }
             Err(e) => { // Panic during PCA computation or setup
                 test_successful = false;
@@ -542,7 +542,7 @@ mod eigensnp_integration_tests {
                     outcome_details: outcome_details.clone(),
                     notes,
                 };
-                TEST_RESULTS.lock().unwrap().push(record);
+                eigensnp_integration_tests::TEST_RESULTS.lock().unwrap().push(record);
             }
         }
         assert!(test_successful, "Test {} failed. Max off-diag: {:.2e}, Max diag-eig diff: {:.2e}. Details: {}", test_name, max_off_diagonal_cov, max_diag_eigenvalue_diff, outcome_details);
@@ -650,7 +650,7 @@ mod eigensnp_integration_tests {
                         outcome_details.push_str(&format!("Orthonormality checks failed. Max deviation from identity: {:.2e}. ", max_deviation_from_identity));
                     }
                 }
-                let record = TestResultRecord {
+                let record = eigensnp_integration_tests::TestResultRecord {
                     test_name: test_name.clone(),
                     num_features_d: num_snps,
                     num_samples_n: num_samples,
@@ -794,7 +794,7 @@ mod eigensnp_integration_tests {
                         }
                     }
                 }
-                let record = TestResultRecord {
+                let record = eigensnp_integration_tests::TestResultRecord {
                     test_name: test_name.clone(),
                     num_features_d: num_snps,
                     num_samples_n: num_samples,
@@ -1049,7 +1049,7 @@ mod eigensnp_integration_tests {
                                 stderr_str_lossy.trim()));
                         } else {
                             let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
-                            match parse_pca_py_output(&python_output_str) {
+                        match parse_pca_py_output(&python_output_str) {
                                 Ok((loadings, scores, eigenvalues)) => {
                                     py_loadings_k_x_d = loadings;
                                     py_scores_n_x_k = scores;
@@ -1186,7 +1186,7 @@ pub fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f
     if v1.len() != v2.len() || v1.is_empty() {
         return None;
     }
-    let _n = v1.len() as f32; // Changed n to _n
+    let n = v1.len() as f32;
     let mean1 = v1.mean().unwrap_or(0.0);
     let mean2 = v2.mean().unwrap_or(0.0);
     let mut cov = 0.0;
