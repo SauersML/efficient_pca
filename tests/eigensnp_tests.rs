@@ -307,8 +307,22 @@ mod eigensnp_integration_tests {
                 String::from_utf8_lossy(&output.stderr));
         }
         let python_output_str = String::from_utf8_lossy(&output.stdout);
+        let stderr_str = String::from_utf8_lossy(&output.stderr); // Capture stderr as string
         let (py_loadings_k_x_d, py_scores_n_x_k, py_eigenvalues_k) = 
-            parse_pca_py_output(&python_output_str).expect("Failed to parse pca.py output");
+            parse_pca_py_output(&python_output_str).expect(
+                &format!(
+                    "Failed to parse pca.py output. Full stdout:
+---
+{}
+---
+Full stderr:
+---
+{}
+---",
+                    python_output_str,
+                    stderr_str
+                )
+            );
 
         let py_loadings_d_x_k = py_loadings_k_x_d.t().into_owned();
 
@@ -613,8 +627,22 @@ mod eigensnp_integration_tests {
                 String::from_utf8_lossy(&py_cmd_output.stderr));
         }
         let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
+        let stderr_str = String::from_utf8_lossy(&py_cmd_output.stderr); // Capture stderr
         let (py_loadings_k_x_d, py_scores_n_x_k, py_eigenvalues_k) = 
-            parse_pca_py_output(&python_output_str).expect("Failed to parse pca.py output for low-rank data");
+            parse_pca_py_output(&python_output_str).expect(
+                &format!(
+                    "Failed to parse pca.py output for low-rank data. Full stdout:
+---
+{}
+---
+Full stderr:
+---
+{}
+---",
+                    python_output_str,
+                    stderr_str
+                )
+            );
         
         let py_loadings_d_x_k = py_loadings_k_x_d.t().into_owned();
 
