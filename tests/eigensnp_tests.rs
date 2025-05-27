@@ -30,6 +30,11 @@ use std::fs::OpenOptions;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
 
+use crate::eigensnp_integration_tests::parse_pca_py_output;
+use crate::eigensnp_integration_tests::TestDataAccessor;
+use crate::eigensnp_integration_tests::TestResultRecord;
+use crate::eigensnp_integration_tests::TEST_RESULTS;
+
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
@@ -177,7 +182,7 @@ mod eigensnp_integration_tests {
 
     // Global static for results
     lazy_static! {
-        static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
+        pub static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
     }
 
     // Function to write results to TSV
@@ -1186,7 +1191,7 @@ pub fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f
     if v1.len() != v2.len() || v1.is_empty() {
         return None;
     }
-    let n = v1.len() as f32;
+    let _n = v1.len() as f32;
     let mean1 = v1.mean().unwrap_or(0.0);
     let mean2 = v2.mean().unwrap_or(0.0);
     let mut cov = 0.0;
