@@ -813,133 +813,177 @@ impl EigenSNPCoreAlgorithm {
     fn compute_rotated_final_outputs<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
-        v_qr_loadings_d_by_k: &ArrayView2<f32>, 
-        num_total_qc_samples: usize,
+        v_qr_loadings_d_by_k: &ArrayView2<f32>, // V_qr (D x K_initial)
+        num_total_qc_samples: usize, // N
     ) -> Result<(Array2<f32>, Array1<f64>, Array2<f32>), ThreadSafeStdError> {
-        let num_total_pca_snps = v_qr_loadings_d_by_k.nrows();
-        let num_final_computed_pcs = v_qr_loadings_d_by_k.ncols();
+        let num_total_pca_snps = v_qr_loadings_d_by_k.nrows(); // D
+        let k_initial_components = v_qr_loadings_d_by_k.ncols(); // K_initial
 
         info!(
-            "Computing final rotated outputs (scores, eigenvalues, loadings) for {} samples, {} PCs.",
-            num_total_qc_samples, num_final_computed_pcs
+            "Computing final rotated outputs (scores, eigenvalues, loadings) for {} samples, {} initial components from V_qr.",
+            num_total_qc_samples, k_initial_components
         );
 
-        if num_final_computed_pcs == 0 {
-            debug!("No final PCs to compute rotated outputs for, returning empty results.");
-            // Return types need to match the new signature (Array2<f32>, Array1<f64>, Array2<f32>)
+        // --- A. Handle Edge Cases ---
+        if k_initial_components == 0 {
+            debug!("No initial components in V_qr (K_initial=0), returning empty results.");
             return Ok((
-                Array2::zeros((num_total_qc_samples, 0)), 
+                Array2::zeros((num_total_qc_samples, 0)),
                 Array1::zeros(0),
-                Array2::zeros((num_total_pca_snps, 0)) 
+                Array2::zeros((num_total_pca_snps, 0)),
             ));
         }
         if num_total_pca_snps == 0 {
-            debug!("No PCA SNPs available for final rotated outputs, returning empty results for {} PCs.", num_final_computed_pcs);
+            debug!("No PCA SNPs (D=0), returning empty results for {} initial components.", k_initial_components);
             return Ok((
-                Array2::zeros((num_total_qc_samples, num_final_computed_pcs)), 
-                Array1::zeros(num_final_computed_pcs),
-                Array2::zeros((0, num_final_computed_pcs))
+                Array2::zeros((num_total_qc_samples, k_initial_components)),
+                Array1::zeros(k_initial_components),
+                Array2::zeros((0, k_initial_components)),
             ));
         }
         if num_total_qc_samples == 0 {
-            debug!("No QC samples available for final rotated outputs, returning empty results for {} PCs.", num_final_computed_pcs);
+            debug!("No QC samples (N=0), returning empty results for {} initial components.", k_initial_components);
             return Ok((
-                Array2::zeros((0, num_final_computed_pcs)), 
-                Array1::zeros(num_final_computed_pcs),
-                Array2::zeros((num_total_pca_snps, num_final_computed_pcs))
+                Array2::zeros((0, k_initial_components)),
+                Array1::zeros(k_initial_components),
+                Array2::zeros((num_total_pca_snps, k_initial_components)),
             ));
         }
 
+        // --- B. Calculate Intermediate Scores (S_intermediate = X^T · V_qr) with f64 Accumulation ---
         let snp_processing_strip_size = 2000.min(num_total_pca_snps).max(1);
-        let all_qc_sample_ids_for_final_scores: Vec<QcSampleId> =
+        let all_qc_sample_ids_for_scores: Vec<QcSampleId> =
             (0..num_total_qc_samples).map(QcSampleId).collect();
 
-        // Define SNP strip iteration parameters
         let strip_indices_starts: Vec<usize> = (0..num_total_pca_snps)
             .step_by(snp_processing_strip_size)
             .collect();
-        // Parallel computation of score contributions from each SNP strip
-        let strip_score_contributions_results: Result<Vec<Array2<f32>>, ThreadSafeStdError> = strip_indices_starts
+
+        let s_intermediate_n_by_k_initial_f64: Array2<f64> = strip_indices_starts
             .par_iter()
-            .map(|&strip_start_snp_idx| -> Result<Array2<f32>, ThreadSafeStdError> {
+            .map(|&strip_start_snp_idx| -> Result<Array2<f64>, ThreadSafeStdError> {
                 let strip_end_snp_idx = (strip_start_snp_idx + snp_processing_strip_size).min(num_total_pca_snps);
-                
-                // If the strip has no SNPs, return zeros.
                 if strip_start_snp_idx >= strip_end_snp_idx {
-                    return Ok(Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)));
+                    return Ok(Array2::<f64>::zeros((num_total_qc_samples, k_initial_components)));
                 }
 
-                let snp_ids_in_strip_as_pca_ids: Vec<PcaSnpId> =
+                let snp_ids_in_strip: Vec<PcaSnpId> =
                     (strip_start_snp_idx..strip_end_snp_idx).map(PcaSnpId).collect();
 
-                let genotype_data_strip_snps_by_samples = genotype_data.get_standardized_snp_sample_block(
-                    &snp_ids_in_strip_as_pca_ids,
-                    &all_qc_sample_ids_for_final_scores,
-                ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during final rotated output computation for strip starting at {}: {}", strip_start_snp_idx, e_accessor))) as ThreadSafeStdError)?; // M_strip x N
+                let genotype_data_strip_f32 = genotype_data.get_standardized_snp_sample_block(
+                    &snp_ids_in_strip,
+                    &all_qc_sample_ids_for_scores,
+                ).map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get genotype block for strip {}-{}", strip_start_snp_idx, strip_end_snp_idx))) as ThreadSafeStdError)?; // D_strip x N (f32)
                 
-                let v_qr_loadings_for_strip_d_by_k = v_qr_loadings_d_by_k
-                    .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // M_strip x K
+                let v_qr_loadings_for_strip_f32 = v_qr_loadings_d_by_k
+                    .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // D_strip x K_initial (f32)
+
+                // S_intermediate_strip = X_strip^T · V_qr_strip
+                // (D_strip x N)^T · (D_strip x K_initial) -> (N x D_strip) · (D_strip x K_initial) -> N x K_initial (f32)
+                let s_intermediate_strip_f32 = genotype_data_strip_f32.t().dot(&v_qr_loadings_for_strip_f32);
                 
-                // S_unrotated_strip = X_strip^T V_qr_strip
-                // (M_strip x N)^T dot (M_strip x K) -> (N x M_strip) dot (M_strip x K) -> N x K
-                let unrotated_scores_contribution_from_strip_n_by_k =
-                    genotype_data_strip_snps_by_samples.t().dot(&v_qr_loadings_for_strip_d_by_k);
-                
-                Ok(unrotated_scores_contribution_from_strip_n_by_k)
+                // Cast to f64 for accumulation
+                Ok(s_intermediate_strip_f32.mapv(|x| x as f64))
             })
-            .collect(); // Collects into Result<Vec<Array2<f32>>, ThreadSafeStdError>
-
-        // Sum the contributions. If any map failed, propagate the error from collecting results.
-        // Otherwise, reduce the vector of matrices.
-        let unrotated_sample_scores_n_by_k: Array2<f32> = strip_score_contributions_results? // Yields Vec<Array2<f32>> or propagates error
-            .into_par_iter() // Convert Vec<Array2<f32>> to ParIter<Item = Array2<f32>>
-            .reduce( // Reduce on ParIter. Returns Self::Item (i.e., Array2<f32>).
-                // The identity function provides the initial value for reduction tasks,
-                // and is returned if the iterator is empty.
-                || Array2::<f32>::zeros((num_total_qc_samples, num_final_computed_pcs)), 
-                |mut acc_matrix, strip_scores_matrix| {
-                    acc_matrix += &strip_scores_matrix; // Sum contributions
-                    acc_matrix
+            .fold(
+                || Ok(Array2::<f64>::zeros((num_total_qc_samples, k_initial_components))), // Identity for fold (per-thread accumulator)
+                |acc_result, next_result| {
+                    match (acc_result, next_result) {
+                        (Ok(mut acc_matrix), Ok(next_matrix)) => {
+                            acc_matrix += &next_matrix;
+                            Ok(acc_matrix)
+                        }
+                        (Err(e), _) => Err(e), // Propagate previous error
+                        (_, Err(e)) => Err(e), // Propagate new error
+                    }
                 },
-            ); // The result of reduce is directly Array2<f32>.
+            )
+            .reduce(
+                || Ok(Array2::<f64>::zeros((num_total_qc_samples, k_initial_components))), // Identity for reduce
+                |final_acc_result, thread_acc_result| {
+                     match (final_acc_result, thread_acc_result) {
+                        (Ok(mut final_acc), Ok(thread_acc)) => {
+                            final_acc += &thread_acc;
+                            Ok(final_acc)
+                        }
+                        (Err(e), _) => Err(e),
+                        (_, Err(e)) => Err(e),
+                    }
+                },
+            )??; // Two question marks: one for reduce's Result, one for fold's inner Result.
 
-        // Now, perform SVD on S_unrotated = U_S * Sigma_S * V_S^T
-        // S_unrotated is N x K
-        // U_S (final scores) will be N x K
-        // Sigma_S (sqrt of eigenvalues) will be K
-        // V_S (rotation matrix) will be K x K
-        let backend = LinAlgBackendProvider::<f32>::new();
-        let svd_of_unrotated_scores = backend.svd_into(
-            unrotated_sample_scores_n_by_k, // Consumes the matrix
-            true, // request U
-            true  // request V (which is V_S.T here)
-        ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of unrotated scores failed: {}", e_svd))) as ThreadSafeStdError)?;
+        // --- C. Perform SVD on S_intermediate ---
+        let s_intermediate_n_by_k_initial_f32_for_svd = s_intermediate_n_by_k_initial_f64.mapv(|x| x as f32);
 
-        let final_sorted_sample_scores_n_by_k = svd_of_unrotated_scores.u.ok_or_else(|| 
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U (final scores) not returned")) as ThreadSafeStdError)?;
+        let backend_svd = LinAlgBackendProvider::<f32>::new();
+        let svd_output = backend_svd.svd_into(
+            s_intermediate_n_by_k_initial_f32_for_svd, // Consumes matrix
+            true, // compute U_rot
+            true, // compute V_rot_transposed
+        ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of S_intermediate failed: {}", e_svd))) as ThreadSafeStdError)?;
+
+        let u_rot_n_by_k_eff = svd_output.u.ok_or_else(|| 
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U_rot (from S_intermediate) not returned")) as ThreadSafeStdError)?;
         
-        let singular_values_s_k = svd_of_unrotated_scores.s; // This is sigma_S_k
-
-        let rotation_matrix_v_s_k_by_k = svd_of_unrotated_scores.vt.ok_or_else(||
-             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V.T (rotation matrix) not returned")) as ThreadSafeStdError)?.t().into_owned();
-
-        // Calculate final eigenvalues: lambda_k = sigma_S_k^2 / (N-1)
-        let mut final_sorted_eigenvalues_k = Array1::<f64>::zeros(num_final_computed_pcs);
-        if num_total_qc_samples > 1 {
-            for k_idx in 0..num_final_computed_pcs {
-                final_sorted_eigenvalues_k[k_idx] = (singular_values_s_k[k_idx] as f64).powi(2) / (num_total_qc_samples as f64 - 1.0);
-            }
-        } // Else, eigenvalues remain 0.0 if N <= 1
-
-        // Calculate final SNP loadings: V_final = V_qr * V_S
-        // (D x K) = (D x K) * (K x K)
-        let final_sorted_snp_loadings_d_by_k = v_qr_loadings_d_by_k.dot(&rotation_matrix_v_s_k_by_k);
+        let s_prime_singular_values_k_eff = svd_output.s; // k_eff length Array1<f32>
         
-        debug!("Computed final sorted eigenvalues: {:?}", final_sorted_eigenvalues_k);
-        info!("Computed final sorted sample scores. Shape: {:?}", final_sorted_sample_scores_n_by_k.dim());
-        info!("Computed final sorted SNP loadings. Shape: {:?}", final_sorted_snp_loadings_d_by_k.dim());
+        let vt_rot_k_eff_by_k_initial = svd_output.vt.ok_or_else(||
+             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V_rot.T (from S_intermediate) not returned")) as ThreadSafeStdError)?;
 
-        Ok((final_sorted_sample_scores_n_by_k, final_sorted_eigenvalues_k, final_sorted_snp_loadings_d_by_k))
+        let k_eff = s_prime_singular_values_k_eff.len();
+        if k_eff == 0 {
+            debug!("SVD of S_intermediate resulted in k_eff = 0 components. Returning empty results.");
+            return Ok((
+                Array2::zeros((num_total_qc_samples, 0)),
+                Array1::zeros(0),
+                Array2::zeros((num_total_pca_snps, 0)),
+            ));
+        }
+        info!("SVD of S_intermediate yielded {} effective components (k_eff).", k_eff);
+
+        // --- D. Calculate Final Scores, Loadings, and Eigenvalues ---
+        // Final Sample Scores: S_final = U_rot * diag(s_prime) (N x k_eff)
+        let diag_s_prime = Array2::from_diag(&s_prime_singular_values_k_eff);
+        let final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff.dot(&diag_s_prime);
+
+        // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x k_eff) -> D x k_eff
+        let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned();
+        // We need to ensure V_qr (D x K_initial) and V_rot (K_initial x k_eff) are compatible.
+        // If K_initial from V_qr is different from K_initial from V_rot (vt_rot.nrows()), this is an issue.
+        // The SVD on S_intermediate (N x K_initial) gives V_rot.T (k_eff x K_initial), so V_rot is (K_initial x k_eff).
+        // This matches.
+        let final_snp_loadings_d_by_k_eff_f32 = v_qr_loadings_d_by_k.dot(&v_rot_k_initial_by_k_eff);
+        
+        // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (k_eff length, f64)
+        let denominator_n_minus_1 = (num_total_qc_samples as f64 - 1.0).max(1.0); // Avoid division by zero if N=1 or N=0 (though N=0 handled)
+        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| {
+            let s_val_f64 = s_val as f64;
+            (s_val_f64 * s_val_f64) / denominator_n_minus_1
+        });
+
+        // --- E. Sort Outputs ---
+        let mut an_eigenvalue_index_pairs: Vec<(f64, usize)> = final_eigenvalues_k_eff_f64
+            .iter()
+            .enumerate()
+            .map(|(idx, &val)| (val, idx))
+            .collect();
+        
+        // Sort by eigenvalue in descending order.
+        // If eigenvalues are NaN (e.g. from 0/0 if N=1 and s_val=0), their order is undefined but typically they go to the end.
+        // Rust's f64 sort is stable.
+        an_eigenvalue_index_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        let sorted_indices: Vec<usize> = an_eigenvalue_index_pairs.into_iter().map(|pair| pair.1).collect();
+
+        let sorted_final_sample_scores = reorder_columns_owned(&final_sample_scores_n_by_k_eff_f32, &sorted_indices);
+        let sorted_final_snp_loadings = reorder_columns_owned(&final_snp_loadings_d_by_k_eff_f32, &sorted_indices);
+        let sorted_final_eigenvalues = reorder_array_owned(&final_eigenvalues_k_eff_f64, &sorted_indices);
+        
+        debug!("Computed final sorted eigenvalues: {:?}", sorted_final_eigenvalues);
+        info!("Computed final sorted sample scores. Shape: {:?}", sorted_final_sample_scores.dim());
+        info!("Computed final sorted SNP loadings. Shape: {:?}", sorted_final_snp_loadings.dim());
+
+        Ok((sorted_final_sample_scores, sorted_final_eigenvalues, sorted_final_snp_loadings))
     }
 
     /// Performs randomized SVD on a matrix A (matrix_features_by_samples, M x N).
