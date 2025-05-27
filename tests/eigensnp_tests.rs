@@ -182,53 +182,86 @@ mod eigensnp_integration_tests {
         fn num_qc_samples(&self) -> usize { self.standardized_data.ncols() }
     }
 
-    fn parse_section<T: FromStr>(lines: &mut std::str::Lines<'_>, expected_dim2: Option<usize>) -> Result<Array2<T>, String>
+    fn parse_section<T: FromStr>(lines: &mut std::iter::Peekable<std::str::Lines<'_>>, expected_dim2: Option<usize>) -> Result<Array2<T>, String>
     where <T as FromStr>::Err: std::fmt::Debug {
         let mut data_vec = Vec::new();
         let mut current_dim2 = None;
-        for line in lines {
-            if line.is_empty() || line.starts_with("LOADINGS:") || line.starts_with("SCORES:") || line.starts_with("EIGENVALUES:") {
-                break; 
-            }
-            let row: Vec<T> = line.split_whitespace()
-                .map(|s| s.parse::<T>().map_err(|e| format!("Failed to parse value: {:?}, error: {:?}", s, e)))
-                .collect::<Result<Vec<T>, String>>()?;
-            
-            if let Some(d2) = current_dim2 {
-                if row.len() != d2 { return Err(format!("Inconsistent row length. Expected {}, got {}", d2, row.len())); }
-            } else {
-                current_dim2 = Some(row.len());
-                if let Some(exp_d2) = expected_dim2 {
-                    if row.len() != exp_d2 && !row.is_empty() { // Allow empty rows if section is empty
-                         return Err(format!("Unexpected row length for section. Expected {}, got {}", exp_d2, row.len()));
+
+        loop {
+            match lines.peek() {
+                Some(line_peek) => {
+                    if line_peek.is_empty() || line_peek.starts_with("LOADINGS:") || line_peek.starts_with("SCORES:") || line_peek.starts_with("EIGENVALUES:") {
+                        // This is a separator or next section header, so stop parsing for current section
+                        break;
                     }
+                    // If not a separator, it's data for the current section. Consume and parse.
+                    let line = lines.next().unwrap(); // Safe due to peek
+
+                    let row: Vec<T> = line.split_whitespace()
+                        .map(|s| s.parse::<T>().map_err(|e| format!("Failed to parse value: {:?}, error: {:?}", s, e)))
+                        .collect::<Result<Vec<T>, String>>()?;
+                    
+                    if let Some(d2) = current_dim2 {
+                        if row.len() != d2 { return Err(format!("Inconsistent row length. Expected {}, got {}", d2, row.len())); }
+                    } else {
+                        current_dim2 = Some(row.len());
+                        if let Some(exp_d2) = expected_dim2 {
+                            // Allow empty rows if section is empty (e.g. 0-component PCA, eigenvalues line is just empty)
+                            // If row.is_empty() is true, it means current_dim2 became Some(0).
+                            // If exp_d2 is Some(1) (e.g. for eigenvalues), and we got an empty line (parsed to row.len() == 0),
+                            // this is a valid case for an empty section (e.g. 0 eigenvalues).
+                            // The check `!row.is_empty()` was there before, let's see if it's still needed.
+                            // If row.is_empty(), current_dim2 will be Some(0).
+                            // If expected_dim2 is Some(1), and current_dim2 is Some(0), this is fine for an empty section.
+                            // The problem is if the first non-empty row has a different number of columns than expected.
+                            if !row.is_empty() && row.len() != exp_d2 {
+                                 return Err(format!("Unexpected row length for section. Expected {}, got {}", exp_d2, row.len()));
+                            }
+                            // If row is empty and exp_d2 is Some(k) where k > 0: current_dim2 becomes Some(0). This is okay for an empty section.
+                        }
+                    }
+                    data_vec.extend(row);
+                }
+                None => {
+                    // End of input
+                    break;
                 }
             }
-            data_vec.extend(row);
         }
-        let num_rows = if current_dim2.unwrap_or(0) == 0 { 0 } else { data_vec.len() / current_dim2.unwrap_or(1) }; // Avoid div by zero if empty
-        Array2::from_shape_vec((num_rows, current_dim2.unwrap_or(0)), data_vec)
+        
+        let actual_dim2 = current_dim2.unwrap_or_else(|| expected_dim2.unwrap_or(0));
+        let num_rows = if actual_dim2 == 0 { 0 } else { data_vec.len() / actual_dim2 };
+
+        Array2::from_shape_vec((num_rows, actual_dim2), data_vec)
             .map_err(|e| format!("Failed to create Array2: {}", e))
     }
 
     fn parse_pca_py_output(output_str: &str) -> Result<(Array2<f32>, Array2<f32>, Array1<f64>), String> {
-        let mut lines = output_str.lines();
+        let mut lines = output_str.lines().peekable();
         
         let mut py_loadings: Option<Array2<f32>> = None;
         let mut py_scores: Option<Array2<f32>> = None;
         let mut py_eigenvalues: Option<Array1<f64>> = None;
 
-        while let Some(line) = lines.next() {
-            if line.starts_with("LOADINGS:") {
-                py_loadings = Some(parse_section::<f32>(&mut lines, None)?);
-            } else if line.starts_with("SCORES:") {
-                py_scores = Some(parse_section::<f32>(&mut lines, None)?);
-            } else if line.starts_with("EIGENVALUES:") {
-                // Eigenvalues are printed as a single column matrix by pca.py, parse_section handles it as Array2
-                let eig_array2 = parse_section::<f64>(&mut lines, Some(1))?;
-                // Convert N_eig x 1 Array2 to Array1 of length N_eig
-            let eig_len = eig_array2.len(); // Store length before move
-            py_eigenvalues = Some(eig_array2.into_shape_with_order((eig_len,)).expect("Failed to reshape py_eigenvalues"));
+        while let Some(line_peek) = lines.peek() {
+            let current_line_is_empty = line_peek.is_empty(); 
+            if line_peek.starts_with("LOADINGS:") {
+                lines.next(); // Consume header
+                py_loadings = Some(parse_section(&mut lines, None)?);
+            } else if line_peek.starts_with("SCORES:") {
+                lines.next(); // Consume header
+                py_scores = Some(parse_section(&mut lines, None)?);
+            } else if line_peek.starts_with("EIGENVALUES:") {
+                lines.next(); // Consume header
+                let eig_array2 = parse_section(&mut lines, Some(1))?;
+                let eig_len = eig_array2.len();
+                py_eigenvalues = Some(eig_array2.into_shape_with_order((eig_len,)).expect("Failed to reshape py_eigenvalues"));
+            } else if current_line_is_empty { 
+               lines.next(); // Consume the empty line
+               // Continue to next iteration to peek at next line
+            } else {
+                // Unexpected line
+                return Err(format!("Unexpected content in pca.py output. Line: '{}'", line_peek));
             }
         }
         
