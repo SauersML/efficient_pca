@@ -167,6 +167,7 @@ fn save_vector_to_tsv<T: Display>(
 
 #[cfg(test)]
 mod eigensnp_integration_tests {
+    use crate::eigensnp_integration_tests::orthonormalize_columns;
     use super::*; 
 
     // Define TestResultRecord struct
