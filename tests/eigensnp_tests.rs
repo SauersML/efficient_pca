@@ -22,6 +22,7 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::fs::{self, File}; // Add fs for create_dir_all
+use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 // use std::io::Write; // Already present
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
@@ -34,6 +35,7 @@ use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
+use crate::eigensnp_integration_tests::generate_structured_data;
 
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
@@ -165,10 +167,7 @@ fn save_vector_to_tsv<T: Display>(
 
 #[cfg(test)]
 mod eigensnp_integration_tests {
-    use crate::eigensnp_integration_tests::generate_structured_data;
-    use crate::eigensnp_integration_tests::orthonormalize_columns;
     use super::*; 
-    use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
@@ -1646,7 +1645,7 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
     // 5. Python Reference PCA
     let mut py_loadings_d_x_k: Array2<f32> = Array2::zeros((0, 0));
     let mut py_scores_n_x_k: Array2<f32> = Array2::zeros((0, 0));
-    let mut py_eigenvalues_k: Array1<f64> = Array1::zeros(0);
+    let mut _py_eigenvalues_k: Array1<f64> = Array1::zeros(0);
     let mut effective_k_py = 0;
 
     let mut stdin_data_py = String::new();
@@ -1704,12 +1703,12 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
                             Ok((loadings_k_x_d_py, scores_n_x_k_py, eigenvalues_k_py)) => {
                                 py_loadings_d_x_k = loadings_k_x_d_py.t().into_owned(); // D x K
                                 py_scores_n_x_k = scores_n_x_k_py;     // N x K
-                                py_eigenvalues_k = eigenvalues_k_py;   // K
+                                _py_eigenvalues_k = eigenvalues_k_py;   // K
                                 effective_k_py = py_loadings_d_x_k.ncols();
                                 outcome_details.push_str(&format!("Python PCA successful. effective_k_py: {}. ", effective_k_py));
                                 save_matrix_to_tsv(&py_loadings_d_x_k.view(), artifact_dir.to_str().unwrap_or("."), "python_loadings.tsv").unwrap_or_default();
                                 save_matrix_to_tsv(&py_scores_n_x_k.view(), artifact_dir.to_str().unwrap_or("."), "python_scores.tsv").unwrap_or_default();
-                                save_vector_to_tsv(&py_eigenvalues_k.view(), artifact_dir.to_str().unwrap_or("."), "python_eigenvalues.tsv").unwrap_or_default();
+                                save_vector_to_tsv(&_py_eigenvalues_k.view(), artifact_dir.to_str().unwrap_or("."), "python_eigenvalues.tsv").unwrap_or_default();
                             }
                             Err(e) => {
                                 test_successful = false;
@@ -1839,7 +1838,7 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
 
     // 8. Logging
     let record = TestResultRecord {
-        test_name,
+        test_name: test_name.clone(),
         num_features_d: num_snps,
         num_samples_n: num_samples,
         num_pcs_requested_k: k_components_to_request,
