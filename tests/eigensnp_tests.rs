@@ -1429,7 +1429,6 @@ pub fn run_generic_large_matrix_test(
 ) {
     let test_name = test_name_str.to_string();
     let mut test_successful = true;
-    let mut outcome_details = String::new();
     let mut notes = format!("Matrix D_snps x N_samples: {}x{}, k_requested: {}. ", num_snps, num_samples, k_components);
 
     let artifact_dir_suffix = format!("generic_large_matrix_{}x{}_k{}", num_snps, num_samples, k_components);
