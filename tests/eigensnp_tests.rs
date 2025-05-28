@@ -7,7 +7,7 @@
 // exceeds the number of samples. Small test cases or cases where samples >= features 
 // have been deemphasized or removed to better reflect real-world usage scenarios.
 
-use ndarray::{arr2, s, Array, Array1, Array2, ArrayView1, ArrayView2, Axis}; // Added Array, ArrayView2
+use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayView2 was already added, Array removed
 use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
@@ -235,7 +235,7 @@ mod eigensnp_integration_tests {
     // Orthonormalizes the columns of a mutable Array2<f32> matrix using Gram-Schmidt process.
     // Columns are assumed to be features or components, rows are samples or observations.
     // This version handles matrices where ncols > nrows by only orthonormalizing the first min(nrows, ncols) columns.
-    fn orthonormalize_columns(matrix: &mut Array2<f32>) {
+    pub fn orthonormalize_columns(matrix: &mut Array2<f32>) {
         if matrix.ncols() == 0 || matrix.nrows() == 0 {
             return;
         }
@@ -244,13 +244,16 @@ mod eigensnp_integration_tests {
             let mut col_j = matrix.column_mut(j);
             // Orthogonalize col_j against all previous columns (col_i where i < j)
             for i in 0..j {
-                let col_i = matrix.column(i).to_owned(); // Need to_owned if modifying col_j based on col_i
-                let dot_product = col_j.dot(&col_i);
-                // Subtract the projection of col_j onto col_i
-                // col_j = col_j - dot_product * col_i (element-wise for arrays)
-                for k in 0..col_j.len() {
-                    col_j[k] -= dot_product * col_i[k];
-                }
+                // Ensure col_i is owned before performing operations that involve col_j
+                let col_i_owned = matrix.column(i).to_owned();
+            
+                // Calculate the dot product using the mutable view col_j and the owned col_i_owned
+                let dot_product = col_j.view().dot(&col_i_owned);
+            
+                // Subtract the projection: col_j = col_j - dot_product * col_i_owned
+                // Create a temporary owned array for the scaled version of col_i_owned
+                let scaled_col_i = col_i_owned.mapv(|x| x * dot_product);
+                col_j.zip_mut_with(&scaled_col_i, |cj_val, scaled_ci_val| *cj_val -= scaled_ci_val);
             }
             // Normalize col_j (if its norm is > 0)
             let norm_sq = col_j.mapv(|x| x.powi(2)).sum();
@@ -270,7 +273,7 @@ mod eigensnp_integration_tests {
     // The first K components explain most of the variance.
     // Remaining D_snps - K components are essentially noise or linear combinations.
     // Genotype data is then standardized.
-    fn generate_structured_data(
+    pub fn generate_structured_data(
         d_total_snps: usize,      // D
         n_samples: usize,         // N
         k_true_components: usize, // K
@@ -1859,6 +1862,7 @@ pub fn run_generic_large_matrix_test(
     // Optional: allow passing a custom config modifier
     config_modifier: Option<fn(EigenSNPCoreAlgorithmConfig) -> EigenSNPCoreAlgorithmConfig>, 
 ) {
+    let mut outcome_details = String::new(); // Added this line
     let test_name = test_name_str.to_string();
     let mut test_successful = true;
     let mut notes = format!("Matrix D_snps x N_samples: {}x{}, k_requested: {}. ", num_snps, num_samples, k_components);
