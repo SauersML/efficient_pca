@@ -9,9 +9,10 @@ matplotlib.use('Agg')  # Ensure no GUI backend is used
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
+import sys
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
 def parse_arguments():
     """Parses command-line arguments."""
@@ -29,79 +30,82 @@ def main():
     logging.info(f"Output directory set to: {args.output_dir}")
 
     # --- File Discovery ---
-    backend_dirs = []
+    artifact_prefix = "eigensnp-test-artifacts-"
+    backend_dirs_to_process = [] # Store tuples of (original_dir_name, actual_backend_name)
+    
     try:
-        backend_dirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
-        if not backend_dirs:
-            logging.warning(f"No backend subdirectories found in {args.input_dir}")
-            # Create an empty manifest and exit if no backends found
-            with open(os.path.join(args.output_dir, "manifest.txt"), "w") as f:
-                f.write("Backend\tRelativePath\tAbsolutePath\tSize\n")
-            # Create empty summary results and report
-            pd.DataFrame().to_csv(os.path.join(args.output_dir, "consolidated_summary_results.tsv"), sep='\t', index=False)
-            with open(os.path.join(args.output_dir, "analysis_report.md"), "w") as md_file:
-                md_file.write("# Analysis Report\n\nNo backend data found.\n")
-            return 
+        all_input_subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
+        for dir_name in all_input_subdirs:
+            if dir_name.startswith(artifact_prefix):
+                actual_backend_name = dir_name[len(artifact_prefix):]
+                backend_dirs_to_process.append((dir_name, actual_backend_name))
+                logging.info(f"Found CI artifact directory: '{dir_name}'. Extracted backend name: '{actual_backend_name}'")
+            # else:
+                # logging.info(f"Directory '{dir_name}' does not match prefix '{artifact_prefix}'. Skipping.")
+                # Optionally, handle non-prefixed dirs for local runs if needed, or strictly process only prefixed ones.
+                # For now, strictly processing prefixed ones as per typical CI artifact structure.
     except FileNotFoundError:
         logging.error(f"Input directory {args.input_dir} not found.")
-        return
+        sys.exit(1)
+
+    if not backend_dirs_to_process:
+        logging.error(f"No backend artifact directories starting with '{artifact_prefix}' found in {args.input_dir}.")
+        # Create empty outputs as per previous behavior, then exit
+        with open(os.path.join(args.output_dir, "manifest.txt"), "w") as f: f.write("Backend\tRelativePath\tAbsolutePath\tSize\n")
+        pd.DataFrame().to_csv(os.path.join(args.output_dir, "consolidated_summary_results.tsv"), sep='\t', index=False)
+        with open(os.path.join(args.output_dir, "analysis_report.md"), "w") as md_file: md_file.write("# Analysis Report\n\nNo backend artifact directories found.\n")
+        sys.exit(1)
 
     all_tsv_files_manifest = [] # For manifest.txt
     summary_dfs = [] # For consolidated_summary_results.tsv
-    artifact_prefix = "eigensnp-test-artifacts-"
 
-    logging.info(f"Scanning for backend data in subdirectories of: {args.input_dir}")
+    logging.info(f"Processing identified backend artifact directories: {[d[0] for d in backend_dirs_to_process]}")
 
-    for original_dir_name in backend_dirs:
-        actual_backend_name = original_dir_name
-        if original_dir_name.startswith(artifact_prefix):
-            actual_backend_name = original_dir_name[len(artifact_prefix):]
-            logging.info(f"Identified CI artifact directory: '{original_dir_name}'. Using backend name: '{actual_backend_name}'")
-        else:
-            logging.info(f"Processing directory: '{original_dir_name}'. Using backend name: '{actual_backend_name}' (no CI prefix detected)")
+    for original_dir_name, actual_backend_name in backend_dirs_to_process:
+        # Corrected path to look inside target/test_artifacts/
+        backend_test_artifacts_path = os.path.join(args.input_dir, original_dir_name, 'target', 'test_artifacts')
+        logging.info(f"Searching for artifacts in: {backend_test_artifacts_path} for backend: {actual_backend_name}")
 
-        # Path to the directory containing actual data (e.g. eigensnp-test-artifacts-openblas)
-        backend_data_path = os.path.join(args.input_dir, original_dir_name)
-        
-        # Locate and parse eigensnp_summary_results.tsv
-        # The summary file is expected to be directly inside the backend_data_path
-        summary_file_path = os.path.join(backend_data_path, "eigensnp_summary_results.tsv")
+        if not os.path.isdir(backend_test_artifacts_path):
+            logging.warning(f"Artifact path {backend_test_artifacts_path} does not exist or is not a directory for backend {actual_backend_name}. Skipping.")
+            continue
+            
+        summary_file_path = os.path.join(backend_test_artifacts_path, "eigensnp_summary_results.tsv")
         if os.path.exists(summary_file_path):
             try:
                 summary_df = pd.read_csv(summary_file_path, sep='\t')
-                summary_df['backend'] = actual_backend_name # Use extracted name
-                summary_dfs.append(summary_df)
-                
-                # For the manifest, RelativePath should be relative to input_dir, 
-                # but include the original directory name to maintain uniqueness and context.
-                manifest_relative_path_for_summary = os.path.join(original_dir_name, "eigensnp_summary_results.tsv")
-                all_tsv_files_manifest.append({
-                    "Backend": actual_backend_name,
-                    "RelativePath": manifest_relative_path_for_summary,
-                    "AbsolutePath": os.path.abspath(summary_file_path),
-                    "Size": os.path.getsize(summary_file_path)
-                })
-                logging.info(f"Successfully loaded summary for backend: {actual_backend_name} from {summary_file_path}")
+                if not summary_df.empty:
+                    summary_df['backend'] = actual_backend_name
+                    summary_dfs.append(summary_df)
+                    
+                    # RelativePath for manifest should be relative to input_dir, reflecting the full structure
+                    manifest_relative_path = os.path.relpath(summary_file_path, args.input_dir)
+                    all_tsv_files_manifest.append({
+                        "Backend": actual_backend_name,
+                        "RelativePath": manifest_relative_path,
+                        "AbsolutePath": os.path.abspath(summary_file_path),
+                        "Size": os.path.getsize(summary_file_path)
+                    })
+                    logging.info(f"Successfully loaded and processed non-empty summary for backend: {actual_backend_name} from {summary_file_path}")
+                else:
+                    logging.warning(f"Summary file {summary_file_path} for backend {actual_backend_name} is empty.")
             except Exception as e:
                 logging.warning(f"Could not parse {summary_file_path} for backend {actual_backend_name}: {e}")
         else:
-            logging.warning(f"eigensnp_summary_results.tsv not found for backend: {actual_backend_name} in {backend_data_path}")
+            logging.warning(f"eigensnp_summary_results.tsv not found for backend: {actual_backend_name} in {backend_test_artifacts_path}")
 
-        # Recursively find all other .tsv files within the backend_data_path
-        # The glob pattern should search within the specific backend_data_path
-        other_tsv_files = glob.glob(os.path.join(backend_data_path, "**", "*.tsv"), recursive=True)
+        # Recursively find all other .tsv files within the backend_test_artifacts_path
+        other_tsv_files = glob.glob(os.path.join(backend_test_artifacts_path, "**", "*.tsv"), recursive=True)
         for tsv_file in other_tsv_files:
-            # Avoid double-counting the summary file if it's caught by the glob
-            if os.path.abspath(tsv_file) != os.path.abspath(summary_file_path):
-                # RelativePath for manifest should be relative to input_dir, showing the full path from there
+            if os.path.abspath(tsv_file) != os.path.abspath(summary_file_path): # Avoid double-counting
                 relative_path_to_input_dir = os.path.relpath(tsv_file, args.input_dir)
                 all_tsv_files_manifest.append({
-                    "Backend": actual_backend_name, # Use extracted name
+                    "Backend": actual_backend_name,
                     "RelativePath": relative_path_to_input_dir,
                     "AbsolutePath": os.path.abspath(tsv_file),
                     "Size": os.path.getsize(tsv_file)
                 })
-
+    
     # --- TSV Manifest ---
     manifest_df = pd.DataFrame(all_tsv_files_manifest)
     if not manifest_df.empty:
@@ -117,14 +121,23 @@ def main():
 
     # --- Consolidation and Analysis of eigensnp_summary_results.tsv ---
     if not summary_dfs:
-        logging.warning("No summary dataframes to consolidate.")
-        # Create empty summary results and report if no summaries were loaded
+        logging.critical("Critical error: No non-empty eigensnp_summary_results.tsv files were found or loaded across all backends.")
+        # Create empty outputs
         pd.DataFrame().to_csv(os.path.join(args.output_dir, "consolidated_summary_results.tsv"), sep='\t', index=False)
         with open(os.path.join(args.output_dir, "analysis_report.md"), "w") as md_file:
-            md_file.write("# Analysis Report\n\nNo summary results found to analyze.\n")
-        return # Stop further processing if no summaries
+            md_file.write("# Analysis Report\n\nCritical error: No non-empty eigensnp_summary_results.tsv files found.\n")
+        sys.exit(1)
 
     consolidated_summary_df = pd.concat(summary_dfs, ignore_index=True)
+    
+    if consolidated_summary_df.empty:
+        logging.critical("Critical error: Consolidated summary data is empty. Cannot generate report.")
+        # Ensure consolidated file is also empty or reflects this
+        consolidated_summary_df.to_csv(os.path.join(args.output_dir, "consolidated_summary_results.tsv"), sep='\t', index=False)
+        with open(os.path.join(args.output_dir, "analysis_report.md"), "w") as md_file:
+            md_file.write("# Analysis Report\n\nCritical error: Consolidated summary data is empty.\n")
+        sys.exit(1)
+        
     consolidated_summary_path = os.path.join(args.output_dir, "consolidated_summary_results.tsv")
     consolidated_summary_df.to_csv(consolidated_summary_path, sep='\t', index=False)
     logging.info(f"Consolidated summary results saved to: {consolidated_summary_path}")
@@ -136,7 +149,7 @@ def main():
         
         # Overall summary
         md_file.write("## Overall Summary\n\n")
-        total_tests_run = len(consolidated_summary_df)
+        total_tests_run = len(consolidated_summary_df) # Should be > 0 if we passed the checks
         md_file.write(f"- Total test scenarios run (across all backends): {total_tests_run}\n")
         
         pass_fail_counts = consolidated_summary_df.groupby('backend')['Success'].agg(
@@ -228,19 +241,30 @@ def main():
                 md_file.write("No files matching eigenvalue patterns (e.g., `*_eigenvalues.tsv`) found in the manifest.\n\n")
             else:
                 # Extract test scenario from RelativePath (e.g., parent directory of the tsv file)
-                # RelativePath in manifest_df is like `eigensnp-test-artifacts-openblas/test_scenario_dir/some_eigenvalues.tsv`
-                # or `openblas/test_scenario_dir/some_eigenvalues.tsv`
+                # RelativePath in manifest_df is like `eigensnp-test-artifacts-openblas/target/test_artifacts/test_scenario_dir/some_eigenvalues.tsv`
                 # The TestScenario should be the directory name containing the eigenvalues.tsv file.
-                # We need to handle cases where RelativePath might have 2 or 3 components.
-                # Example: original_dir_name/test_scenario/file.tsv -> test_scenario
-                # Example: original_dir_name/file.tsv -> original_dir_name (as scenario)
-                def extract_test_scenario(path_str):
+                # e.g., test_scenario_dir
+                def extract_test_scenario_from_manifest_path(path_str):
+                    # Path is relative to input_dir. Example:
+                    # eigensnp-test-artifacts-openblas/target/test_artifacts/pca_low_rank_D_gt_N/eigenvalues.tsv
+                    # We want "pca_low_rank_D_gt_N"
+                    # It's the parent of the file, relative to the `target/test_artifacts` folder.
+                    # So, it's the second to last part of the path relative to `target/test_artifacts`
+                    # or the third to last part of the path relative to `original_dir_name`
+                    # or the fourth to last part of the path relative to `input_dir`
                     parts = os.path.normpath(path_str).split(os.sep)
-                    if len(parts) > 1:
-                        return parts[-2] # Parent directory of the file
-                    return parts[0] # The directory itself if the file is at the top level of its backend dir
+                    # parts: [original_dir_name, 'target', 'test_artifacts', scenario_name, filename.tsv]
+                    if len(parts) >= 5: # Ensure scenario_name and filename are present
+                        return parts[-2] 
+                    elif len(parts) == 4: # File is directly under test_artifacts
+                         # e.g. original_dir_name/target/test_artifacts/some_file_directly_here.tsv -> scenario is 'test_artifacts'
+                        return parts[-2] # which is 'test_artifacts' - might need refinement if this case is common
+                    else: # Not enough parts to determine a scenario in the expected structure
+                        logging.warning(f"Could not determine test scenario for eigenvalue file from path: {path_str}")
+                        return "unknown_scenario"
 
-                potential_eigenvalue_files['TestScenario'] = potential_eigenvalue_files['RelativePath'].apply(extract_test_scenario)
+
+                potential_eigenvalue_files['TestScenario'] = potential_eigenvalue_files['RelativePath'].apply(extract_test_scenario_from_manifest_path)
                 
                 scenarios_with_eigenvalues = potential_eigenvalue_files.groupby('TestScenario')
                 num_eigenvalue_plots = 0
