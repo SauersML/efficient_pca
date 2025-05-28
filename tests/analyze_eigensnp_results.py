@@ -3,7 +3,7 @@ import os
 import glob
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # Ensure no GUI backend is used
+matplotlib.use('Agg')  # no GUI backend is used
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
@@ -60,15 +60,15 @@ def main():
     logging.info(f"Processing identified backend artifact directories: {[d[0] for d in backend_dirs_to_process]}")
 
     for original_dir_name, actual_backend_name in backend_dirs_to_process:
-        # Corrected path to look inside target/test_artifacts/
-        backend_test_artifacts_path = os.path.join(args.input_dir, original_dir_name, 'target', 'test_artifacts')
-        logging.info(f"Searching for artifacts in: {backend_test_artifacts_path} for backend: {actual_backend_name}")
+        # Path reversion: Search directly in the backend artifact directory
+        backend_artifacts_path = os.path.join(args.input_dir, original_dir_name)
+        logging.info(f"Searching for artifacts in: {backend_artifacts_path} for backend: {actual_backend_name}")
 
-        if not os.path.isdir(backend_test_artifacts_path):
-            logging.warning(f"Artifact path {backend_test_artifacts_path} does not exist or is not a directory for backend {actual_backend_name}. Skipping.")
+        if not os.path.isdir(backend_artifacts_path):
+            logging.warning(f"Artifact path {backend_artifacts_path} does not exist or is not a directory for backend {actual_backend_name}. Skipping.")
             continue
             
-        summary_file_path = os.path.join(backend_test_artifacts_path, "eigensnp_summary_results.tsv")
+        summary_file_path = os.path.join(backend_artifacts_path, "eigensnp_summary_results.tsv")
         if os.path.exists(summary_file_path):
             try:
                 summary_df = pd.read_csv(summary_file_path, sep='\t')
@@ -90,10 +90,10 @@ def main():
             except Exception as e:
                 logging.warning(f"Could not parse {summary_file_path} for backend {actual_backend_name}: {e}")
         else:
-            logging.warning(f"eigensnp_summary_results.tsv not found for backend: {actual_backend_name} in {backend_test_artifacts_path}")
+            logging.warning(f"eigensnp_summary_results.tsv not found for backend: {actual_backend_name} in {backend_artifacts_path}")
 
-        # Recursively find all other .tsv files within the backend_test_artifacts_path
-        other_tsv_files = glob.glob(os.path.join(backend_test_artifacts_path, "**", "*.tsv"), recursive=True)
+        # Recursively find all other .tsv files within the backend_artifacts_path
+        other_tsv_files = glob.glob(os.path.join(backend_artifacts_path, "**", "*.tsv"), recursive=True)
         for tsv_file in other_tsv_files:
             if os.path.abspath(tsv_file) != os.path.abspath(summary_file_path): # Avoid double-counting
                 relative_path_to_input_dir = os.path.relpath(tsv_file, args.input_dir)
@@ -239,28 +239,26 @@ def main():
                 md_file.write("No files matching eigenvalue patterns (e.g., `*_eigenvalues.tsv`) found in the manifest.\n\n")
             else:
                 # Extract test scenario from RelativePath (e.g., parent directory of the tsv file)
-                # RelativePath in manifest_df is like `eigensnp-test-artifacts-openblas/target/test_artifacts/test_scenario_dir/some_eigenvalues.tsv`
-                # The TestScenario should be the directory name containing the eigenvalues.tsv file.
-                # e.g., test_scenario_dir
+                # RelativePath in manifest_df is like `eigensnp-test-artifacts-openblas/test_scenario_dir/some_eigenvalues.tsv`
+                # or `eigensnp-test-artifacts-openblas/some_top_level_file.tsv`
+                # The TestScenario should be the directory name containing the eigenvalues.tsv file,
+                # or the backend artifact directory name if the file is at the top level of the artifact.
                 def extract_test_scenario_from_manifest_path(path_str):
-                    # Path is relative to input_dir. Example:
-                    # eigensnp-test-artifacts-openblas/target/test_artifacts/pca_low_rank_D_gt_N/eigenvalues.tsv
-                    # We want "pca_low_rank_D_gt_N"
-                    # It's the parent of the file, relative to the `target/test_artifacts` folder.
-                    # So, it's the second to last part of the path relative to `target/test_artifacts`
-                    # or the third to last part of the path relative to `original_dir_name`
-                    # or the fourth to last part of the path relative to `input_dir`
+                    # path_str is relative to args.input_dir
+                    # e.g., "eigensnp-test-artifacts-openblas/scenario_A/eigenvalues.tsv" -> parts will be ["eigensnp-test-artifacts-openblas", "scenario_A", "eigenvalues.tsv"]
+                    # e.g., "eigensnp-test-artifacts-mkl/summary.tsv" -> parts will be ["eigensnp-test-artifacts-mkl", "summary.tsv"]
                     parts = os.path.normpath(path_str).split(os.sep)
-                    # parts: [original_dir_name, 'target', 'test_artifacts', scenario_name, filename.tsv]
-                    if len(parts) >= 5: # Ensure scenario_name and filename are present
-                        return parts[-2] 
-                    elif len(parts) == 4: # File is directly under test_artifacts
-                         # e.g. original_dir_name/target/test_artifacts/some_file_directly_here.tsv -> scenario is 'test_artifacts'
-                        return parts[-2] # which is 'test_artifacts' - might need refinement if this case is common
-                    else: # Not enough parts to determine a scenario in the expected structure
-                        logging.warning(f"Could not determine test scenario for eigenvalue file from path: {path_str}")
+                    if len(parts) >= 3: # File is in a subdirectory of the backend artifact dir
+                        # scenario_name is parts[-2], e.g., "scenario_A"
+                        return parts[-2]
+                    elif len(parts) == 2: # File is at the top level of the backend artifact dir
+                        # Use the backend artifact directory name (parts[0]) as the "scenario" for grouping these.
+                        # This might not be ideal for eigenvalue comparison if files aren't in dedicated scenario subdirs,
+                        # but it provides a consistent grouping key.
+                        return parts[0] # e.g. "eigensnp-test-artifacts-openblas"
+                    else: # Path is too short (e.g. just "file.tsv", which shouldn't happen if manifest is correct)
+                        logging.warning(f"Could not determine test scenario from path: {path_str} - path has too few components.")
                         return "unknown_scenario"
-
 
                 potential_eigenvalue_files['TestScenario'] = potential_eigenvalue_files['RelativePath'].apply(extract_test_scenario_from_manifest_path)
                 
