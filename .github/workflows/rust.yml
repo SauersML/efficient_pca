@@ -122,6 +122,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build
+        id: build_step
         run: |
           if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
             cargo build --release --features ${{ matrix.feature }}
@@ -169,14 +170,14 @@ jobs:
           path: benchmark_raw_results.tsv
 
       - name: Generate failure report
-        if: failure()
+        if: steps.build_step.outcome == 'failure'
         run: |
           cargo install getdoc --locked
           getdoc --features ${{ matrix.feature }}
           mv report.md failure-report-${{ matrix.backend }}.md
 
       - name: Upload failure report
-        if: failure()
+        if: steps.build_step.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: failure-report-${{ matrix.backend }}
