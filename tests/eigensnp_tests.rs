@@ -1557,7 +1557,7 @@ pub fn run_sample_projection_accuracy_test(
 ) {
     let test_name = test_name_str.to_string();
     let mut test_successful = true;
-    let mut outcome_details = String::new();
+    let mut outcome_details: String;
     let num_samples_test = num_samples_total - num_samples_train;
     let mut notes = format!(
         "Matrix D_snps x N_total_samples (N_train_samples / N_test_samples): {}x{} ({} / {}), k_requested: {}. ",
@@ -1603,11 +1603,11 @@ pub fn run_sample_projection_accuracy_test(
             save_matrix_to_tsv(&output.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_train_loadings.tsv").unwrap_or_default();
             save_matrix_to_tsv(&output.final_sample_principal_component_scores.view(), artifact_dir.to_str().unwrap_or("."), "rust_train_scores.tsv").unwrap_or_default();
             rust_pca_output_option = Some(output);
-            outcome_details.push_str(&format!("eigensnp on train data successful. k_eff_rust: {}. ", k_eff_rust));
+            outcome_details = format!("eigensnp on train data successful. k_eff_rust: {}. ", k_eff_rust);
         }
         Err(e) => {
             test_successful = false;
-            outcome_details.push_str(&format!("eigensnp on train data failed: {}. ", e));
+            outcome_details = format!("eigensnp on train data failed: {}. ", e);
         }
     }
 
@@ -1705,7 +1705,7 @@ pub fn run_sample_projection_accuracy_test(
             }
             Err(e) => {
                 test_successful = false;
-                outcome_details.push_str(&format!("Failed to spawn pca.py (total data): {}. ", e));
+            outcome_details = format!("eigensnp on train data failed: {}. ", e);
             }
         }
     }
