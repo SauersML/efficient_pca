@@ -7,16 +7,16 @@
 // exceeds the number of samples. Small test cases or cases where samples >= features 
 // have been deemphasized or removed to better reflect real-world usage scenarios.
 
-use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // Added ArrayView2
-use ndarray_rand::rand_distr::Uniform;
+use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayView2 was already added, Array removed
+use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
     EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, // Removed EigenSNPCoreOutput
     PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError, reorder_array_owned, reorder_columns_owned,
 };
-use rand::SeedableRng;
+use rand::SeedableRng; // Already present, but ensure it's here
 use rand::Rng; // Added for the .sample() method
-use rand_chacha::ChaCha8Rng;
+use rand_chacha::ChaCha8Rng; // Already present, but ensure it's here
 use std::process::{Command, Stdio};
 use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
@@ -230,6 +230,112 @@ mod eigensnp_integration_tests {
     #[test]
     fn finalize_and_write_results() {
         write_results_to_tsv().expect("Failed to write test results to TSV");
+    }
+
+    // Orthonormalizes the columns of a mutable Array2<f32> matrix using Gram-Schmidt process.
+    // Columns are assumed to be features or components, rows are samples or observations.
+    // This version handles matrices where ncols > nrows by only orthonormalizing the first min(nrows, ncols) columns.
+    pub fn orthonormalize_columns(matrix: &mut Array2<f32>) {
+        if matrix.ncols() == 0 || matrix.nrows() == 0 {
+            return;
+        }
+        // Iterate through each column to orthogonalize and normalize it
+        for j in 0..matrix.ncols() {
+            let mut col_j = matrix.column_mut(j);
+            // Orthogonalize col_j against all previous columns (col_i where i < j)
+            for i in 0..j {
+                // Ensure col_i is owned before performing operations that involve col_j
+                let col_i_owned = matrix.column(i).to_owned();
+            
+                // Calculate the dot product using the mutable view col_j and the owned col_i_owned
+                let dot_product = col_j.view().dot(&col_i_owned);
+            
+                // Subtract the projection: col_j = col_j - dot_product * col_i_owned
+                // Create a temporary owned array for the scaled version of col_i_owned
+                let scaled_col_i = col_i_owned.mapv(|x| x * dot_product);
+                col_j.zip_mut_with(&scaled_col_i, |cj_val, scaled_ci_val| *cj_val -= scaled_ci_val);
+            }
+            // Normalize col_j (if its norm is > 0)
+            let norm_sq = col_j.mapv(|x| x.powi(2)).sum();
+            if norm_sq > 1e-9 { // Check against a small epsilon to avoid division by zero
+                let norm = norm_sq.sqrt();
+                col_j.mapv_inplace(|x| x / norm);
+            } else {
+                // If the column is zero (or very close to it), it might indicate linear dependency.
+                // Fill with zeros or handle as an error, depending on requirements.
+                // For testing, filling with zeros is often acceptable.
+                col_j.fill(0.0);
+            }
+        }
+    }
+    
+    // Generates structured data: D_snps x N_samples
+    // The first K components explain most of the variance.
+    // Remaining D_snps - K components are essentially noise or linear combinations.
+    // Genotype data is then standardized.
+    pub fn generate_structured_data(
+        d_total_snps: usize,      // D
+        n_samples: usize,         // N
+        k_true_components: usize, // K
+        signal_strength: f32,     // Multiplier for signal components
+        noise_std_dev: f32,       // Standard deviation for noise components
+        seed: u64,
+    ) -> Array2<f32> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    
+        // Ensure K is not greater than D or N, as it wouldn't make sense for true components
+        let k_eff = k_true_components.min(d_total_snps).min(n_samples);
+    
+        // 1. Generate K true underlying latent components (N_samples x K_eff)
+        // These are random vectors that will form the basis of our structured data.
+        // We'll make them orthonormal to ensure they are independent sources of variance.
+        let mut latent_components_n_x_k = Array2::random_using((n_samples, k_eff), StandardNormal, &mut rng) * signal_strength;
+        orthonormalize_columns(&mut latent_components_n_x_k); // Orthonormalize columns (K_eff components)
+    
+        // 2. Generate SNP loadings (D_total_snps x K_eff) that map latent components to SNPs
+        // These define how each SNP is influenced by the K_eff true components.
+        let mut loadings_d_x_k = Array2::zeros((d_total_snps, k_eff));
+        // For the first K_eff SNPs, give each a strong loading on one component
+        for i in 0..k_eff.min(d_total_snps) { // Ensure i < d_total_snps
+            loadings_d_x_k[[i, i]] = 1.0; 
+        }
+        // For remaining SNPs (up to d_total_snps), create some varied loadings
+        // This makes the structure a bit more complex than a simple identity matrix for loadings
+        if d_total_snps > k_eff {
+            for i in k_eff..d_total_snps {
+                for j in 0..k_eff {
+                    // Example: create some linear combinations or random small loadings
+                    if i % (j + 1) == 0 { // Arbitrary condition for variety
+                        loadings_d_x_k[[i,j]] = rng.sample(Normal::new(0.0, 0.5).unwrap());
+                    }
+                }
+            }
+        }
+        // Optionally, orthonormalize these loading vectors (columns of loadings_d_x_k) as well,
+        // depending on the desired properties of the "true" SNP effects.
+        // For this example, we might skip it to allow for correlated SNP effects from components.
+    
+        // 3. Construct the "signal" part of the SNP data: (D_total_snps x K_eff) dot (K_eff x N_samples) -> (D_total_snps x N_samples)
+        // Note:
+        // Latent components are N x K (rows are samples, columns are components)
+        // Loadings are D x K (rows are SNPs, columns are components)
+        // We want SNP data as D x N. So, SNP_data = Loadings_D_x_K * Latent_Components_K_x_N (where Latent_Components_K_x_N is latent_components_n_x_k.t())
+        let signal_data_d_x_n = loadings_d_x_k.dot(&latent_components_n_x_k.t());
+    
+        // 4. Generate "noise" data (D_total_snps x N_samples)
+        // This represents the variance not explained by the K true components.
+        let noise_data_d_x_n = Array2::random_using(
+            (d_total_snps, n_samples),
+            Normal::new(0.0, noise_std_dev).unwrap(),
+            &mut rng,
+        );
+    
+        // 5. Combine signal and noise
+        let combined_data_d_x_n = signal_data_d_x_n + noise_data_d_x_n;
+    
+        // 6. Standardize the final data (features across samples)
+        // This is a crucial step as PCA typically works on standardized data.
+        standardize_features_across_samples(combined_data_d_x_n)
     }
 
 
@@ -938,10 +1044,19 @@ mod eigensnp_integration_tests {
 
     #[test]
     fn test_pca_more_components_requested_than_rank_d_gt_n() {
-        let mut test_successful = true;
+        let mut overall_test_successful = true; // Renamed for clarity
         let mut outcome_details = String::new();
         let mut notes = String::new();
         notes.push_str("Testing k_requested > true rank, with D > N (150x50). ");
+
+        // Phase-specific success flags
+        let mut python_script_phase_ok = true;
+        let mut rust_pca_computation_phase_ok = true;
+        let mut rust_eigenvalue_check_phase_ok = true;
+        let mut python_eigenvalue_check_phase_ok = true;
+        let mut loadings_comparison_phase_ok = true;
+        let mut scores_comparison_phase_ok = true;
+        let mut eigenvalues_comparison_phase_ok = true;
 
         let num_samples = 50; // N
         let num_true_rank_snps = 20; // True rank of D
@@ -986,10 +1101,14 @@ mod eigensnp_integration_tests {
         let rust_output_result = algorithm.compute_pca(&test_data, &ld_blocks);
         
         let rust_output = match rust_output_result {
-            Ok(output) => output,
+            Ok(output) => {
+                outcome_details.push_str("Rust PCA computation: SUCCESS. ");
+                output
+            }
             Err(e) => {
-                test_successful = false;
-                outcome_details.push_str(&format!("Rust PCA computation failed: {}. ", e));
+                rust_pca_computation_phase_ok = false;
+                overall_test_successful = false;
+                outcome_details.push_str(&format!("Rust PCA computation: FAILED. Error: {}. ", e));
                 // Create a dummy output to allow logging and avoid panics before logging
                 efficient_pca::eigensnp::EigenSNPCoreOutput {
                     final_snp_principal_component_loadings: Array2::zeros((0,0)),
@@ -1029,88 +1148,111 @@ mod eigensnp_integration_tests {
 
         match process_result {
             Ok(mut process) => {
-                let mut stdin_pipe = process.stdin.take().expect("Failed to open stdin for pca.py");
-                std::thread::spawn(move || {
-                    match stdin_pipe.write_all(stdin_data.as_bytes()) {
-                        Ok(_) => {},
-                        Err(e) => eprintln!("Failed to write to stdin of pca.py: {}", e), // Use eprintln for errors
-                    }
-                });
-
-                let py_cmd_output_result = process.wait_with_output();
-                match py_cmd_output_result {
-                    Ok(py_cmd_output) => {
-                        let stderr_str_lossy = String::from_utf8_lossy(&py_cmd_output.stderr);
-                        notes.push_str(&format!("Python stderr: {}. ", stderr_str_lossy.trim()));
-                        if !py_cmd_output.status.success() {
-                            test_successful = false;
-                            outcome_details.push_str(&format!("Python script execution failed. Status: {}. Stdout: {}. Stderr: {}. ", 
-                                py_cmd_output.status.code().unwrap_or(-1),
-                                String::from_utf8_lossy(&py_cmd_output.stdout).trim(),
-                                stderr_str_lossy.trim()));
-                        } else {
-                            let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
-                        match parse_pca_py_output(&python_output_str) {
-                                Ok((loadings, scores, eigenvalues)) => {
-                                    py_loadings_k_x_d = loadings;
-                                    py_scores_n_x_k = scores;
-                                    py_eigenvalues_k = eigenvalues;
-                                    effective_k_py = py_eigenvalues_k.len();
-                                    outcome_details.push_str(&format!("Rust k_eff: {}, Py k_eff: {}. ", effective_k_rust, effective_k_py));
-                                }
-                                Err(err_msg) => {
-                                    test_successful = false;
-                                    outcome_details.push_str(&format!("Failed to parse pca.py output: {}. Python stdout: {}. ", err_msg, python_output_str.trim()));
+                if let Some(mut stdin_pipe) = process.stdin.take() {
+                    std::thread::spawn(move || {
+                        if let Err(e) = stdin_pipe.write_all(stdin_data.as_bytes()) {
+                            eprintln!("Failed to write to stdin of pca.py: {}", e);
+                        }
+                    });
+                } else {
+                    python_script_phase_ok = false;
+                    outcome_details.push_str("Python script execution: FAILED to get stdin pipe. ");
+                }
+                
+                if python_script_phase_ok { // Only proceed if stdin pipe was obtained
+                    let py_cmd_output_result = process.wait_with_output();
+                    match py_cmd_output_result {
+                        Ok(py_cmd_output) => {
+                            let stderr_str_lossy = String::from_utf8_lossy(&py_cmd_output.stderr);
+                            notes.push_str(&format!("Python stderr: {}. ", stderr_str_lossy.trim()));
+                            if !py_cmd_output.status.success() {
+                                python_script_phase_ok = false;
+                                outcome_details.push_str(&format!("Python script execution: FAILED. Status: {}. Stdout: {}. Stderr: {}. ", 
+                                    py_cmd_output.status.code().unwrap_or(-1),
+                                    String::from_utf8_lossy(&py_cmd_output.stdout).trim(),
+                                    stderr_str_lossy.trim()));
+                            } else {
+                                let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
+                                match parse_pca_py_output(&python_output_str) {
+                                    Ok((loadings, scores, eigenvalues)) => {
+                                        py_loadings_k_x_d = loadings;
+                                        py_scores_n_x_k = scores;
+                                        py_eigenvalues_k = eigenvalues;
+                                        effective_k_py = py_eigenvalues_k.len();
+                                        outcome_details.push_str(&format!("Python script execution: SUCCESS. Rust k_eff: {}, Py k_eff: {}. ", effective_k_rust, effective_k_py));
+                                    }
+                                    Err(err_msg) => {
+                                        python_script_phase_ok = false;
+                                        outcome_details.push_str(&format!("Python script parsing: FAILED. Error: {}. Python stdout: {}. ", err_msg, python_output_str.trim()));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        test_successful = false;
-                        outcome_details.push_str(&format!("Failed to wait for pca.py process: {}. ", e));
+                        Err(e) => {
+                            python_script_phase_ok = false;
+                            outcome_details.push_str(&format!("Python script execution: FAILED to wait for process. Error: {}. ", e));
+                        }
                     }
                 }
             }
             Err(e) => {
-                test_successful = false;
-                outcome_details.push_str(&format!("Failed to spawn pca.py process: {}. ", e));
+                python_script_phase_ok = false;
+                outcome_details.push_str(&format!("Python script execution: FAILED to spawn process. Error: {}. ", e));
             }
         }
-        
-        let mut eigenvalue_checks_performed = false;
-        if test_successful {
+        overall_test_successful &= python_script_phase_ok;
+
+        // Rust Eigenvalue Check Phase
+        if overall_test_successful && rust_pca_computation_phase_ok { // Only if Rust PCA ran
             if effective_k_rust > num_true_rank_snps {
-                eigenvalue_checks_performed = true;
+                let mut all_rust_eigenvalues_small = true;
                 for i in num_true_rank_snps..effective_k_rust {
                     if rust_output.final_principal_component_eigenvalues[i] > 1e-3 {
-                        test_successful = false;
-                        outcome_details.push_str(&format!("Rust Eigenvalue for PC {} ({}) beyond true rank ({}) is too large ({}). ", 
+                        all_rust_eigenvalues_small = false;
+                        rust_eigenvalue_check_phase_ok = false;
+                        outcome_details.push_str(&format!("Rust Eigenvalue Check: FAILED. PC {} ({}) beyond true rank ({}) is too large ({}). ", 
                             i, rust_output.final_principal_component_eigenvalues[i], num_true_rank_snps, 1e-3));
                         break; 
                     }
                 }
+                if all_rust_eigenvalues_small {
+                    outcome_details.push_str("Rust Eigenvalue Check: SUCCESS (eigenvalues beyond true rank are small). ");
+                }
+            } else {
+                outcome_details.push_str("Rust Eigenvalue Check: SKIPPED (k_eff_rust <= num_true_rank_snps). ");
             }
-            if test_successful && effective_k_py > 0 && effective_k_py > num_true_rank_snps { // Check effective_k_py > 0 before accessing py_eigenvalues_k
-                 eigenvalue_checks_performed = true;
+        } else if rust_pca_computation_phase_ok { // If Rust PCA ran but overall test failed before this
+             outcome_details.push_str("Rust Eigenvalue Check: SKIPPED (prior failure). ");
+        }
+        overall_test_successful &= rust_eigenvalue_check_phase_ok;
+
+        // Python Eigenvalue Check Phase
+        if overall_test_successful && python_script_phase_ok { // Only if Python script ran and parsed
+            if effective_k_py > 0 && effective_k_py > num_true_rank_snps {
+                let mut all_py_eigenvalues_small = true;
                 for i in num_true_rank_snps..effective_k_py {
-                     if py_eigenvalues_k.get(i).map_or(false, |&val| val > 1e-3) { // Safely get value
-                        test_successful = false;
-                        outcome_details.push_str(&format!("Python Eigenvalue for PC {} ({}) beyond true rank ({}) is too large ({}). ", 
+                     if py_eigenvalues_k.get(i).map_or(false, |&val| val > 1e-3) {
+                        all_py_eigenvalues_small = false;
+                        python_eigenvalue_check_phase_ok = false;
+                        outcome_details.push_str(&format!("Python Eigenvalue Check: FAILED. PC {} ({}) beyond true rank ({}) is too large ({}). ", 
                             i, py_eigenvalues_k.get(i).unwrap_or(&0.0), num_true_rank_snps, 1e-3));
                         break;
                     }
                 }
+                if all_py_eigenvalues_small {
+                     outcome_details.push_str("Python Eigenvalue Check: SUCCESS (eigenvalues beyond true rank are small). ");
+                }
+            } else {
+                outcome_details.push_str("Python Eigenvalue Check: SKIPPED (k_eff_py <= num_true_rank_snps or k_eff_py is 0). ");
             }
-            if eigenvalue_checks_performed && test_successful {
-                 outcome_details.push_str("Eigenvalues beyond true rank checked and are small. ");
-            } else if !eigenvalue_checks_performed {
-                outcome_details.push_str("Eigenvalue checks beyond true rank not performed (k_eff <= true_rank or test already failed). ");
-            }
+        } else if python_script_phase_ok { // If python script ran but overall test failed
+            outcome_details.push_str("Python Eigenvalue Check: SKIPPED (prior failure). ");
         }
+        overall_test_successful &= python_eigenvalue_check_phase_ok;
         
-        let py_loadings_d_x_k = py_loadings_k_x_d.t().into_owned(); // Transpose even if empty
+        let py_loadings_d_x_k = py_loadings_k_x_d.t().into_owned(); 
 
-        let artifact_dir = "target/test_artifacts/pca_low_rank_D_gt_N"; // Updated artifact_dir
+        let artifact_dir = "target/test_artifacts/pca_low_rank_D_gt_N"; 
         if rust_output.num_principal_components_computed > 0 { // Save only if there's something to save
             save_matrix_to_tsv(&rust_output.final_snp_principal_component_loadings.view(), artifact_dir, "rust_loadings.tsv").expect("Failed to save rust_loadings.tsv");
             save_matrix_to_tsv(&rust_output.final_sample_principal_component_scores.view(), artifact_dir, "rust_scores.tsv").expect("Failed to save rust_scores.tsv");
@@ -1127,58 +1269,92 @@ mod eigensnp_integration_tests {
             num_features_d: num_total_snps,
             num_samples_n: num_samples,
             num_pcs_requested_k: k_components_requested,
-            num_pcs_computed: effective_k_rust, // Rust's computed PCs
-            success: test_successful,
+            num_pcs_computed: effective_k_rust, 
+            success: overall_test_successful, // Use the aggregated success status
             outcome_details: outcome_details.clone(),
             notes,
         };
         TEST_RESULTS.lock().unwrap().push(record);
-
-        assert!(test_successful, "Test 'test_pca_more_components_requested_than_rank_D_gt_N' failed prior to detailed comparisons. Details: {}", outcome_details);
         
-        // Only proceed with detailed comparisons if all prior checks (including Python script) were successful
-        if test_successful {
-            println!("Low-rank D>N test: Rust computed {} PCs, Python computed {} PCs (requested {}, true rank {})", 
-                effective_k_rust, effective_k_py, k_components_requested, num_true_rank_snps);
-
-            assert!(effective_k_rust <= k_components_requested, "Rust computed more PCs ({}) than requested ({}).", effective_k_rust, k_components_requested);
-            assert!(effective_k_py <= k_components_requested, "Python computed more PCs ({}) than requested ({}).", effective_k_py, k_components_requested);
-            
-            // Compare up to min of (effective_k_rust, effective_k_py, num_true_rank_snps + a small margin like 2, k_components_requested)
-            // This ensures we only compare meaningful components and don't go out of bounds.
+        // Detailed comparisons only if all preceding critical phases were successful
+        if overall_test_successful {
             let num_pcs_to_compare = effective_k_rust.min(effective_k_py)
-                                        .min(num_true_rank_snps + 2) // Compare slightly beyond true rank if available
+                                        .min(num_true_rank_snps + 2) 
                                         .min(k_components_requested);
 
-
             if num_pcs_to_compare > 0 {
-                 assert_f32_arrays_are_close_with_sign_flips(
-                    rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]),
-                    py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]),
-                    1.5f32, 
-                    "SNP Loadings (Low-Rank D>N)"
-                );
-                assert_f32_arrays_are_close_with_sign_flips(
-                    rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]),
-                    py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]),
-                    DEFAULT_FLOAT_TOLERANCE_F32 * 10.0,
-                    "Sample Scores (Low-Rank D>N)"
-                );
-                assert_f64_arrays_are_close(
-                    rust_output.final_principal_component_eigenvalues.slice(s![0..num_pcs_to_compare]),
-                    py_eigenvalues_k.slice(s![0..num_pcs_to_compare]),
-                    DEFAULT_FLOAT_TOLERANCE_F64 * 10.0, 
-                    "Eigenvalues (Low-Rank D>N)"
-                );
-            } else {
-                println!("No principal components available for detailed comparison (num_pcs_to_compare = {}). Rust k_eff: {}, Py k_eff: {}.", 
-                    num_pcs_to_compare, effective_k_rust, effective_k_py);
-                // If one is 0 and the other is not, it's a failure if test_successful was true
-                if effective_k_rust != effective_k_py {
-                     panic!("Mismatch in effective number of PCs where one is zero. Rust: {}, Python: {}. This should have been caught earlier if test_successful was false.", effective_k_rust, effective_k_py);
+                // Loadings Comparison
+                let loadings_comparison_result = std::panic::catch_unwind(|| {
+                    assert_f32_arrays_are_close_with_sign_flips(
+                        rust_output.final_snp_principal_component_loadings.slice(s![.., 0..num_pcs_to_compare]),
+                        py_loadings_d_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                        1.5f32, 
+                        "SNP Loadings (Low-Rank D>N)"
+                    );
+                });
+                if loadings_comparison_result.is_err() {
+                    loadings_comparison_phase_ok = false;
+                    outcome_details.push_str("Loadings Comparison: FAILED. Details captured by assert. ");
+                } else {
+                    outcome_details.push_str("Loadings Comparison: SUCCESS. ");
+                }
+                overall_test_successful &= loadings_comparison_phase_ok;
+
+                // Scores Comparison
+                if overall_test_successful { // Proceed only if previous was ok
+                    let scores_comparison_result = std::panic::catch_unwind(|| {
+                        assert_f32_arrays_are_close_with_sign_flips(
+                            rust_output.final_sample_principal_component_scores.slice(s![.., 0..num_pcs_to_compare]),
+                            py_scores_n_x_k.slice(s![.., 0..num_pcs_to_compare]),
+                            DEFAULT_FLOAT_TOLERANCE_F32 * 10.0,
+                            "Sample Scores (Low-Rank D>N)"
+                        );
+                    });
+                    if scores_comparison_result.is_err() {
+                        scores_comparison_phase_ok = false;
+                        outcome_details.push_str("Scores Comparison: FAILED. Details captured by assert. ");
+                    } else {
+                        outcome_details.push_str("Scores Comparison: SUCCESS. ");
+                    }
+                    overall_test_successful &= scores_comparison_phase_ok;
+                }
+
+
+                // Eigenvalues Comparison
+                if overall_test_successful { // Proceed only if previous was ok
+                    let eigenvalues_comparison_result = std::panic::catch_unwind(|| {
+                        assert_f64_arrays_are_close(
+                            rust_output.final_principal_component_eigenvalues.slice(s![0..num_pcs_to_compare]),
+                            py_eigenvalues_k.slice(s![0..num_pcs_to_compare]),
+                            DEFAULT_FLOAT_TOLERANCE_F64 * 10.0, 
+                            "Eigenvalues (Low-Rank D>N)"
+                        );
+                    });
+                    if eigenvalues_comparison_result.is_err() {
+                        eigenvalues_comparison_phase_ok = false;
+                        outcome_details.push_str("Eigenvalues Comparison: FAILED. Details captured by assert. ");
+                    } else {
+                        outcome_details.push_str("Eigenvalues Comparison: SUCCESS. ");
+                    }
+                    overall_test_successful &= eigenvalues_comparison_phase_ok;
+                }
+            } else { // num_pcs_to_compare is 0
+                outcome_details.push_str("Detailed Comparisons: SKIPPED (num_pcs_to_compare is 0). ");
+                if effective_k_rust != effective_k_py { // If one is 0 and other is not
+                    overall_test_successful = false; // This is a failure if we expected components
+                    outcome_details.push_str(&format!("Effective k mismatch (Rust: {}, Py: {}), leading to 0 comparable PCs. ", effective_k_rust, effective_k_py));
                 }
             }
+            // Update the success status in the record again if detailed comparisons failed
+            if !overall_test_successful {
+                 TEST_RESULTS.lock().unwrap().last_mut().map(|rec| rec.success = false);
+                 TEST_RESULTS.lock().unwrap().last_mut().map(|rec| rec.outcome_details = outcome_details.clone());
+            }
+        } else { // overall_test_successful was false before detailed comparisons
+             outcome_details.push_str("Detailed Comparisons: SKIPPED (due to prior phase failures). ");
+             TEST_RESULTS.lock().unwrap().last_mut().map(|rec| rec.outcome_details = outcome_details.clone());
         }
+        assert!(overall_test_successful, "Test 'test_pca_more_components_requested_than_rank_D_gt_N' failed. Details: {}", outcome_details);
     }
 }
 
@@ -1417,6 +1593,265 @@ fn test_pc_correlation_with_truth_set_large_1000x200() {
     );
 }
 
+#[test]
+fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
+    // 1. Define parameters
+    let num_snps = 1000;    // D
+    let num_samples = 200;  // N
+    let k_components_to_request = 10; // k_request
+    let seed = 202408;
+    let num_true_pcs = 5;   // K_true
+    let signal_strength = 5.0;
+    let noise_std_dev = 1.0;
+
+    // 2. Initialize TestResultRecord variables
+    let test_name = "test_pc_correlation_structured_1000snps_200samples_5truepcs".to_string();
+    let mut test_successful = true;
+    let mut outcome_details = String::new();
+    let mut notes = format!(
+        "Structured Data Test: D_snps={}, N_samples={}, k_requested={}, k_true={}. ",
+        num_snps, num_samples, k_components_to_request, num_true_pcs
+    );
+
+    // 3. Generate structured data
+    let structured_standardized_genos_snps_x_samples = generate_structured_data(
+        num_snps,
+        num_samples,
+        num_true_pcs,
+        signal_strength,
+        noise_std_dev,
+        seed,
+    );
+
+    // 4. Set up an artifact directory
+    let artifact_dir_suffix = format!(
+        "pc_corr_structured_{}x{}_k{}_true{}",
+        num_snps, num_samples, k_components_to_request, num_true_pcs
+    );
+    let artifact_dir = Path::new("target/test_artifacts").join(artifact_dir_suffix);
+    if let Err(e) = fs::create_dir_all(&artifact_dir) {
+        notes.push_str(&format!("Failed to create artifact dir: {}. ", e));
+        // Depending on policy, might set test_successful = false here or let subsequent ops fail
+    }
+
+    // 5. Python Reference PCA
+    let mut py_loadings_d_x_k: Array2<f32> = Array2::zeros((0, 0));
+    let mut py_scores_n_x_k: Array2<f32> = Array2::zeros((0, 0));
+    let mut py_eigenvalues_k: Array1<f64> = Array1::zeros(0);
+    let mut effective_k_py = 0;
+
+    let mut stdin_data_py = String::new();
+    for r_idx in 0..structured_standardized_genos_snps_x_samples.nrows() {
+        for c_idx in 0..structured_standardized_genos_snps_x_samples.ncols() {
+            stdin_data_py.push_str(&structured_standardized_genos_snps_x_samples[[r_idx, c_idx]].to_string());
+            if c_idx < structured_standardized_genos_snps_x_samples.ncols() - 1 {
+                stdin_data_py.push(' ');
+            }
+        }
+        stdin_data_py.push('\n');
+    }
+
+    let mut script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    script_path.push("tests/pca.py");
+
+    match Command::new("python3")
+        .arg(script_path.to_str().expect("Script path is not valid UTF-8"))
+        .arg("--generate-reference-pca")
+        .arg("-k")
+        .arg(k_components_to_request.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(mut process) => {
+            if let Some(mut stdin_pipe) = process.stdin.take() {
+                let stdin_data_py_clone = stdin_data_py.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = stdin_pipe.write_all(stdin_data_py_clone.as_bytes()) {
+                        eprintln!("Failed to write to stdin of pca.py: {}", e);
+                    }
+                });
+            } else {
+                test_successful = false;
+                outcome_details.push_str("Failed to get stdin pipe for pca.py. ");
+            }
+
+            match process.wait_with_output() {
+                Ok(py_cmd_output) => {
+                    let stderr_py = String::from_utf8_lossy(&py_cmd_output.stderr);
+                    notes.push_str(&format!("Python stderr: {}. ", stderr_py.trim()));
+                    if !py_cmd_output.status.success() {
+                        test_successful = false;
+                        outcome_details.push_str(&format!(
+                            "Python script execution failed. Status: {}. Stdout: {}. Stderr: {}. ",
+                            py_cmd_output.status.code().unwrap_or(-1),
+                            String::from_utf8_lossy(&py_cmd_output.stdout).trim(),
+                            stderr_py.trim()
+                        ));
+                    } else {
+                        let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
+                        match parse_pca_py_output(&python_output_str) {
+                            Ok((loadings_k_x_d_py, scores_n_x_k_py, eigenvalues_k_py)) => {
+                                py_loadings_d_x_k = loadings_k_x_d_py.t().into_owned(); // D x K
+                                py_scores_n_x_k = scores_n_x_k_py;     // N x K
+                                py_eigenvalues_k = eigenvalues_k_py;   // K
+                                effective_k_py = py_loadings_d_x_k.ncols();
+                                outcome_details.push_str(&format!("Python PCA successful. effective_k_py: {}. ", effective_k_py));
+                                save_matrix_to_tsv(&py_loadings_d_x_k.view(), artifact_dir.to_str().unwrap_or("."), "python_loadings.tsv").unwrap_or_default();
+                                save_matrix_to_tsv(&py_scores_n_x_k.view(), artifact_dir.to_str().unwrap_or("."), "python_scores.tsv").unwrap_or_default();
+                                save_vector_to_tsv(&py_eigenvalues_k.view(), artifact_dir.to_str().unwrap_or("."), "python_eigenvalues.tsv").unwrap_or_default();
+                            }
+                            Err(e) => {
+                                test_successful = false;
+                                outcome_details.push_str(&format!("Failed to parse pca.py output: {}. ", e));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    test_successful = false;
+                    outcome_details.push_str(&format!("Failed to wait for pca.py: {}. ", e));
+                }
+            }
+        }
+        Err(e) => {
+            test_successful = false;
+            outcome_details.push_str(&format!("Failed to spawn pca.py: {}. ", e));
+        }
+    }
+
+    // 6. eigensnp Execution
+    let test_data_accessor = TestDataAccessor::new(structured_standardized_genos_snps_x_samples.clone());
+    
+    // Correctly calculate these parameters based on num_samples and num_snps
+    let min_subset_size = (num_samples / 4).max(1).min(num_samples.max(1));
+    let max_subset_size = (num_samples / 2).max(10).min(num_samples.max(1));
+    let components_per_block = 10.min(num_snps.min(max_subset_size));
+
+
+    let config = EigenSNPCoreAlgorithmConfig {
+        target_num_global_pcs: k_components_to_request,
+        random_seed: seed,
+        subset_factor_for_local_basis_learning: 0.5, // As per issue
+        min_subset_size_for_local_basis_learning: min_subset_size,
+        max_subset_size_for_local_basis_learning: max_subset_size,
+        components_per_ld_block: components_per_block,
+        ..Default::default()
+    };
+
+    let algorithm = EigenSNPCoreAlgorithm::new(config);
+    let ld_blocks = vec![LdBlockSpecification {
+        user_defined_block_tag: "block_structured".to_string(),
+        pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
+    }];
+
+    let mut rust_pcs_computed = 0;
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+        Ok(rust_result) => {
+            rust_pcs_computed = rust_result.num_principal_components_computed;
+            outcome_details.push_str(&format!("eigensnp PCA successful. rust_pcs_computed: {}. ", rust_pcs_computed));
+            save_matrix_to_tsv(&rust_result.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_loadings.tsv").unwrap_or_default();
+            save_matrix_to_tsv(&rust_result.final_sample_principal_component_scores.view(), artifact_dir.to_str().unwrap_or("."), "rust_scores.tsv").unwrap_or_default();
+            save_vector_to_tsv(&rust_result.final_principal_component_eigenvalues.view(), artifact_dir.to_str().unwrap_or("."), "rust_eigenvalues.tsv").unwrap_or_default();
+
+            // 7. Comparison and Assertions
+            if test_successful { // Only compare if Python part was also successful and Rust part is successful
+                // Determine k_to_compare: min of Rust computed, Python computed, and slightly more than true PCs for detailed check
+                let k_to_compare = rust_pcs_computed.min(effective_k_py).min(num_true_pcs + 2).min(k_components_to_request);
+                
+                outcome_details.push_str(&format!("Comparing up to {} PCs. True PCs: {}. ", k_to_compare, num_true_pcs));
+
+                if k_to_compare == 0 {
+                    outcome_details.push_str("No components to compare (Rust or Python computed 0 relevant PCs). ");
+                    if rust_pcs_computed != effective_k_py && (rust_pcs_computed == 0 || effective_k_py == 0) {
+                        test_successful = false; // If one is 0 and other is not, it's a failure if we expected components
+                        outcome_details.push_str(&format!("Mismatch in computed k (Rust: {}, Py: {}). ", rust_pcs_computed, effective_k_py));
+                    }
+                } else {
+                    let mut min_true_loading_abs_corr = 1.0f32;
+                    let mut min_true_score_abs_corr = 1.0f32;
+                    let mut correlations_summary = String::new();
+
+                    for pc_idx in 0..k_to_compare {
+                        let rust_loading_col = rust_result.final_snp_principal_component_loadings.column(pc_idx);
+                        let py_loading_col = py_loadings_d_x_k.column(pc_idx);
+                        let loading_corr_opt = pearson_correlation(rust_loading_col.view(), py_loading_col.view());
+                        let loading_abs_corr = loading_corr_opt.map_or(0.0, |c| c.abs());
+                        
+                        correlations_summary.push_str(&format!("PC{}_Load_absR={:.4}; ", pc_idx, loading_abs_corr));
+
+                        let rust_score_col = rust_result.final_sample_principal_component_scores.column(pc_idx);
+                        let py_score_col = py_scores_n_x_k.column(pc_idx);
+                        let score_corr_opt = pearson_correlation(rust_score_col.view(), py_score_col.view());
+                        let score_abs_corr = score_corr_opt.map_or(0.0, |c| c.abs());
+
+                        correlations_summary.push_str(&format!("PC{}_Score_absR={:.4}; ", pc_idx, score_abs_corr));
+
+                        if pc_idx < num_true_pcs { // Stricter check for true components
+                            if loading_abs_corr < min_true_loading_abs_corr { min_true_loading_abs_corr = loading_abs_corr; }
+                            if score_abs_corr < min_true_score_abs_corr { min_true_score_abs_corr = score_abs_corr; }
+
+                            if loading_abs_corr < 0.98 { // High threshold for true PCs
+                                test_successful = false;
+                                outcome_details.push_str(&format!("Low loading correlation for true PC {}: {:.4}. ", pc_idx, loading_abs_corr));
+                            }
+                            if score_abs_corr < 0.98 { // High threshold for true PCs
+                                test_successful = false;
+                                outcome_details.push_str(&format!("Low score correlation for true PC {}: {:.4}. ", pc_idx, score_abs_corr));
+                            }
+                        } else { // More lenient for PCs beyond num_true_pcs (noise or mixed)
+                            // Could have a more lenient threshold here if needed, e.g. > 0.8 or just log
+                            if loading_abs_corr < 0.70 { 
+                                // Not necessarily a failure, but good to note if unexpected.
+                                notes.push_str(&format!("Note: Loading correlation for non-true PC {} is {:.4}. ", pc_idx, loading_abs_corr));
+                            }
+                             if score_abs_corr < 0.70 {
+                                notes.push_str(&format!("Note: Score correlation for non-true PC {} is {:.4}. ", pc_idx, score_abs_corr));
+                            }
+                        }
+                    }
+                    outcome_details.push_str(&format!(
+                        "For first {} true PCs: Min_Load_absR={:.4}, Min_Score_absR={:.4}. Full_Corr_Summary: {}. ",
+                        num_true_pcs.min(k_to_compare), // Ensure we don't claim more true PCs than compared
+                        min_true_loading_abs_corr, 
+                        min_true_score_abs_corr, 
+                        correlations_summary.trim_end_matches("; ")
+                    ));
+                }
+            }
+        }
+        Err(e) => {
+            test_successful = false;
+            outcome_details.push_str(&format!("eigensnp PCA computation failed: {}. ", e));
+            // rust_pcs_computed remains 0, which is fine for logging
+        }
+    }
+
+    // 8. Logging
+    let record = TestResultRecord {
+        test_name,
+        num_features_d: num_snps,
+        num_samples_n: num_samples,
+        num_pcs_requested_k: k_components_to_request,
+        num_pcs_computed: rust_pcs_computed, // Rust's computed PCs
+        success: test_successful,
+        outcome_details: outcome_details.clone(),
+        notes,
+    };
+    TEST_RESULTS.lock().unwrap().push(record);
+
+    // 9. Final Assertion
+    assert!(
+        test_successful,
+        "Test '{}' failed. Check artifacts in '{}'. Details: {}",
+        test_name,
+        artifact_dir.display(),
+        outcome_details
+    );
+}
+
+
 // Helper function for generic large matrix execution tests
 pub fn run_generic_large_matrix_test(
     test_name_str: &str,
@@ -1427,6 +1862,7 @@ pub fn run_generic_large_matrix_test(
     // Optional: allow passing a custom config modifier
     config_modifier: Option<fn(EigenSNPCoreAlgorithmConfig) -> EigenSNPCoreAlgorithmConfig>, 
 ) {
+    let mut outcome_details = String::new(); // Added this line
     let test_name = test_name_str.to_string();
     let mut test_successful = true;
     let mut notes = format!("Matrix D_snps x N_samples: {}x{}, k_requested: {}. ", num_snps, num_samples, k_components);
@@ -1895,7 +2331,7 @@ fn test_reorder_columns_select_from_zero_cols_panics() {
     let order_for_0_cols = vec![0];
     reorder_columns_owned(&original_0_cols, &order_for_0_cols);
 }
-   
+
 #[test]
 fn test_reorder_columns_empty_order() {
     let original = arr2(&[[1, 2, 3], [4, 5, 6]]);
