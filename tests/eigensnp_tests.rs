@@ -165,7 +165,10 @@ fn save_vector_to_tsv<T: Display>(
 
 #[cfg(test)]
 mod eigensnp_integration_tests {
+    use crate::eigensnp_integration_tests::generate_structured_data;
+    use crate::eigensnp_integration_tests::orthonormalize_columns;
     use super::*; 
+    use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
@@ -239,33 +242,39 @@ mod eigensnp_integration_tests {
         if matrix.ncols() == 0 || matrix.nrows() == 0 {
             return;
         }
-        // Iterate through each column to orthogonalize and normalize it
         for j in 0..matrix.ncols() {
-            let mut col_j = matrix.column_mut(j);
-            // Orthogonalize col_j against all previous columns (col_i where i < j)
+            // Inner loop to subtract projections of previous vectors
             for i in 0..j {
-                // Ensure col_i is owned before performing operations that involve col_j
-                let col_i_owned = matrix.column(i).to_owned();
-            
-                // Calculate the dot product using the mutable view col_j and the owned col_i_owned
-                let dot_product = col_j.view().dot(&col_i_owned);
-            
-                // Subtract the projection: col_j = col_j - dot_product * col_i_owned
-                // Create a temporary owned array for the scaled version of col_i_owned
+                // Get an owned copy of column i. This is crucial.
+                // matrix.column(i) is an immutable borrow of matrix.
+                // .to_owned() clones it, so col_i_owned is now independent of matrix's borrow state for subsequent ops.
+                let col_i_owned = matrix.column(i).to_owned(); 
+                                    
+                // Temporarily get a mutable view of column j for this specific operation.
+                // This re-borrows matrix mutably, but only for the scope of col_j_view.
+                let mut col_j_view = matrix.column_mut(j); 
+                
+                // Calculate dot product using the mutable view of col_j and the owned col_i.
+                let dot_product = col_j_view.view().dot(&col_i_owned);
+                
+                // Perform subtraction using the owned col_i_owned and the view col_j_view.
+                // mapv creates a new owned array, so scaled_col_i is also independent.
                 let scaled_col_i = col_i_owned.mapv(|x| x * dot_product);
-                col_j.zip_mut_with(&scaled_col_i, |cj_val, scaled_ci_val| *cj_val -= scaled_ci_val);
+                col_j_view.zip_mut_with(&scaled_col_i, |cj_val, scaled_ci_val| *cj_val -= scaled_ci_val);
+                // col_j_view (and its mutable borrow of matrix) goes out of scope here.
             }
-            // Normalize col_j (if its norm is > 0)
-            let norm_sq = col_j.mapv(|x| x.powi(2)).sum();
-            if norm_sq > 1e-9 { // Check against a small epsilon to avoid division by zero
-                let norm = norm_sq.sqrt();
-                col_j.mapv_inplace(|x| x / norm);
+
+            // Normalize column j - re-borrow column j mutably for this operation.
+            // This is another short-lived mutable borrow.
+            let mut col_j_for_norm = matrix.column_mut(j);
+            let norm = col_j_for_norm.mapv(|x| x.powi(2)).sum().sqrt();
+            if norm > 1e-6 {
+                col_j_for_norm.mapv_inplace(|x| x / norm);
             } else {
-                // If the column is zero (or very close to it), it might indicate linear dependency.
-                // Fill with zeros or handle as an error, depending on requirements.
-                // For testing, filling with zeros is often acceptable.
-                col_j.fill(0.0);
+                // If column becomes zero (e.g. linear dependency), fill with zeros.
+                col_j_for_norm.fill(0.0); 
             }
+            // col_j_for_norm (and its mutable borrow of matrix) goes out of scope here.
         }
     }
     
@@ -1902,18 +1911,20 @@ pub fn run_generic_large_matrix_test(
     match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
         Ok(output) => {
             rust_pcs_computed = output.num_principal_components_computed;
-            outcome_details = format!(
+            write!(
+                &mut outcome_details,
                 "eigensnp successful. Computed {} PCs. First eigenvalue: {:.4}. ",
                 output.num_principal_components_computed,
                 output.final_principal_component_eigenvalues.get(0).unwrap_or(&0.0)
-            );
+            ).unwrap_or_default();
             if rust_pcs_computed == 0 && k_components > 0 {
                  test_successful = false;
-                 outcome_details.push_str("Warning: 0 PCs computed when k_requested > 0. ");
+                 // Use write! for appending, though push_str is also fine if not formatting.
+                 write!(&mut outcome_details, "Warning: 0 PCs computed when k_requested > 0. ").unwrap_or_default();
             }
             if rust_pcs_computed > k_components {
                  test_successful = false;
-                 outcome_details.push_str(&format!("Warning: More PCs computed ({}) than requested ({}). ", rust_pcs_computed, k_components));
+                 write!(&mut outcome_details, "Warning: More PCs computed ({}) than requested ({}). ", rust_pcs_computed, k_components).unwrap_or_default();
             }
             // Save outputs
             save_matrix_to_tsv(&output.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_loadings.tsv").unwrap_or_default();
@@ -1922,7 +1933,7 @@ pub fn run_generic_large_matrix_test(
         }
         Err(e) => {
             test_successful = false;
-            outcome_details = format!("eigensnp PCA computation failed: {}. ", e);
+            write!(&mut outcome_details, "eigensnp PCA computation failed: {}. ", e).unwrap_or_default();
         }
     }
 
