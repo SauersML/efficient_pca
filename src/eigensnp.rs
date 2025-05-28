@@ -345,6 +345,14 @@ pub struct EigenSNPCoreAlgorithmConfig {
     /// in smaller, more manageable vertical strips.
     /// Must be greater than 0. A typical value might be 2000-10000.
     pub snp_processing_strip_size: usize,
+    /// Number of refinement passes for SNP loadings and sample scores. Default is 1.
+    /// Pass 1: V_qr = orth(X U_scores_initial), S_int = X^T V_qr. SVD(S_int) gives U_rot, S_prime, V_rot.
+    ///         Final: S_final = U_rot S_prime, V_final = V_qr V_rot.
+    /// Pass 2 (if refine_pass_count >= 2): Use S_final (from pass 1) as new U_scores.
+    ///         V_qr_p2 = orth(X S_final_p1), S_int_p2 = X^T V_qr_p2. SVD(S_int_p2) gives U_rot_p2, S_prime_p2, V_rot_p2.
+    ///         Final_p2: S_final_p2 = U_rot_p2 S_prime_p2, V_final_p2 = V_qr_p2 V_rot_p2.
+    /// Additional passes follow the same pattern.
+    pub refine_pass_count: usize,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -362,6 +370,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
             snp_processing_strip_size: 2000, // Default based on previous hardcoded value
+            refine_pass_count: 1, // Default to 1 refinement pass
         }
     }
 }
@@ -463,13 +472,13 @@ impl EigenSNPCoreAlgorithm {
         info!("Standardized condensed feature matrix in {:?}", condensed_matrix_standardization_start_time.elapsed());
 
         let initial_global_pca_start_time = std::time::Instant::now();
-        let initial_sample_pc_scores = self.compute_pca_on_standardized_condensed_features_via_rsvd(
+        let mut current_sample_scores = self.compute_pca_on_standardized_condensed_features_via_rsvd(
             &standardized_condensed_feature_matrix,
         )?;
         info!("Computed initial global PCA on condensed features in {:?}", initial_global_pca_start_time.elapsed());
 
-        let num_computed_initial_pcs = initial_sample_pc_scores.scores.ncols();
-        if num_computed_initial_pcs == 0 {
+        let mut num_principal_components_computed_final = current_sample_scores.scores.ncols();
+        if num_principal_components_computed_final == 0 {
             warn!("Initial PCA on condensed features yielded 0 components. Returning empty PCA output.");
             return Ok(EigenSNPCoreOutput {
                 final_snp_principal_component_loadings: Array2::zeros((num_total_pca_snps,0)),
@@ -480,40 +489,83 @@ impl EigenSNPCoreAlgorithm {
                 num_principal_components_computed: 0,
             });
         }
-
-        debug!("Starting Score-Guided Refinement with {} initial PCs.", num_computed_initial_pcs);
-        let loadings_refinement_start_time = std::time::Instant::now();
-        let v_qr_snp_loadings = self.compute_refined_snp_loadings(
-            genotype_data,
-            &initial_sample_pc_scores,
-        )?;
-        info!("Computed QR-based SNP loadings (intermediate V_qr) in {:?}", loadings_refinement_start_time.elapsed());
         
-        if v_qr_snp_loadings.ncols() == 0 {
-            warn!("Intermediate QR-based SNP loadings (V_qr) resulted in 0 components. Returning empty PCA output.");
-            return Ok(EigenSNPCoreOutput {
-                final_snp_principal_component_loadings: v_qr_snp_loadings, // This is D x 0
-                final_sample_principal_component_scores: Array2::zeros((num_total_qc_samples,0)),
-                final_principal_component_eigenvalues: Array1::zeros(0),
-                num_qc_samples_used: num_total_qc_samples,
-                num_pca_snps_used: genotype_data.num_pca_snps(),
-                num_principal_components_computed: 0,
-            });
+        let mut final_sorted_snp_loadings: Array2<f32> = Array2::zeros((num_total_pca_snps, 0));
+        let mut final_sorted_eigenvalues: Array1<f64> = Array1::zeros(0);
+
+
+        // Refinement Loop
+        // The loop will run self.config.refine_pass_count times.
+        // Pass 1 uses initial_sample_pc_scores. Subsequent passes use scores from the previous iteration.
+        for pass_num in 1..=self.config.refine_pass_count.max(1) { // Ensure at least one pass
+            debug!(
+                "Starting Refinement Pass {} with {} PCs from previous step.", 
+                pass_num, 
+                current_sample_scores.scores.ncols()
+            );
+
+            if current_sample_scores.scores.ncols() == 0 {
+                warn!("Refinement Pass {}: Input scores have 0 components. Cannot proceed with refinement.", pass_num);
+                // If this happens on pass 1, it means initial PCA failed to produce components.
+                // If on later passes, it means a previous refinement pass resulted in 0 components.
+                // In either case, we should return the current (empty or near-empty) state.
+                // If final_sorted_snp_loadings is still its initial empty state, populate with zeros.
+                if pass_num == 1 { // Ensure output shapes are consistent if initial scores are empty
+                     final_sorted_snp_loadings = Array2::zeros((num_total_pca_snps,0));
+                } // otherwise, final_sorted_snp_loadings holds results from previous valid pass
+                num_principal_components_computed_final = 0; // Update final count
+                break; // Exit refinement loop
+            }
+
+            let loadings_refinement_start_time = std::time::Instant::now();
+            let v_qr_snp_loadings = self.compute_refined_snp_loadings(
+                genotype_data,
+                &current_sample_scores, // Use scores from previous step (or initial if pass 1)
+            )?;
+            info!("Pass {}: Computed QR-based SNP loadings (intermediate V_qr) in {:?}", pass_num, loadings_refinement_start_time.elapsed());
+            
+            if v_qr_snp_loadings.ncols() == 0 {
+                warn!("Pass {}: Intermediate QR-based SNP loadings (V_qr) resulted in 0 components. Ending refinement.", pass_num);
+                if pass_num == 1 { // If first pass fails to produce V_qr, ensure empty loadings
+                    final_sorted_snp_loadings = v_qr_snp_loadings; // This will be D x 0
+                } // otherwise, final_sorted_snp_loadings holds results from previous valid pass
+                num_principal_components_computed_final = 0;
+                break; // Exit refinement loop
+            }
+
+            let final_outputs_computation_start_time = std::time::Instant::now();
+            let (
+                sorted_scores_this_pass,
+                sorted_eigenvalues_this_pass,
+                sorted_loadings_this_pass
+            ) = self.compute_rotated_final_outputs(
+                genotype_data,
+                &v_qr_snp_loadings.view(),
+                num_total_qc_samples,
+            )?;
+            info!("Pass {}: Computed final rotated scores, eigenvalues, and loadings in {:?}", pass_num, final_outputs_computation_start_time.elapsed());
+
+            // Update current_sample_scores for the next iteration (if any)
+            // The scores from compute_rotated_final_outputs are S_final = U_rot * S_prime,
+            // which is what we need as input (U_scores^*) for the next compute_refined_snp_loadings.
+            current_sample_scores = InitialSamplePcScores { scores: sorted_scores_this_pass.clone() }; // Clone, as sorted_scores_this_pass is moved to final output if last pass
+            
+            // Store the results of this pass as the current "final" results.
+            // If this is the last pass, these will be the ones returned.
+            final_sorted_snp_loadings = sorted_loadings_this_pass;
+            final_sorted_eigenvalues = sorted_eigenvalues_this_pass;
+            num_principal_components_computed_final = final_sorted_snp_loadings.ncols();
+
+            if num_principal_components_computed_final == 0 {
+                warn!("Pass {}: Refinement resulted in 0 final components. Ending refinement.", pass_num);
+                break; // Exit refinement loop
+            }
         }
+        // End of Refinement Loop
 
-        let final_outputs_computation_start_time = std::time::Instant::now();
-        let (
-            final_sorted_sample_scores,
-            final_sorted_eigenvalues,
-            final_sorted_snp_loadings // This is the new, true final V
-        ) = self.compute_rotated_final_outputs(
-            genotype_data,
-            &v_qr_snp_loadings.view(), // Pass V_qr
-            num_total_qc_samples,
-        )?;
-        info!("Computed final rotated scores, eigenvalues, and loadings in {:?}", final_outputs_computation_start_time.elapsed());
-
-        let num_principal_components_computed_final = final_sorted_snp_loadings.ncols();
+        // current_sample_scores now holds the sample scores from the last completed refinement pass.
+        // final_sorted_snp_loadings and final_sorted_eigenvalues also hold results from the last completed pass.
+        let final_sorted_sample_scores = current_sample_scores.scores; // These are the scores corresponding to the final loadings/eigenvalues
 
         info!(
             "EigenSNP PCA completed in {:?}. Computed {} Principal Components.",
