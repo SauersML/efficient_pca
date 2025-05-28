@@ -324,6 +324,18 @@ jobs:
           path: artifacts/ # All downloaded artifacts will be in subdirectories under 'artifacts/'
                            # e.g., artifacts/eigensnp-test-artifacts-openblas/target/test_artifacts/...
 
+      - name: List downloaded artifact structure
+        run: |
+          echo "Listing contents of artifacts/ directory:"
+          ls -R artifacts/
+          echo "-----------------------------------------"
+          echo "Searching for eigensnp_summary_results.tsv files:"
+          find artifacts/ -name "eigensnp_summary_results.tsv" -print
+          echo "-----------------------------------------"
+          echo "Searching for any .tsv files:"
+          find artifacts/ -name "*.tsv" -print
+          echo "-----------------------------------------"
+
       - name: Run analysis script
         run: |
           python tests/analyze_eigensnp_results.py --input-dir artifacts/ --output-dir analysis_output/

@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
+
 import argparse
 import os
 import glob
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # no GUI backend is used
+matplotlib.use('Agg')  # Ensure no GUI backend is used
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
@@ -60,7 +62,7 @@ def main():
     logging.info(f"Processing identified backend artifact directories: {[d[0] for d in backend_dirs_to_process]}")
 
     for original_dir_name, actual_backend_name in backend_dirs_to_process:
-        # Path reversion: Search directly in the backend artifact directory
+        # Revert base path to search directly in the backend artifact directory
         backend_artifacts_path = os.path.join(args.input_dir, original_dir_name)
         logging.info(f"Searching for artifacts in: {backend_artifacts_path} for backend: {actual_backend_name}")
 
@@ -239,24 +241,25 @@ def main():
                 md_file.write("No files matching eigenvalue patterns (e.g., `*_eigenvalues.tsv`) found in the manifest.\n\n")
             else:
                 # Extract test scenario from RelativePath (e.g., parent directory of the tsv file)
-                # RelativePath in manifest_df is like `eigensnp-test-artifacts-openblas/test_scenario_dir/some_eigenvalues.tsv`
-                # or `eigensnp-test-artifacts-openblas/some_top_level_file.tsv`
-                # The TestScenario should be the directory name containing the eigenvalues.tsv file,
-                # or the backend artifact directory name if the file is at the top level of the artifact.
+                # RelativePath in manifest_df will be like:
+                # `eigensnp-test-artifacts-openblas/scenario_A/eigenvalues.tsv`
+                # or `eigensnp-test-artifacts-openblas/top_level_results.tsv`
                 def extract_test_scenario_from_manifest_path(path_str):
                     # path_str is relative to args.input_dir
-                    # e.g., "eigensnp-test-artifacts-openblas/scenario_A/eigenvalues.tsv" -> parts will be ["eigensnp-test-artifacts-openblas", "scenario_A", "eigenvalues.tsv"]
-                    # e.g., "eigensnp-test-artifacts-mkl/summary.tsv" -> parts will be ["eigensnp-test-artifacts-mkl", "summary.tsv"]
+                    # e.g., "eigensnp-test-artifacts-openblas/scenario_A/eigenvalues.tsv"
+                    # parts: ["eigensnp-test-artifacts-openblas", "scenario_A", "eigenvalues.tsv"]
+                    # e.g., "eigensnp-test-artifacts-openblas/top_level_results.tsv"
+                    # parts: ["eigensnp-test-artifacts-openblas", "top_level_results.tsv"]
                     parts = os.path.normpath(path_str).split(os.sep)
-                    if len(parts) >= 3: # File is in a subdirectory of the backend artifact dir
-                        # scenario_name is parts[-2], e.g., "scenario_A"
+                    
+                    if len(parts) >= 3: # File is in a subdirectory of the backend artifact directory
+                        # e.g., .../scenario_A/file.tsv -> scenario_A is parts[-2]
                         return parts[-2]
-                    elif len(parts) == 2: # File is at the top level of the backend artifact dir
-                        # Use the backend artifact directory name (parts[0]) as the "scenario" for grouping these.
-                        # This might not be ideal for eigenvalue comparison if files aren't in dedicated scenario subdirs,
-                        # but it provides a consistent grouping key.
-                        return parts[0] # e.g. "eigensnp-test-artifacts-openblas"
-                    else: # Path is too short (e.g. just "file.tsv", which shouldn't happen if manifest is correct)
+                    elif len(parts) == 2: # File is directly under the backend artifact directory
+                        # e.g., .../top_level_results.tsv -> use backend artifact name (parts[0]) as scenario identifier
+                        # or a special marker like "."
+                        return parts[0] # This groups all top-level files under the backend's name
+                    else:
                         logging.warning(f"Could not determine test scenario from path: {path_str} - path has too few components.")
                         return "unknown_scenario"
 
