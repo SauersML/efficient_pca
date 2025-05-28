@@ -35,6 +35,7 @@ use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
+use crate::eigensnp_integration_tests::generate_structured_data;
 
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
