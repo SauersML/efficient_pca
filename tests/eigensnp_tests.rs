@@ -170,14 +170,14 @@ mod eigensnp_integration_tests {
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
     pub struct TestResultRecord {
-        test_name: String,
-        num_features_d: usize,
-        num_samples_n: usize,
-        num_pcs_requested_k: usize,
-        num_pcs_computed: usize,
-        success: bool,
-        outcome_details: String,
-        notes: String,
+        pub test_name: String,
+        pub num_features_d: usize,
+        pub num_samples_n: usize,
+        pub num_pcs_requested_k: usize,
+        pub num_pcs_computed: usize,
+        pub success: bool,
+        pub outcome_details: String,
+        pub notes: String,
     }
 
     // Global static for results
@@ -937,7 +937,7 @@ mod eigensnp_integration_tests {
     }
 
     #[test]
-    fn test_pca_more_components_requested_than_rank_D_gt_N() {
+    fn test_pca_more_components_requested_than_rank_d_gt_n() {
         let mut test_successful = true;
         let mut outcome_details = String::new();
         let mut notes = String::new();
