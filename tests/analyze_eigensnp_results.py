@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
-
 import argparse
 import os
 import glob
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # Ensure no GUI backend is used
+matplotlib.use('Agg')  # no GUI backend is used
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
