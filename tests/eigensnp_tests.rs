@@ -22,6 +22,7 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::fs::{self, File}; // Add fs for create_dir_all
+use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 // use std::io::Write; // Already present
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
@@ -165,10 +166,8 @@ fn save_vector_to_tsv<T: Display>(
 
 #[cfg(test)]
 mod eigensnp_integration_tests {
-    use crate::eigensnp_integration_tests::generate_structured_data;
     use crate::eigensnp_integration_tests::orthonormalize_columns;
     use super::*; 
-    use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
