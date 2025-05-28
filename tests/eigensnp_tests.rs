@@ -30,6 +30,11 @@ use std::fs::OpenOptions;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
 
+use crate::eigensnp_integration_tests::parse_pca_py_output;
+use crate::eigensnp_integration_tests::TestDataAccessor;
+use crate::eigensnp_integration_tests::TestResultRecord;
+use crate::eigensnp_integration_tests::TEST_RESULTS;
+
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
@@ -165,19 +170,19 @@ mod eigensnp_integration_tests {
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
     pub struct TestResultRecord {
-        test_name: String,
-        num_features_d: usize,
-        num_samples_n: usize,
-        num_pcs_requested_k: usize,
-        num_pcs_computed: usize,
-        success: bool,
-        outcome_details: String,
-        notes: String,
+        pub test_name: String,
+        pub num_features_d: usize,
+        pub num_samples_n: usize,
+        pub num_pcs_requested_k: usize,
+        pub num_pcs_computed: usize,
+        pub success: bool,
+        pub outcome_details: String,
+        pub notes: String,
     }
 
     // Global static for results
     lazy_static! {
-        static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
+        pub static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
     }
 
     // Function to write results to TSV
@@ -932,7 +937,7 @@ mod eigensnp_integration_tests {
     }
 
     #[test]
-    fn test_pca_more_components_requested_than_rank_D_gt_N() {
+    fn test_pca_more_components_requested_than_rank_d_gt_n() {
         let mut test_successful = true;
         let mut outcome_details = String::new();
         let mut notes = String::new();
@@ -991,12 +996,8 @@ mod eigensnp_integration_tests {
                     final_sample_principal_component_scores: Array2::zeros((0,0)),
                     final_principal_component_eigenvalues: Array1::zeros(0),
                     num_principal_components_computed: 0,
-                    num_pca_snps_used: num_total_snps,
-                    num_qc_samples_used: num_samples,
-                    total_variance_in_standardized_data: 0.0,
-                    explained_variance_by_each_principal_component: Array1::zeros(0),
-                    proportion_of_variance_explained_by_each_principal_component: Array1::zeros(0),
-                    cumulative_proportion_of_variance_explained: Array1::zeros(0),
+                    num_pca_snps_used: num_total_snps, // Ensure num_total_snps is in scope
+                    num_qc_samples_used: num_samples,   // Ensure num_samples is in scope
                 }
             }
         };
@@ -1186,7 +1187,7 @@ pub fn pearson_correlation(v1: ArrayView1<f32>, v2: ArrayView1<f32>) -> Option<f
     if v1.len() != v2.len() || v1.is_empty() {
         return None;
     }
-    let n = v1.len() as f32;
+    let _n = v1.len() as f32;
     let mean1 = v1.mean().unwrap_or(0.0);
     let mean2 = v2.mean().unwrap_or(0.0);
     let mut cov = 0.0;
@@ -1556,7 +1557,7 @@ pub fn run_sample_projection_accuracy_test(
 ) {
     let test_name = test_name_str.to_string();
     let mut test_successful = true;
-    let mut outcome_details = String::new();
+    let mut outcome_details: String;
     let num_samples_test = num_samples_total - num_samples_train;
     let mut notes = format!(
         "Matrix D_snps x N_total_samples (N_train_samples / N_test_samples): {}x{} ({} / {}), k_requested: {}. ",
@@ -1602,11 +1603,11 @@ pub fn run_sample_projection_accuracy_test(
             save_matrix_to_tsv(&output.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_train_loadings.tsv").unwrap_or_default();
             save_matrix_to_tsv(&output.final_sample_principal_component_scores.view(), artifact_dir.to_str().unwrap_or("."), "rust_train_scores.tsv").unwrap_or_default();
             rust_pca_output_option = Some(output);
-            outcome_details.push_str(&format!("eigensnp on train data successful. k_eff_rust: {}. ", k_eff_rust));
+            outcome_details = format!("eigensnp on train data successful. k_eff_rust: {}. ", k_eff_rust);
         }
         Err(e) => {
             test_successful = false;
-            outcome_details.push_str(&format!("eigensnp on train data failed: {}. ", e));
+            outcome_details = format!("eigensnp on train data failed: {}. ", e);
         }
     }
 
@@ -1632,7 +1633,6 @@ pub fn run_sample_projection_accuracy_test(
 
     // Get "Truth" Scores for Test Samples using pca.py on total data
     let mut py_test_scores_ref_option: Option<Array2<f32>> = None;
-    let mut k_py_total = 0;
 
     if test_successful { // Only proceed if eigensnp part was okay so far
         let mut stdin_data_py_total = String::new();
@@ -1677,7 +1677,7 @@ pub fn run_sample_projection_accuracy_test(
                             let python_output_str = String::from_utf8_lossy(&py_cmd_output.stdout);
                             match parse_pca_py_output(&python_output_str) {
                                 Ok((_py_loadings_total, py_scores_total_n_x_k, _py_eigenvalues_total)) => {
-                                    k_py_total = _py_loadings_total.ncols(); // k_x_d, so ncols is k
+                                    let k_py_total = _py_loadings_total.ncols(); // k_x_d, so ncols is k
                                     if py_scores_total_n_x_k.nrows() == num_samples_total && py_scores_total_n_x_k.ncols() >= k_components.min(k_py_total) {
                                         // Extract test sample scores: from row num_samples_train onwards
                                         let py_test_scores_ref = py_scores_total_n_x_k.slice(s![num_samples_train.., ..]).to_owned();
@@ -1705,7 +1705,7 @@ pub fn run_sample_projection_accuracy_test(
             }
             Err(e) => {
                 test_successful = false;
-                outcome_details.push_str(&format!("Failed to spawn pca.py (total data): {}. ", e));
+            outcome_details = format!("eigensnp on train data failed: {}. ", e);
             }
         }
     }
