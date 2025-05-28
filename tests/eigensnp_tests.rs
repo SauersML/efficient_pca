@@ -22,6 +22,7 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::fs::{self, File}; // Add fs for create_dir_all
+use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 // use std::io::Write; // Already present
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
@@ -34,6 +35,7 @@ use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
+use crate::eigensnp_integration_tests::generate_structured_data;
 
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
@@ -165,10 +167,7 @@ fn save_vector_to_tsv<T: Display>(
 
 #[cfg(test)]
 mod eigensnp_integration_tests {
-    use crate::eigensnp_integration_tests::generate_structured_data;
-    use crate::eigensnp_integration_tests::orthonormalize_columns;
     use super::*; 
-    use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with std::io::Write
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
