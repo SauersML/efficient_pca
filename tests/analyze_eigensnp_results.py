@@ -166,7 +166,10 @@ def main():
         failed_tests_df = consolidated_summary_df[consolidated_summary_df['Success'].astype(str).str.lower() != 'true']
         if not failed_tests_df.empty:
             md_file.write("## Failed Tests\n\n")
-            md_file.write(failed_tests_df[['TestName', 'backend', 'Success', 'NumPCsComputed', 'ErrorMessage']].to_markdown(index=False) + "\n\n")
+            columns_to_display = ['TestName', 'backend', 'Success', 'NumPCsComputed']
+            if 'ErrorMessage' in failed_tests_df.columns:
+                columns_to_display.append('ErrorMessage')
+            md_file.write(failed_tests_df[columns_to_display].to_markdown(index=False) + "\n\n")
         else:
             md_file.write("## Failed Tests\n\nNo failed tests detected.\n\n")
 
