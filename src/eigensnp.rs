@@ -10,6 +10,7 @@ use log::{info, debug, trace, warn};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
+use crate::diagnostics::{FullPcaRunDiagnostics, RsvdStepDiagnostics, PcaStepDiagnostics, SrPassDiagnostics};
 
 /// A thread-safe wrapper for standard dynamic errors,
 /// so they implement `Send` and `Sync`.
@@ -373,6 +374,8 @@ pub struct EigenSNPCoreAlgorithmConfig {
     ///         Final_p2: S_final_p2 = U_rot_p2 S_prime_p2, V_final_p2 = V_qr_p2 V_rot_p2.
     /// Additional passes follow the same pattern.
     pub refine_pass_count: usize,
+    /// Whether to collect detailed diagnostics during PCA computation.
+    pub collect_diagnostics: bool,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -391,6 +394,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             random_seed: 2025,
             snp_processing_strip_size: 2000, // Default based on previous hardcoded value
             refine_pass_count: 1, // Default to 1 refinement pass
+            collect_diagnostics: false,
         }
     }
 }
@@ -408,7 +412,15 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
+        diagnostics_collector: Option<&mut FullPcaRunDiagnostics>,
     ) -> Result<EigenSNPCoreOutput, ThreadSafeStdError> {
+        // Basic diagnostic plumbing example:
+        // if self.config.collect_diagnostics {
+        //     if let Some(dc) = diagnostics_collector {
+        //         dc.notes.push_str("compute_pca started; ");
+        //     }
+        // }
+
         let num_total_qc_samples = genotype_data.num_qc_samples();
         let num_total_pca_snps = genotype_data.num_pca_snps();
 
@@ -706,6 +718,7 @@ impl EigenSNPCoreAlgorithm {
                         self.config.local_rsvd_sketch_oversampling,
                         self.config.local_rsvd_num_power_iterations,
                         local_seed,
+                        None, // diagnostics_collector for perform_randomized_svd_for_loadings
                     ).map_err(|e_rsvd| -> ThreadSafeStdError {
                         Box::new(std::io::Error::new(
                             std::io::ErrorKind::Other,
@@ -951,6 +964,7 @@ impl EigenSNPCoreAlgorithm {
                 p_glob,
                 q_glob,
                 random_seed,
+                None, // diagnostics_collector for perform_randomized_svd_for_scores
             )?;
             // Logging for initial_scores from RSVD
             debug!("RSVD Path: Initial scores dimensions: {:?}", initial_scores.dim());
@@ -978,7 +992,15 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
+        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        // Example of how this would create a step and pass it down:
+        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_scores_internal".to_string(), ..Default::default() })
+        // } else {
+        //     None
+        // };
+
         let (_u_opt, _s_opt, v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -988,7 +1010,12 @@ impl EigenSNPCoreAlgorithm {
             false, // request_u_components
             false, // request_s_components
             true,  // request_v_components
+            None, // step_diag.as_mut(), // Pass mut ref if Some, else None
         )?;
+        
+        // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
+        //    if self.config.collect_diagnostics { collector.push(diag); }
+        // }
 
         v_opt.ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -1006,7 +1033,14 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
+        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_loadings_internal".to_string(), ..Default::default() })
+        // } else {
+        //     None
+        // };
+
         let (u_opt, _s_opt, _v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -1016,7 +1050,12 @@ impl EigenSNPCoreAlgorithm {
             true,  // request_u_components
             false, // request_s_components
             false, // request_v_components
+            None, // step_diag.as_mut(),
         )?;
+
+        // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
+        //    if self.config.collect_diagnostics { collector.push(diag); }
+        // }
 
         u_opt.ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -1433,8 +1472,15 @@ impl EigenSNPCoreAlgorithm {
         random_seed: u64,
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
-        request_v_components: bool  // True if V (right singular vectors) is needed
+        request_v_components: bool,  // True if V (right singular vectors) is needed
+        diagnostics_step_collector: Option<&mut RsvdStepDiagnostics>,
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
+        // Example of how this would be used:
+        // if let Some(dsc) = diagnostics_step_collector {
+        //    dsc.input_matrix_dims = Some((matrix_features_by_samples.nrows(), matrix_features_by_samples.ncols()));
+        //    // ... populate other fields ...
+        // }
+
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
 
