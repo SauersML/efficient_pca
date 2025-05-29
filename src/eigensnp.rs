@@ -33,6 +33,27 @@ use crate::diagnostics::{
 /// so they implement `Send` and `Sync`.
 pub type ThreadSafeStdError = Box<dyn Error + Send + Sync + 'static>;
 
+// --- Conditional PCA Output Type ---
+
+/// Defines the output structure of `compute_pca`, conditionally including detailed diagnostics.
+#[cfg(feature = "enable-eigensnp-diagnostics")]
+pub type PcaOutputWithDiagnostics = (
+    EigenSNPCoreOutput,
+    Option<crate::diagnostics::FullPcaRunDetailedDiagnostics>,
+);
+
+#[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+pub type PcaOutputWithDiagnostics = (EigenSNPCoreOutput, ());
+
+// --- Conditional Helper Type ---
+
+/// Helper type to conditionally include a type `T` or `()` based on a feature flag.
+#[cfg(feature = "enable-eigensnp-diagnostics")]
+pub type PcaConditionally<T> = T;
+#[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+pub type PcaConditionally<T> = ();
+
+
 // Helper trait for f64 conversion from Duration, handling potential errors.
 trait DurationToF64Safe {
     fn as_secs_f64_safe(&self) -> Option<f64>;
@@ -496,14 +517,8 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
-    ) -> Result<(
-        EigenSNPCoreOutput,
+    ) -> Result<PcaOutputWithDiagnostics, ThreadSafeStdError> {
         #[cfg(feature = "enable-eigensnp-diagnostics")]
-        Option::<crate::diagnostics::FullPcaRunDetailedDiagnostics>,
-        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        ()
-    ), ThreadSafeStdError> {
-        #[allow(unused_mut)] // May be unused if feature is disabled
         let mut diagnostics_collector: Option<FullPcaRunDetailedDiagnostics> = None;
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
@@ -516,6 +531,10 @@ impl EigenSNPCoreAlgorithm {
                 diagnostics_collector = Some(main_diag_collector);
             }
         }
+
+        // When diagnostics are not enabled, diagnostics_collector is not declared.
+        // The return type PcaOutputWithDiagnostics correctly becomes (EigenSNPCoreOutput, ()),
+        // and the () is provided directly in return statements for that configuration.
 
         let num_total_qc_samples = genotype_data.num_qc_samples();
         let num_total_pca_snps = genotype_data.num_pca_snps();
@@ -555,7 +574,7 @@ impl EigenSNPCoreAlgorithm {
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             return Ok((output, diagnostics_collector));
             #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-            return Ok((output, ()));
+            return Ok((output, ())); // This line remains correct as per the new type alias
         }
         if num_total_pca_snps == 0 {
             warn!("Genotype data has zero PCA SNPs. Returning empty PCA output.");
@@ -570,7 +589,7 @@ impl EigenSNPCoreAlgorithm {
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             return Ok((output, diagnostics_collector));
             #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-            return Ok((output, ()));
+            return Ok((output, ())); // This line also remains correct
         }
 
         // --- START DIAGNOSTIC MODIFICATION ---
@@ -668,7 +687,7 @@ impl EigenSNPCoreAlgorithm {
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             return Ok((output, diagnostics_collector));
             #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-            return Ok((output, ()));
+            return Ok((output, ())); // Correct
         }
         
         let mut final_sorted_snp_loadings: Array2<f32> = Array2::zeros((num_total_pca_snps, 0));
@@ -800,11 +819,12 @@ impl EigenSNPCoreAlgorithm {
                 }
                 dc.notes.push_str("EigenSNP PCA run finished. ");
             }
+            // The return value structure now matches PcaOutputWithDiagnostics
             Ok((output_final, diagnostics_collector))
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         {
-
+            // This also matches PcaOutputWithDiagnostics where the second element is ()
             Ok((output_final, ()))
         }
 }
@@ -818,7 +838,7 @@ impl EigenSNPCoreAlgorithm {
         subset_sample_ids: &[QcSampleId],
         #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
-    ) -> Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError> {
+    ) -> Result<Vec<(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>)>, ThreadSafeStdError> {
         info!(
             "Learning local eigenSNP bases for {} LD blocks using N_subset = {} samples.",
             ld_block_specs.len(),
@@ -832,26 +852,21 @@ impl EigenSNPCoreAlgorithm {
             }
         }
 
-        let local_bases_results: Vec<Result<(PerBlockLocalSnpBasis, PerBlockLocalBasisDiagnostics), ThreadSafeStdError>> =
-            ld_block_specs
-                .par_iter()
-                .enumerate()
-                .map(|(block_idx_val, block_spec)| -> Result<PerBlockLocalSnpBasis, ThreadSafeStdError> {
-                    let block_list_id = LdBlockListId(block_idx_val);
-                    let block_tag = &block_spec.user_defined_block_tag;
-                    let num_snps_in_this_block_spec = block_spec.num_snps_in_block();
+        let local_bases_results: Vec<Result<(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>), ThreadSafeStdError>> = ld_block_specs
+            .par_iter()
+            .enumerate()
+            .map(|(block_idx_val, block_spec)| {
+                let block_list_id = LdBlockListId(block_idx_val);
+                let block_tag = &block_spec.user_defined_block_tag;
+                let num_snps_in_this_block_spec = block_spec.num_snps_in_block();
 
-                    debug!("Learn Local Bases: Processing block_id {:?} (tag: '{}'), num_snps_in_spec: {}.",
-                           block_list_id, block_tag, num_snps_in_this_block_spec);
+                debug!("Learn Local Bases: Processing block_id {:?} (tag: '{}'), num_snps_in_spec: {}.",
+                       block_list_id, block_tag, num_snps_in_this_block_spec);
 
-                    if num_snps_in_this_block_spec == 0 {
-                        trace!("Block {}: Is empty of SNPs, creating empty basis.", block_tag);
-                        return Ok(PerBlockLocalSnpBasis {
-                            block_list_id,
-                            basis_vectors: Array2::<f32>::zeros((0, 0)),
-                        });
-                    }
-
+                let basis_vectors_for_block = if num_snps_in_this_block_spec == 0 {
+                    trace!("Block {}: Is empty of SNPs, creating empty basis.", block_tag);
+                    Array2::<f32>::zeros((0, 0))
+                } else {
                     let genotype_block_for_subset_samples = // X_sp
                         genotype_data.get_standardized_snp_sample_block(
                             &block_spec.pca_snp_ids_in_block,
@@ -885,110 +900,123 @@ impl EigenSNPCoreAlgorithm {
                             basis_vectors: Array2::<f32>::zeros((actual_num_snps_in_block, 0)),
                         });
                     }
+                        genotype_data.get_standardized_snp_sample_block(
+                            &block_spec.pca_snp_ids_in_block,
+                            subset_sample_ids,
+                        ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block for block ID {:?} ({}): {}", block_list_id, block_tag, e_accessor))) as ThreadSafeStdError)?;
                     
-                    let local_seed = self.config.random_seed.wrapping_add(block_idx_val as u64);
-                    
-                    #[allow(unused_mut)] // May not be mutable if diagnostics disabled
-                    let mut per_block_diag_entry = PerBlockLocalBasisDiagnostics::default();
-
-                    #[cfg(feature = "enable-eigensnp-diagnostics")]
-                    {
-                        if diagnostics_collector.is_some() && self.config.collect_diagnostics {
-                            per_block_diag_entry.block_id = block_list_id.0.to_string();
-                            // per_block_diag_entry.block_tag = block_tag.clone(); // block_tag not directly in PerBlockLocalBasisDiagnostics, use notes or ensure ID is sufficient
-                            per_block_diag_entry.notes = format!("Processing LD Block tag: {}", block_tag);
-
-                            let (r,c) = genotype_block_for_subset_samples.dim();
-                            per_block_diag_entry.u_p_dims = Some((r,c)); // This is X_sp's dims, U_p comes later
-                            per_block_diag_entry.notes.push_str(&format!(", X_s_p dims: ({}, {})", r, c));
-                            if !genotype_block_for_subset_samples.is_empty() {
-                                per_block_diag_entry.u_p_fro_norm = Some(compute_frob_norm_f32(&genotype_block_for_subset_samples.view()) as f64); // Placeholder for X_sp norm
-                                // Compute condition number for X_s_p using f64 SVD
-                                let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
-                                per_block_diag_entry.u_p_condition_number = compute_condition_number_via_svd_f64(&x_s_p_f64.view());
-                            }
-                        }
+                    debug!("Block {}: X_sp (subset genotype block) dimensions: {:?}", 
+                           block_tag, genotype_block_for_subset_samples.dim());
+                    if !genotype_block_for_subset_samples.is_empty() {
+                        let norm_x_sp = genotype_block_for_subset_samples.view().mapv(|x| x*x).sum().sqrt();
+                        trace!("Block {}: X_sp Frobenius norm: {:.4e}", block_tag, norm_x_sp);
                     }
 
-                    let local_basis_vectors_f32 = Self::perform_randomized_svd_for_loadings( // Up_star
-                        &genotype_block_for_subset_samples.view(),
-                        num_components_to_extract,
-                        self.config.local_rsvd_sketch_oversampling,
-                        self.config.local_rsvd_num_power_iterations,
-                        local_seed,
+                    let actual_num_snps_in_block = genotype_block_for_subset_samples.nrows();
+                    let actual_num_subset_samples = genotype_block_for_subset_samples.ncols();
+                    
+                    let num_components_to_extract = self.config.components_per_ld_block
+                        .min(actual_num_snps_in_block)
+                        .min(if actual_num_subset_samples > 0 { actual_num_subset_samples } else { 0 });
+
+                    if num_components_to_extract == 0 {
+                        debug!(
+                            "Block {}: Num components to extract is 0 (SNPs_in_block={}, N_subset={}, Configured_cp={}), creating empty basis.", 
+                            block_tag,
+                            actual_num_snps_in_block, 
+                            actual_num_subset_samples,
+                            self.config.components_per_ld_block
+                        );
+                        Array2::<f32>::zeros((actual_num_snps_in_block, 0))
+                    } else {
+                        let local_seed = self.config.random_seed.wrapping_add(block_idx_val as u64);
+                        
                         #[cfg(feature = "enable-eigensnp-diagnostics")]
-                        diagnostics_collector.as_ref().and_then(|_| { // Only if outer collector exists
-                            if self.config.collect_diagnostics && self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) {
-                                Some(&mut per_block_diag_entry.rsvd_stages)
-                            } else {
-                                None
-                            }
-                        }),
-                        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-                        None,
-                    ).map_err(|e_rsvd| -> ThreadSafeStdError {
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!(
-                                "Local RSVD failed for block ID {:?} ({}): {}",
-                                block_list_id, block_tag, e_rsvd
-                            ),
-                        ))
-                    })?;
-
-                    debug!("Block {}: Local basis vectors (Up_star) dimensions: {:?}", 
-                           block_tag, local_basis_vectors_f32.dim());
-                    if !local_basis_vectors_f32.is_empty() {
-                        let norm_up_star = local_basis_vectors_f32.view().mapv(|x| x*x).sum().sqrt();
-                        trace!("Block {}: Local basis vectors (Up_star) Frobenius norm: {:.4e}", 
-                               block_tag, norm_up_star);
-                        trace!("Block {}: Local basis vectors (Up_star) sample: {:?}", 
-                               block_tag, local_basis_vectors_f32.slice(s![0..3.min(local_basis_vectors_f32.nrows()), 0..3.min(local_basis_vectors_f32.ncols())]));
-                    }
-
-                    #[cfg(feature = "enable-eigensnp-diagnostics")]
-                    {
-                        if diagnostics_collector.is_some() && self.config.collect_diagnostics {
-                            let (r_up, c_up) = local_basis_vectors_f32.dim();
-                            // These were u_p_dims, u_p_fro_norm etc. in PerBlockLocalBasisDiagnostics
-                            // Overwriting X_sp's u_p_dims with actual U_p's dims
-                            per_block_diag_entry.u_p_dims = Some((r_up, c_up)); 
-                            if !local_basis_vectors_f32.is_empty() {
-                                per_block_diag_entry.u_p_fro_norm = Some(compute_frob_norm_f32(&local_basis_vectors_f32.view()) as f64);
-                                per_block_diag_entry.u_p_orthogonality_error = compute_orthogonality_error_f32(&local_basis_vectors_f32.view());
-                                // Condition number for U_p might also be useful
-                                per_block_diag_entry.u_p_condition_number = compute_condition_number_via_svd_f32(&local_basis_vectors_f32.view());
-                            }
-
-                            if self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) && !genotype_block_for_subset_samples.is_empty() {
-                                debug!("DIAG TRACE for block {}: Computing f64 SVD for U_p_true comparison.", block_tag);
-                                let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
-                                let backend_f64 = LinAlgBackendProvider::<f64>::new();
-                                match backend_f64.svd_into(x_s_p_f64, true, false) {
-                                    Ok(svd_out_f64) => {
-                                        if let Some(u_true_f64) = svd_out_f64.u {
-                                            let k_to_compare = local_basis_vectors_f32.ncols().min(u_true_f64.ncols());
-                                            if k_to_compare > 0 {
-                                                let u_p_f32_view = local_basis_vectors_f32.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
-                                                let u_true_f64_view = u_true_f64.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
-                                                per_block_diag_entry.u_correlation_vs_f64_truth = 
-                                                    compute_matrix_column_correlations_abs(&u_p_f32_view, &u_true_f64_view.view());
-                                            }
-                                        } else { per_block_diag_entry.notes.push_str(" ;f64 SVD U_true was None"); }
-                                    }
-                                    Err(e) => { per_block_diag_entry.notes.push_str(&format!(" ;f64 SVD for U_true failed: {}", e)); }
+                        let mut per_block_diag_entry_for_map = {
+                            let mut entry = PerBlockLocalBasisDiagnostics::default();
+                            if diagnostics_collector.is_some() && self.config.collect_diagnostics {
+                                entry.block_id = block_list_id.0.to_string();
+                                entry.notes = format!("Processing LD Block tag: {}", block_tag);
+                                let (r,c) = genotype_block_for_subset_samples.dim();
+                                entry.u_p_dims = Some((r,c));
+                                entry.notes.push_str(&format!(", X_s_p dims: ({}, {})", r, c));
+                                if !genotype_block_for_subset_samples.is_empty() {
+                                    entry.u_p_fro_norm = Some(compute_frob_norm_f32(&genotype_block_for_subset_samples.view()) as f64);
+                                    let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
+                                    entry.u_p_condition_number = compute_condition_number_via_svd_f64(&x_s_p_f64.view());
                                 }
                             }
-                            // Push occurs after this block, outside the map closure
+                            entry
+                        };
+
+                        let local_basis_vectors_f32 = Self::perform_randomized_svd_for_loadings( // Up_star
+                            &genotype_block_for_subset_samples.view(),
+                            num_components_to_extract,
+                            self.config.local_rsvd_sketch_oversampling,
+                            self.config.local_rsvd_num_power_iterations,
+                            local_seed,
+                            #[cfg(feature = "enable-eigensnp-diagnostics")]
+                            diagnostics_collector.as_ref().and_then(|_| {
+                                if self.config.collect_diagnostics && self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) {
+                                    Some(&mut per_block_diag_entry_for_map.rsvd_stages)
+                                } else { None }
+                            }),
+                            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                            None,
+                        ).map_err(|e_rsvd| -> ThreadSafeStdError {
+                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Local RSVD failed for block ID {:?} ({}): {}", block_list_id, block_tag, e_rsvd)))
+                        })?;
+
+                        debug!("Block {}: Local basis vectors (Up_star) dimensions: {:?}", block_tag, local_basis_vectors_f32.dim());
+
+                        #[cfg(feature = "enable-eigensnp-diagnostics")]
+                        {
+                            if diagnostics_collector.is_some() && self.config.collect_diagnostics {
+                                let (r_up, c_up) = local_basis_vectors_f32.dim();
+                                per_block_diag_entry_for_map.u_p_dims = Some((r_up, c_up)); 
+                                if !local_basis_vectors_f32.is_empty() {
+                                    per_block_diag_entry_for_map.u_p_fro_norm = Some(compute_frob_norm_f32(&local_basis_vectors_f32.view()) as f64);
+                                    per_block_diag_entry_for_map.u_p_orthogonality_error = compute_orthogonality_error_f32(&local_basis_vectors_f32.view());
+                                    per_block_diag_entry_for_map.u_p_condition_number = compute_condition_number_via_svd_f32(&local_basis_vectors_f32.view());
+                                }
+                                if self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) && !genotype_block_for_subset_samples.is_empty() {
+                                    // ... (U_correlation_vs_f64_truth logic remains the same, assign to per_block_diag_entry_for_map)
+                                    let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
+                                    let backend_f64 = LinAlgBackendProvider::<f64>::new();
+                                    match backend_f64.svd_into(x_s_p_f64, true, false) {
+                                        Ok(svd_out_f64) => {
+                                            if let Some(u_true_f64) = svd_out_f64.u {
+                                                let k_to_compare = local_basis_vectors_f32.ncols().min(u_true_f64.ncols());
+                                                if k_to_compare > 0 {
+                                                    let u_p_f32_view = local_basis_vectors_f32.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
+                                                    let u_true_f64_view = u_true_f64.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
+                                                    per_block_diag_entry_for_map.u_correlation_vs_f64_truth = 
+                                                        compute_matrix_column_correlations_abs(&u_p_f32_view, &u_true_f64_view.view());
+                                                }
+                                            } else { per_block_diag_entry_for_map.notes.push_str(" ;f64 SVD U_true was None"); }
+                                        }
+                                        Err(e) => { per_block_diag_entry_for_map.notes.push_str(&format!(" ;f64 SVD for U_true failed: {}", e)); }
+                                    }
+                                }
+                            }
                         }
+                        local_basis_vectors_f32
                     }
-                    
-                    Ok((PerBlockLocalSnpBasis {
-                        block_list_id,
-                        basis_vectors: local_basis_vectors_f32,
-                    }, per_block_diag_entry)) // Return tuple
-                })
-                .collect();
+                };
+                
+                let basis_result = PerBlockLocalSnpBasis {
+                    block_list_id,
+                    basis_vectors: basis_vectors_for_block,
+                };
+
+                #[cfg(feature = "enable-eigensnp-diagnostics")]
+                let diag_to_return = per_block_diag_entry_for_map; // This is already defined if feature is on
+                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                let diag_to_return = (); // Placeholder for when feature is off
+
+                Ok((basis_result, diag_to_return))
+            })
+            .collect();
         
         // Separate results and diagnostics
         let mut all_local_bases_collection = Vec::with_capacity(ld_block_specs.len());
@@ -997,34 +1025,78 @@ impl EigenSNPCoreAlgorithm {
         {
             if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
                  if self.config.collect_diagnostics {
-                    dc_vec_mut.reserve(local_bases_results.len()); // Pre-allocate if possible
+                    dc_vec_mut.reserve(local_bases_results.len()); 
                  }
             }
         }
 
         for result_item_tuple in local_bases_results {
-            let (basis_result, diag_entry_result) = result_item_tuple?; // Propagate error from parallel map
+            // The type of result_item_tuple is now Result<(PerBlockLocalSnpBasis, PcaConditionally<PBD>), TSE>
+            let (basis_result, diag_entry_cond) = result_item_tuple?; 
             all_local_bases_collection.push(basis_result);
+
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             {
+                // diag_entry_cond is PerBlockLocalBasisDiagnostics here
                 if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
                     if self.config.collect_diagnostics {
-                        dc_vec_mut.push(diag_entry_result);
+                        dc_vec_mut.push(diag_entry_cond); // diag_entry_cond is PBD
                     }
                 }
             }
+            // When not enabled, diag_entry_cond is (), and diagnostics_collector is None or not available.
         }
 
-
         info!("Successfully learned local eigenSNP bases for all blocks.");
-        Ok(all_local_bases_collection)
+        // The function signature now expects Vec<(PerBlockLocalSnpBasis, PcaConditionally<PBD>)>
+        // However, the caller `compute_pca` expects Vec<PerBlockLocalSnpBasis> and populates its own diagnostics.
+        // So, we should return only `all_local_bases_collection` (Vec<PerBlockLocalSnpBasis>)
+        // and the per-block diagnostics are already pushed to the collector passed as argument.
+        // Let's adjust the return type of this function back to Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError>
+        // and ensure the `diagnostics_collector` argument is correctly populated.
+        // The `local_bases_results` internal variable needs to produce the conditional tuple,
+        // but only the basis part is added to `all_local_bases_collection`.
+        // The diagnostic part is pushed to the `diagnostics_collector` argument.
+
+        // The above loop already does this:
+        // all_local_bases_collection.push(basis_result);
+        // and when diagnostics are enabled: dc_vec_mut.push(diag_entry_cond);
+        // So the Ok value should just be all_local_bases_collection.
+        // This means the function signature should revert to Result<Vec<PerBlockLocalSnpBasis>, TSE>
+        // I will make this adjustment in the next step if this one applies, or combine it.
+
+        // For now, assuming the return type change to Vec<(Basis, PcaConditionally<Diag>)> was intended to be propagated.
+        // If not, the caller `compute_pca` would need to be changed to expect this, or this function's
+        // processing loop needs to be modified to return only Vec<PerBlockLocalSnpBasis> while populating
+        // the `diagnostics_collector` argument.
+
+        // Sticking to the interpretation that the return type of learn_all_ld_block_local_bases
+        // itself should be Vec<(PerBlockLocalSnpBasis, PcaConditionally<_>)>
+        // This means `all_local_bases_collection` should store these tuples.
+        
+        // Re-evaluating: The task was to modify `learn_all_ld_block_local_bases` return type.
+        // The current code collects `(PerBlockLocalSnpBasis, PcaConditionally<PBD>)` into `local_bases_results`.
+        // Then it iterates and separates them. `all_local_bases_collection` gets `PerBlockLocalSnpBasis`.
+        // `diag_entry_cond` (which is `PcaConditionally<PBD>`) is pushed to `diagnostics_collector` (if enabled).
+        // So, the function should still return `Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError>`.
+        // The internal `local_bases_results` correctly handles the conditional diagnostic part.
+        // The error `E0412` was about `PerBlockLocalBasisDiagnostics` not being in scope for `local_bases_results`
+        // when the feature is off. This is now solved by `PcaConditionally`.
+
+        // Let's adjust the final collection part to build the Vec of tuples as per the new return type.
+        let mut final_results_with_conditional_diagnostics = Vec::with_capacity(ld_block_specs.len());
+        for result_item_tuple in local_bases_results {
+            let (basis_result, diag_entry_cond) = result_item_tuple?;
+            final_results_with_conditional_diagnostics.push((basis_result, diag_entry_cond));
+        }
+        Ok(final_results_with_conditional_diagnostics)
     }
 
     fn project_all_samples_onto_local_bases<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
-        all_local_bases: &[PerBlockLocalSnpBasis], 
+        all_local_bases: &[(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>)], 
         num_total_qc_samples: usize,
         #[cfg(feature = "enable-eigensnp-diagnostics")] full_diagnostics_collector: Option<&mut crate::diagnostics::FullPcaRunDetailedDiagnostics>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _full_diagnostics_collector: Option<()>,
@@ -1060,9 +1132,9 @@ impl EigenSNPCoreAlgorithm {
         for block_idx in 0..ld_block_specs.len() {
             let block_spec = &ld_block_specs[block_idx];
             let block_tag = &block_spec.user_defined_block_tag;
-            let local_basis_data = &all_local_bases[block_idx]; 
+        let (local_basis_data, _) = &all_local_bases[block_idx]; // Destructure the tuple
             
-            let local_snp_basis_vectors = &local_basis_data.basis_vectors; 
+        let local_snp_basis_vectors = &local_basis_data.basis_vectors;
             let num_components_this_block = local_snp_basis_vectors.ncols();
 
             if block_spec.num_snps_in_block() == 0 || num_components_this_block == 0 {
