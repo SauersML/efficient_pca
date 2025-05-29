@@ -2294,6 +2294,9 @@ where
                 num_pca_snps_used: standardized_structured_data.nrows(),
                 num_qc_samples_used: standardized_structured_data.ncols(),
             }
+
+            // Return a dummy output to allow logging to proceed if one run fails
+            EigenSNPCoreOutput::default()
         }
     };
     
@@ -2318,6 +2321,8 @@ where
                 num_pca_snps_used: standardized_structured_data.nrows(),
                 num_qc_samples_used: standardized_structured_data.ncols(),
             }
+
+            EigenSNPCoreOutput::default()
         }
     };
 
