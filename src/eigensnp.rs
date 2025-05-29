@@ -11,6 +11,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
 // Updated diagnostics struct names
+#[cfg(feature = "enable-eigensnp-diagnostics")]
 use crate::diagnostics::{
     FullPcaRunDetailedDiagnostics, 
     RsvdStepDetail, 
@@ -611,6 +612,10 @@ impl EigenSNPCoreAlgorithm {
             genotype_data,
             ld_block_specifications,
             &subset_sample_ids_selected,
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            diagnostics_collector.as_mut().map(|dc| &mut dc.per_block_diagnostics),
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            None,
         )?;
         info!("Learned local SNP bases in {:?}", local_bases_learning_start_time.elapsed());
 
@@ -620,6 +625,10 @@ impl EigenSNPCoreAlgorithm {
             ld_block_specifications,
             &all_block_local_bases,
             num_total_qc_samples,
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            diagnostics_collector.as_mut(),
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            None,
         )?;
         info!("Constructed raw condensed feature matrix in {:?}", condensed_matrix_construction_start_time.elapsed());
 
@@ -638,6 +647,10 @@ impl EigenSNPCoreAlgorithm {
         let initial_global_pca_start_time = std::time::Instant::now();
         let mut current_sample_scores = self.compute_pca_on_standardized_condensed_features_via_rsvd(
             &standardized_condensed_feature_matrix,
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            diagnostics_collector.as_mut().and_then(|dc| dc.global_pca_diag.as_mut().map(|gpd_box| gpd_box.as_mut())),
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            None,
         )?;
         info!("Computed initial global PCA on condensed features in {:?}", initial_global_pca_start_time.elapsed());
 
@@ -1218,7 +1231,7 @@ impl EigenSNPCoreAlgorithm {
                                 initial_scores = svd_output_vt.t().slice_axis(Axis(1), ndarray::Slice::from(0..k_eff)).to_owned();
                             }
                          }
-                    } else { /* error handling */ initial_scores = Array2::zeros((n_samples,0)); 
+                    } else { /* error handling */ 
                         warn!("Direct SVD for initial global PCA: svd_output.vt is None despite requesting it. M_c={}, N_samples={}", m_c, n_samples);
                         return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD succeeded but V.T (vt) was not returned by the backend.")) as ThreadSafeStdError);
                     }
