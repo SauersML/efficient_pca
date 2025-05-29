@@ -70,9 +70,9 @@ jobs:
           path: |
             /var/cache/apt/archives
             /var/lib/apt/lists
-          key: ${{ runner.os }}-apt-gfortran-${{ hashFiles('**/rust.yml') }}
+          key: ${{ runner.os }}-apt-gfortran-key-gfortran-v1
           restore-keys: |
-            ${{ runner.os }}-apt-gfortran-
+            ${{ runner.os }}-apt-gfortran-key-gfortran-v1
 
       - name: Install Fortran compiler
         if: matrix.backend == 'openblas' || matrix.backend == 'faer'
@@ -98,9 +98,9 @@ jobs:
           path: |
             /var/cache/apt/archives
             /var/lib/apt/lists
-          key: ${{ runner.os }}-apt-mkl-${{ hashFiles('**/rust.yml') }}
+          key: ${{ runner.os }}-apt-mkl-key-mkl-v1
           restore-keys: |
-            ${{ runner.os }}-apt-mkl-
+            ${{ runner.os }}-apt-mkl-key-mkl-v1
 
       - name: Install Intel MKL
         if: matrix.backend == 'mkl'
