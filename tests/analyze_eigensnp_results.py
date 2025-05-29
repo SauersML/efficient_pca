@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import sys
+from pathlib import Path # Ensure Path is imported
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -109,14 +110,90 @@ def main():
     # --- TSV Manifest ---
     manifest_df = pd.DataFrame(all_tsv_files_manifest)
     if not manifest_df.empty:
-        manifest_path = os.path.join(args.output_dir, "manifest.txt")
+        manifest_path = os.path.join(args.output_dir, "all_tsv_manifest.txt") # Renamed
         manifest_df.to_csv(manifest_path, sep='\t', index=False, columns=["Backend", "RelativePath", "AbsolutePath", "Size"])
-        logging.info(f"Manifest file created at: {manifest_path}")
+        logging.info(f"Manifest file for all TSVs created at: {manifest_path}") # Updated log
     else:
         logging.info("No TSV files found to create a manifest.")
         # Create an empty manifest if none found but backends existed
-        with open(os.path.join(args.output_dir, "manifest.txt"), "w") as f:
+        with open(os.path.join(args.output_dir, "all_tsv_manifest.txt"), "w") as f: # Renamed
             f.write("Backend\tRelativePath\tAbsolutePath\tSize\n")
+
+    # --- Diagnostic JSON File Discovery ---
+    all_diag_json_files_manifest = []
+    logging.info("Starting discovery of diagnostic JSON files...")
+
+    for original_dir_name, actual_backend_name in backend_dirs_to_process:
+        # Path to where test artifacts for this backend are stored.
+        # Based on CI structure, this is: args.input_dir / original_dir_name / "target" / "test_artifacts"
+        # And diagnostic JSONs are in a "test_outputs" subdirectory within that.
+        # So, backend_artifacts_path for glob should point to .../test_artifacts/
+        
+        # The structure of downloaded artifacts is:
+        # args.input_dir / original_dir_name (e.g. "eigensnp-test-artifacts-openblas-diag") / ...
+        # The actual test outputs (like JSON files) are usually in a nested `target/test_artifacts/test_outputs`
+        # if the tests are run via `cargo test` which places artifacts relative to `target/`.
+        
+        # Construct the path to the directory where diagnostic JSONs are expected for this backend.
+        # This matches where `run_diagnostic_test_with_params` saves them.
+        # The `original_dir_name` is like `eigensnp-test-artifacts-openblas-diag`.
+        # The JSONs are saved by tests into `test_outputs/` relative to where tests run.
+        # In CI, artifacts are uploaded from `target/test_artifacts/`.
+        # So, the path to search is `args.input_dir / original_dir_name / target/test_artifacts / test_outputs / diagnostics_*.json`
+        
+        current_backend_base_path = os.path.join(args.input_dir, original_dir_name)
+        # The test helper saves into "test_outputs/" relative to where the test runs.
+        # Cargo tests run from the package root. `target/test_artifacts` is where these are collected from.
+        # So, the effective path within the downloaded artifact for `test_outputs` is `target/test_artifacts/test_outputs`.
+        
+        diag_json_search_path = os.path.join(current_backend_base_path, "target", "test_artifacts", "test_outputs")
+        search_pattern = os.path.join(diag_json_search_path, "diagnostics_*.json")
+        
+        logging.info(f"Searching for diagnostic JSONs in: {diag_json_search_path} for backend {actual_backend_name} with pattern {search_pattern}")
+        
+        found_json_files = glob.glob(search_pattern, recursive=False) # JSONs are directly in test_outputs
+
+        for json_file_path in found_json_files:
+            absolute_path = os.path.abspath(json_file_path)
+            relative_path = os.path.relpath(absolute_path, args.input_dir)
+            file_size = os.path.getsize(absolute_path)
+            
+            # Extract DiagTestName from filename
+            # Filename example: diagnostics_n100_d1000_b1_cpb5_k5_sr1_locIter0_globIter2_local0_global2.json
+            # We want the suffix part like "local0_global2"
+            filename_stem = os.path.splitext(os.path.basename(json_file_path))[0]
+            parts = filename_stem.split('_')
+            diag_test_name_from_file = "unknown_variant"
+            # Try to find the suffix that indicates the test variant
+            # This depends on the naming convention from `run_diagnostic_test_with_params`
+            # Example suffix: "local0_global2", "local2_global2", "local4_global2"
+            if len(parts) > 0:
+                # The last part of the filename (before .json) is the "output_filename_suffix" from the test.
+                diag_test_name_from_file = parts[-1]
+
+
+            all_diag_json_files_manifest.append({
+                "Backend": actual_backend_name,
+                "DiagTestName": diag_test_name_from_file, 
+                "RelativePath": relative_path,
+                "AbsolutePath": absolute_path,
+                "Size": file_size
+            })
+            logging.info(f"Found diagnostic JSON: {absolute_path} for backend {actual_backend_name}, test variant {diag_test_name_from_file}")
+
+    # --- Diagnostic JSON Manifest ---
+    diag_manifest_df = pd.DataFrame(all_diag_json_files_manifest)
+    if not diag_manifest_df.empty:
+        diag_manifest_path = os.path.join(args.output_dir, "diagnostic_json_manifest.tsv")
+        # Ensure columns are in a consistent order
+        diag_manifest_df = diag_manifest_df[["Backend", "DiagTestName", "RelativePath", "AbsolutePath", "Size"]]
+        diag_manifest_df.to_csv(diag_manifest_path, sep='\t', index=False)
+        logging.info(f"Diagnostic JSON manifest file created at: {diag_manifest_path}")
+    else:
+        logging.info("No diagnostic JSON files found to create a manifest.")
+        # Create an empty manifest if none found
+        with open(os.path.join(args.output_dir, "diagnostic_json_manifest.tsv"), "w") as f:
+            f.write("Backend\tDiagTestName\tRelativePath\tAbsolutePath\tSize\n")
 
 
     # --- Consolidation and Analysis of eigensnp_summary_results.tsv ---
@@ -228,12 +305,21 @@ def main():
         else:
             logging.warning("Not enough data to generate test success plot.")
             md_file.write("## Test Success/Failure Plot\n\nNot enough data to generate this plot.\n\n")
+        
+        # --- Diagnostic JSON Manifest in Report ---
+        md_file.write("## Diagnostic JSON Files Found\n\n")
+        if not diag_manifest_df.empty:
+            # Display relevant columns for the report
+            md_file.write(diag_manifest_df[['Backend', 'DiagTestName', 'RelativePath', 'Size']].to_markdown(index=False) + "\n\n")
+        else:
+            md_file.write("No diagnostic JSON files were found.\n\n")
+
 
         # --- Analysis of Specific Test TSVs (Example: Eigenvalues) ---
-        md_file.write("## Eigenvalue Comparison Analysis\n\n")
+        md_file.write("## Eigenvalue Comparison Analysis (from all_tsv_manifest.txt)\n\n") # Clarified source
         
-        if manifest_df.empty:
-            md_file.write("No TSV files were found in the manifest, so no eigenvalue comparison can be performed.\n\n")
+        if manifest_df.empty: # This refers to all_tsv_manifest.txt now
+            md_file.write("No TSV files were found in the all_tsv_manifest.txt, so no eigenvalue comparison can be performed.\n\n")
         else:
             # Find files that might be eigenvalue files
             # A common pattern could be '*_eigenvalues.tsv' or 'eigenvalues.tsv'
