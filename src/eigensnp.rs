@@ -756,16 +756,131 @@ impl EigenSNPCoreAlgorithm {
         &self,
         standardized_condensed_features: &StandardizedCondensedFeatures,
     ) -> Result<InitialSamplePcScores, ThreadSafeStdError> {
-        // Note: The original `perform_randomized_svd_for_scores` returned V (scores directly related to V_A).
-        // Here we are consistent with that, requesting V (right singular vectors of A).
-        let sample_scores_n_by_k = Self::perform_randomized_svd_for_scores(
-            &standardized_condensed_features.data.view(), // A is M x N (features x samples)
-            self.config.target_num_global_pcs,
-            self.config.global_pca_sketch_oversampling,
-            self.config.global_pca_num_power_iterations,
-            self.config.random_seed,
-        )?;
-        Ok(InitialSamplePcScores { scores: sample_scores_n_by_k })
+        let a_c = &standardized_condensed_features.data;
+        let m_c = a_c.nrows();
+        let n_samples = a_c.ncols();
+
+        let k_glob = self.config.target_num_global_pcs;
+        let p_glob = self.config.global_pca_sketch_oversampling;
+        let q_glob = self.config.global_pca_num_power_iterations; // For RSVD
+        let random_seed = self.config.random_seed; // For RSVD
+
+        // Handle cases where input matrix dimensions are zero.
+        if m_c == 0 || n_samples == 0 || k_glob == 0 {
+            warn!(
+                "Initial PCA on condensed features: M_c ({}) or N_samples ({}) or K_glob ({}) is 0. Returning empty scores ({}x0).",
+                m_c, n_samples, k_glob, n_samples
+            );
+            return Ok(InitialSamplePcScores {
+                scores: Array2::zeros((n_samples, 0)),
+            });
+        }
+
+        let l_rsvd = (k_glob + p_glob).min(m_c.min(n_samples));
+
+        debug!(
+            "Initial PCA on condensed features: M_c={}, N_samples={}, K_glob={}, p_glob={}, L_rsvd_raw_sketch={}",
+            m_c, n_samples, k_glob, p_glob, k_glob + p_glob 
+        );
+        debug!(
+            "Initial PCA on condensed features: Effective L_rsvd (min with M_c, N_samples) = {}",
+            l_rsvd
+        );
+        
+        let direct_svd_m_c_threshold = 500;
+        let initial_scores: Array2<f32>;
+
+        if m_c <= k_glob || m_c <= direct_svd_m_c_threshold || l_rsvd <= k_glob {
+            info!(
+                "Direct SVD for initial global PCA on condensed matrix (M_c={}, N_samples={}, K_glob={}, L_rsvd={})",
+                m_c, n_samples, k_glob, l_rsvd
+            );
+            // Get an owned version of A_c for svd_into
+            let a_c_owned = a_c.to_owned();
+            let backend = LinAlgBackendProvider::<f32>::new();
+
+            // Perform SVD: A_c = U * S * V.T. We need V, which corresponds to sample scores.
+            // svd_into returns U, S, V.T (if compute_vt is true).
+            // So, the V.T from svd_into is what we need, then transpose it to get V (scores).
+            // However, the existing RSVD path returns scores directly as N x K.
+            // Let's clarify: if A is M x N, SVD gives U (M x K_svd), S (K_svd), V.T (K_svd x N).
+            // Scores are columns of V, so V is N x K_svd.
+            // The `svd_into` function from `LinAlgBackend` returns `vt` which is V.T.
+            // So we take `vt`, and then transpose it.
+            match backend.svd_into(a_c_owned, false /* compute_u */, true /* compute_vt */) {
+                Ok(svd_output) => {
+                    if let Some(svd_output_vt) = svd_output.vt {
+                        if svd_output_vt.is_empty() {
+                             warn!("Direct SVD for initial global PCA: svd_output.vt is present but empty. M_c={}, N_samples={}", m_c, n_samples);
+                             initial_scores = Array2::zeros((n_samples, 0));
+                        } else {
+                            let num_svd_components = svd_output_vt.nrows(); // V.T is K_svd x N, so nrows is K_svd
+                            let k_eff = k_glob.min(num_svd_components);
+
+                            if k_eff == 0 {
+                                debug!("Direct SVD for initial global PCA: K_eff is 0 (K_glob={}, num_svd_components={}).", k_glob, num_svd_components);
+                                initial_scores = Array2::zeros((n_samples, 0));
+                            } else {
+                                // svd_output_vt is K_svd x N. Transpose to N x K_svd. Then slice to N x K_eff.
+                                initial_scores = svd_output_vt
+                                    .t()
+                                    .slice_axis(Axis(1), ndarray::Slice::from(0..k_eff))
+                                    .to_owned();
+                                info!(
+                                    "Direct SVD produced initial scores of shape: {:?}",
+                                    initial_scores.dim()
+                                );
+                            }
+                        }
+                    } else {
+                        // This case should ideally not be reached if SVD succeeds and compute_vt is true.
+                        warn!("Direct SVD for initial global PCA: svd_output.vt is None despite requesting it. M_c={}, N_samples={}", m_c, n_samples);
+                        // Return an error or handle as appropriate; here, returning empty scores.
+                         return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "SVD succeeded but V.T (vt) was not returned by the backend.",
+                        )) as ThreadSafeStdError);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Direct SVD failed for initial global PCA (M_c={}, N_samples={}): {}. Returning error.",
+                        m_c, n_samples, e
+                    );
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Direct SVD failed during initial global PCA: {}", e),
+                    )) as ThreadSafeStdError);
+                }
+            }
+        } else {
+            info!(
+                "RSVD for initial global PCA on condensed matrix (M_c={}, N_samples={}, K_glob={}, L_rsvd={})",
+                m_c, n_samples, k_glob, l_rsvd
+            );
+            // Existing RSVD path
+            initial_scores = Self::perform_randomized_svd_for_scores(
+                &a_c.view(), // A is M x N (features x samples)
+                k_glob,
+                p_glob,
+                q_glob,
+                random_seed,
+            )?;
+            info!(
+                "RSVD produced initial scores of shape: {:?}",
+                initial_scores.dim()
+            );
+        }
+        
+        if initial_scores.ncols() == 0 && k_glob > 0 {
+            warn!(
+                "Initial PCA ({} path) resulted in 0 components, while K_glob was {}. Input matrix M_c x N_samples = {} x {}.",
+                if m_c <= k_glob || m_c <= direct_svd_m_c_threshold || l_rsvd <= k_glob {"Direct SVD"} else {"RSVD"},
+                k_glob, m_c, n_samples
+            );
+        }
+
+        Ok(InitialSamplePcScores { scores: initial_scores })
     }
 
     /// Computes the right singular vectors (V_A_approx, sample scores) of a matrix A using rSVD.
@@ -824,6 +939,56 @@ impl EigenSNPCoreAlgorithm {
         })
     }
     
+    /// Performs matrix multiplication of A.T * B (A: D_strip x N, B: D_strip x K_qr)
+    /// using f64 accumulation for each element of the resulting f32 matrix (N x K_qr).
+    fn dot_product_at_b_mixed_precision(
+        matrix_a_dstrip_x_n: &ArrayView2<f32>, // Corresponds to genotype_data_strip_f32.view()
+        matrix_b_dstrip_x_kqr: &ArrayView2<f32>, // Corresponds to v_qr_loadings_for_strip_f32.view()
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        let d_strip = matrix_a_dstrip_x_n.nrows();
+        let n_samples = matrix_a_dstrip_x_n.ncols();
+        let k_qr = matrix_b_dstrip_x_kqr.ncols();
+
+        if d_strip != matrix_b_dstrip_x_kqr.nrows() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Dimension mismatch for mixed-precision A.T * B dot product: A.nrows ({}) != B.nrows ({}).",
+                    d_strip, matrix_b_dstrip_x_kqr.nrows()
+                ),
+            )) as ThreadSafeStdError);
+        }
+
+        if d_strip == 0 || n_samples == 0 || k_qr == 0 {
+            // Handle empty inputs gracefully. If d_strip is 0, all dot products will be 0.
+            // Result is N x K_qr
+            return Ok(Array2::<f32>::zeros((n_samples, k_qr)));
+        }
+
+        let mut result_n_x_kqr_f32 = Array2::<f32>::zeros((n_samples, k_qr));
+
+        // Parallelize over the N rows of the output matrix (which correspond to samples)
+        result_n_x_kqr_f32
+            .axis_iter_mut(Axis(0)) // Iterates over rows (N samples)
+            .into_par_iter()
+            .enumerate() // i_sample_idx
+            .for_each(|(i_sample_idx, mut output_row_f32_view)| {
+                // output_row_f32_view is a view of a single row of result_n_x_kqr_f32
+                // It has K_qr elements.
+                for k_comp_idx in 0..k_qr { // Iterate over columns of the output row
+                    let mut accumulator_f64: f64 = 0.0;
+                    for d_snp_idx in 0..d_strip { // Sum over D_strip
+                        accumulator_f64 += (matrix_a_dstrip_x_n[[d_snp_idx, i_sample_idx]] as f64) * 
+                                           (matrix_b_dstrip_x_kqr[[d_snp_idx, k_comp_idx]] as f64);
+                    }
+                    output_row_f32_view[k_comp_idx] = accumulator_f64 as f32;
+                }
+            });
+            
+        Ok(result_n_x_kqr_f32)
+    }
+
+
     fn compute_refined_snp_loadings<G: PcaReadyGenotypeAccessor>(
         &self,
         genotype_data: &G,
@@ -989,10 +1154,15 @@ impl EigenSNPCoreAlgorithm {
                     .slice(s![strip_start_snp_idx..strip_end_snp_idx, ..]); // D_strip x K_initial (f32)
 
                 // S_intermediate_strip = X_strip^T · V_qr_strip
-                // (D_strip x N)^T · (D_strip x K_initial) -> (N x D_strip) · (D_strip x K_initial) -> N x K_initial (f32)
-                let s_intermediate_strip_f32 = genotype_data_strip_f32.t().dot(&v_qr_loadings_for_strip_f32);
+                // X_strip is genotype_data_strip_f32 (D_strip x N)
+                // V_qr_strip is v_qr_loadings_for_strip_f32 (D_strip x K_initial)
+                // Result should be N x K_initial
+                let s_intermediate_strip_f32 = Self::dot_product_at_b_mixed_precision(
+                    &genotype_data_strip_f32.view(),      // This is A (D_strip x N)
+                    &v_qr_loadings_for_strip_f32.view()   // This is B (D_strip x K_QR/K_initial)
+                )?; // Result is N x K_initial, f32 (computed with f64 accumulation)
                 
-                // Cast to f64 for accumulation
+                // Cast to f64 for outer sum over strips
                 Ok(s_intermediate_strip_f32.mapv(|x| x as f64))
             })
             .fold(
@@ -1022,103 +1192,109 @@ impl EigenSNPCoreAlgorithm {
                 },
             )?; // Corrected: Only one ? needed as reduce itself returns a single Result.
 
-        // --- C. Perform SVD on S_intermediate ---
-        let s_intermediate_n_by_k_initial_f32_for_svd = s_intermediate_n_by_k_initial_f64.mapv(|x| x as f32);
+        // --- C. Perform SVD on S_intermediate (which is Array2<f64>) ---
+        // No longer casting to f32 here:
+        // let s_intermediate_n_by_k_initial_f32_for_svd = s_intermediate_n_by_k_initial_f64.mapv(|x| x as f32);
+        
+        // Instantiate LinAlgBackendProvider for f64
+        let backend_svd_f64 = LinAlgBackendProvider::<f64>::new();
+        debug!(
+            "Performing SVD on f64 intermediate score matrix of shape: {:?}",
+            s_intermediate_n_by_k_initial_f64.dim()
+        );
 
-        let backend_svd = LinAlgBackendProvider::<f32>::new();
-        let svd_output = backend_svd.svd_into(
-            s_intermediate_n_by_k_initial_f32_for_svd, // Consumes matrix
+        // SVD on f64 matrix
+        let svd_output_f64 = backend_svd_f64.svd_into(
+            s_intermediate_n_by_k_initial_f64, // Consumes matrix (Array2<f64>)
             true, // compute U_rot
             true, // compute V_rot_transposed
-        ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD of S_intermediate failed: {}", e_svd))) as ThreadSafeStdError)?;
+        ).map_err(|e_svd| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SVD (f64) of S_intermediate failed: {}", e_svd))) as ThreadSafeStdError)?;
 
-        // Step C (SVD results) - Use original variable names as they are in the file
-        let u_rot_n_by_k_eff_from_svd = svd_output.u.ok_or_else(|| 
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U_rot (from S_intermediate) not returned")) as ThreadSafeStdError)?;
+        // SVD results are now f64
+        let u_rot_n_by_k_eff_from_svd_f64 = svd_output_f64.u.ok_or_else(|| 
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD U_rot (f64) (from S_intermediate) not returned")) as ThreadSafeStdError)?;
         
-        let s_prime_singular_values_k_eff_from_svd = svd_output.s; 
+        let s_prime_singular_values_k_eff_from_svd_f64 = svd_output_f64.s; // This is Array1<f64>
         
-        let vt_rot_k_eff_by_k_initial_from_svd = svd_output.vt.ok_or_else(||
-             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V_rot.T (from S_intermediate) not returned")) as ThreadSafeStdError)?;
+        let vt_rot_k_eff_by_k_initial_from_svd_f64 = svd_output_f64.vt.ok_or_else(||
+             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD V_rot.T (f64) (from S_intermediate) not returned")) as ThreadSafeStdError)?;
 
-        let mut u_rot_n_by_k_eff = u_rot_n_by_k_eff_from_svd;
-        let mut s_prime_singular_values_k_eff = s_prime_singular_values_k_eff_from_svd;
-        let mut vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial_from_svd;
-
+        // Mutable versions for potential slicing
+        let mut u_rot_n_by_k_eff_f64 = u_rot_n_by_k_eff_from_svd_f64;
+        let mut s_prime_singular_values_k_eff_f64 = s_prime_singular_values_k_eff_from_svd_f64;
+        let mut vt_rot_k_eff_by_k_initial_f64 = vt_rot_k_eff_by_k_initial_from_svd_f64;
+        
         // --- Determine consistent number of effective components (num_components_to_process) ---
-        let k_eff_from_u = u_rot_n_by_k_eff.ncols();
-        let k_eff_from_s = s_prime_singular_values_k_eff.len();
-        // vt_rot_k_eff_by_k_initial is k_eff_from_s x K_initial.
-        // The number of components it implies for V_rot (its transpose's columns) is k_eff_from_s.
+        let k_eff_from_u_f64 = u_rot_n_by_k_eff_f64.ncols();
+        let k_eff_from_s_f64 = s_prime_singular_values_k_eff_f64.len();
         
-        let num_components_to_process = k_eff_from_u.min(k_eff_from_s);
+        let num_components_to_process = k_eff_from_u_f64.min(k_eff_from_s_f64);
 
-        if k_eff_from_u != k_eff_from_s {
+        if k_eff_from_u_f64 != k_eff_from_s_f64 {
             warn!(
-                "SVD of S_intermediate resulted in inconsistent k_eff: U_rot has {} components, S_prime has {} components. Processing minimum: {}.",
-                k_eff_from_u, k_eff_from_s, num_components_to_process
+                "SVD (f64) of S_intermediate resulted in inconsistent k_eff: U_rot has {} components, S_prime has {} components. Processing minimum: {}.",
+                k_eff_from_u_f64, k_eff_from_s_f64, num_components_to_process
             );
         }
         
         if num_components_to_process == 0 {
-            debug!("SVD of S_intermediate resulted in num_components_to_process = 0. Returning empty results.");
+            debug!("SVD (f64) of S_intermediate resulted in num_components_to_process = 0. Returning empty results.");
             return Ok((
-                Array2::zeros((num_total_qc_samples, 0)),
-                Array1::zeros(0),
-                Array2::zeros((num_total_pca_snps, 0)),
+                Array2::zeros((num_total_qc_samples, 0)), // f32 for final output
+                Array1::zeros(0), // f64 for eigenvalues
+                Array2::zeros((num_total_pca_snps, 0)), // f32 for final output
             ));
         }
+
         // --- D. Calculate Final Scores, Loadings, and Eigenvalues using num_components_to_process ---
 
-        // Slice SVD outputs if necessary to ensure consistent dimensions
-        if k_eff_from_u > num_components_to_process {
-            // Assign to the mutable variable u_rot_n_by_k_eff
-            u_rot_n_by_k_eff = u_rot_n_by_k_eff.slice_axis(Axis(1), ndarray::Slice::from(0..num_components_to_process)).into_owned();
+        // Slice SVD outputs (f64) if necessary
+        if k_eff_from_u_f64 > num_components_to_process {
+            u_rot_n_by_k_eff_f64 = u_rot_n_by_k_eff_f64.slice_axis(Axis(1), ndarray::Slice::from(0..num_components_to_process)).into_owned();
         }
-        if k_eff_from_s > num_components_to_process {
-            // Assign to the mutable variable s_prime_singular_values_k_eff
-            s_prime_singular_values_k_eff = s_prime_singular_values_k_eff.slice(s![0..num_components_to_process]).into_owned();
-            // Assign to the mutable variable vt_rot_k_eff_by_k_initial
-            vt_rot_k_eff_by_k_initial = vt_rot_k_eff_by_k_initial.slice_axis(Axis(0), ndarray::Slice::from(0..num_components_to_process)).into_owned();
+        if k_eff_from_s_f64 > num_components_to_process {
+            s_prime_singular_values_k_eff_f64 = s_prime_singular_values_k_eff_f64.slice(s![0..num_components_to_process]).into_owned();
+            vt_rot_k_eff_by_k_initial_f64 = vt_rot_k_eff_by_k_initial_f64.slice_axis(Axis(0), ndarray::Slice::from(0..num_components_to_process)).into_owned();
         }
         
-        // Final Sample Scores: S_final^* = U_small * Sigma_small
-        // Achieved by scaling columns of U_small by Sigma_small
-        // u_rot_n_by_k_eff is already mutable and correctly sliced.
-        let mut final_sample_scores_n_by_k_eff_f32 = u_rot_n_by_k_eff; // Now N x num_components_to_process
-
+        // Final Sample Scores: S_final^* = U_small * Sigma_small (f64)
+        let mut final_sample_scores_n_by_k_eff_f64 = u_rot_n_by_k_eff_f64; // N x num_components_to_process (f64)
         if num_components_to_process > 0 {
             for k_idx in 0..num_components_to_process {
-                // s_prime_singular_values_k_eff is already mutable and correctly sliced.
-                let singular_value_for_scaling = s_prime_singular_values_k_eff[k_idx];
-                let mut score_column_to_scale = final_sample_scores_n_by_k_eff_f32.column_mut(k_idx);
-                score_column_to_scale.mapv_inplace(|element_val| element_val * singular_value_for_scaling);
+                let singular_value_for_scaling_f64 = s_prime_singular_values_k_eff_f64[k_idx];
+                let mut score_column_to_scale_f64 = final_sample_scores_n_by_k_eff_f64.column_mut(k_idx);
+                score_column_to_scale_f64.mapv_inplace(|element_val| element_val * singular_value_for_scaling_f64);
             }
         }
+        // Cast final scores to f32
+        let final_sample_scores_n_by_k_eff_f32 = final_sample_scores_n_by_k_eff_f64.mapv(|x| x as f32);
         
-        // Final SNP Loadings: V_final = V_qr * V_rot (D x K_initial) * (K_initial x num_components_to_process) -> D x num_components_to_process
-        // vt_rot_k_eff_by_k_initial is already mutable and correctly sliced.
-        let v_rot_k_initial_by_k_eff = vt_rot_k_eff_by_k_initial.t().into_owned(); // Now K_initial x num_components_to_process
-        let final_snp_loadings_d_by_k_eff_f32 = v_qr_loadings_d_by_k.dot(&v_rot_k_initial_by_k_eff);
+        // Final SNP Loadings: V_final = V_qr * V_rot (f32 * f64 -> needs adjustment)
+        // V_qr is D x K_initial (f32)
+        // V_rot is K_initial x num_components_to_process (f64, from vt_rot_f64.t())
+        let v_rot_k_initial_by_k_eff_f64 = vt_rot_k_eff_by_k_initial_f64.t().into_owned();
+        // Cast V_rot to f32 before dot product
+        let v_rot_k_initial_by_k_eff_f32 = v_rot_k_initial_by_k_eff_f64.mapv(|x| x as f32);
+        let final_snp_loadings_d_by_k_eff_f32 = v_qr_loadings_d_by_k.dot(&v_rot_k_initial_by_k_eff_f32);
         
-        // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (num_components_to_process length, f64)
-        // s_prime_singular_values_k_eff is already mutable and correctly sliced.
+        // Final Eigenvalues: lambda_k = s_prime_k^2 / (N-1) (f64)
         let denominator_n_minus_1 = (num_total_qc_samples as f64 - 1.0).max(1.0);
-        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff.mapv(|s_val| {
-            let s_val_f64 = s_val as f64;
+        let final_eigenvalues_k_eff_f64 = s_prime_singular_values_k_eff_f64.mapv(|s_val_f64| {
+            // s_val_f64 is already f64
             (s_val_f64 * s_val_f64) / denominator_n_minus_1
         });
 
-        // --- E. Sort Outputs (all based on num_components_to_process) ---
+        // --- E. Sort Outputs ---
+        // final_eigenvalues_k_eff_f64 is Array1<f64>
+        // final_sample_scores_n_by_k_eff_f32 is Array2<f32>
+        // final_snp_loadings_d_by_k_eff_f32 is Array2<f32>
+        
         let mut an_eigenvalue_index_pairs: Vec<(f64, usize)> = final_eigenvalues_k_eff_f64
             .iter()
             .enumerate()
             .map(|(idx, &val)| (val, idx))
             .collect();
         
-        // Sort by eigenvalue in descending order.
-        // If eigenvalues are NaN (e.g. from 0/0 if N=1 and s_val=0), their order is undefined but typically they go to the end.
-        // Rust's f64 sort is stable.
         an_eigenvalue_index_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         
         let sorted_indices: Vec<usize> = an_eigenvalue_index_pairs.into_iter().map(|pair| pair.1).collect();
