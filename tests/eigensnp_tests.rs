@@ -11,7 +11,7 @@ use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayVi
 use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, // Removed EigenSNPCoreOutput
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, EigenSNPCoreOutput,
     PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError, reorder_array_owned, reorder_columns_owned,
 };
 use rand::SeedableRng; // Already present, but ensure it's here
@@ -27,20 +27,14 @@ use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with 
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
 use std::fmt::Display; // To constrain T
-use std::fs::OpenOptions;
-use std::sync::Mutex;
 use lazy_static::lazy_static;
-use ctor::dtor; // Added for summary writer
 
 // Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
 use crate::eigensnp_integration_tests::generate_structured_data;
-    use crate::eigensnp_integration_tests::get_python_reference_pca; // Already present, ensure it is
-    // use efficient_pca::eigensnp::EigenSNPCoreOutput; // Ensure this is imported - This line seems to be duplicated from efficient_pca::eigensnp below, removing one.
-    // It is also directly used in some test helpers, so it should be fine.
-
+use crate::eigensnp_integration_tests::get_python_reference_pca;
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
@@ -174,10 +168,10 @@ mod eigensnp_integration_tests {
     use super::*; 
     // Ensure std::io::Write is available for the summary writer function
     use std::io::Write;
-    use std::fs::{File, OpenOptions}; // Already at top level, ensure visible or re-import if needed
-    use std::path::Path; // Already at top level
-    use std::sync::Mutex; // Already at top level
-    use ctor::dtor; // Already at top level, ensure visible or re-import
+    use std::fs::OpenOptions;
+    use std::path::Path; // Path is used by write_summary_file_impl for Path::new(artifact_dir)
+    use std::sync::Mutex; // Mutex is used for TEST_RESULTS
+    use ctor::dtor; // dtor is used for the final_summary_writer attribute
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
@@ -1209,7 +1203,7 @@ mod eigensnp_integration_tests {
                 overall_test_successful = false;
                 outcome_details.push_str(&format!("Rust PCA computation: FAILED. Error: {}. ", e));
                 // Create a dummy output to allow logging and avoid panics before logging
-                efficient_pca::eigensnp::EigenSNPCoreOutput {
+                EigenSNPCoreOutput { // Now directly in scope due to the import change
                     final_snp_principal_component_loadings: Array2::zeros((0,0)),
                     final_sample_principal_component_scores: Array2::zeros((0,0)),
                     final_principal_component_eigenvalues: Array1::zeros(0),
@@ -1975,7 +1969,7 @@ pub fn run_sample_projection_accuracy_test(
         pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
     }];
 
-    let mut rust_pca_output_option: Option<efficient_pca::eigensnp::EigenSNPCoreOutput> = None;
+    let mut rust_pca_output_option: Option<EigenSNPCoreOutput> = None; // Now directly in scope
     let mut k_eff_rust = 0;
 
     match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train) {
