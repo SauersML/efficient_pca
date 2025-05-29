@@ -27,20 +27,14 @@ use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with 
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
 use std::fmt::Display; // To constrain T
-// use std::fs::OpenOptions; // Removed, will be imported in the module
-// use std::sync::Mutex; // Removed, will be imported in the module
 use lazy_static::lazy_static;
-// use ctor::dtor; // Removed, will be imported in the module
 
 // Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
 use crate::eigensnp_integration_tests::generate_structured_data;
-    use crate::eigensnp_integration_tests::get_python_reference_pca; // Already present, ensure it is
-    // The EigenSNPCoreOutput import is now added to the main efficient_pca::eigensnp block above.
-    // This commented line can be removed or updated. For now, just updating comment.
-
+use crate::eigensnp_integration_tests::get_python_reference_pca;
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
@@ -174,8 +168,6 @@ mod eigensnp_integration_tests {
     use super::*; 
     // Ensure std::io::Write is available for the summary writer function
     use std::io::Write;
-    // File is in scope from top-level `use std::fs::{self, File};` via `use super::*;`
-    // So, only import OpenOptions here.
     use std::fs::OpenOptions;
     use std::path::Path; // Path is used by write_summary_file_impl for Path::new(artifact_dir)
     use std::sync::Mutex; // Mutex is used for TEST_RESULTS
