@@ -145,7 +145,7 @@ impl InitialSamplePcScores {
 // --- Final Output Structure ---
 
 /// Encapsulates the final results of the EigenSNP PCA computation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EigenSNPCoreOutput {
     /// Final SNP Principal Component Loadings (V_final_star).
     /// Shape: `(num_pca_snps, num_principal_components_computed)`
