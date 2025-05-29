@@ -791,6 +791,7 @@ impl EigenSNPCoreAlgorithm {
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         {
+
             Ok((output_final, ()))
         }
 }
