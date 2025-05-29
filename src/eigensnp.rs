@@ -51,6 +51,7 @@ pub type PcaOutputWithDiagnostics = (EigenSNPCoreOutput, ());
 #[cfg(feature = "enable-eigensnp-diagnostics")]
 pub type PcaConditionally<T> = T;
 #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+#[allow(unused_type_parameters)]
 pub type PcaConditionally<T> = ();
 
 
@@ -895,10 +896,25 @@ impl EigenSNPCoreAlgorithm {
                             actual_num_subset_samples,
                             self.config.components_per_ld_block
                         );
-                        return Ok(PerBlockLocalSnpBasis {
-                            block_list_id,
-                            basis_vectors: Array2::<f32>::zeros((actual_num_snps_in_block, 0)),
-                        });
+
+                        #[cfg(feature = "enable-eigensnp-diagnostics")]
+                        let empty_diag_to_return = {
+                            let mut diag = crate::diagnostics::PerBlockLocalBasisDiagnostics::default();
+                            diag.block_id = block_list_id.0.to_string();
+                            diag.notes = format!("Early exit: num_components_to_extract is 0 for block tag: {}. SNPs in block spec: {}, Actual subset samples: {}.", block_tag, num_snps_in_this_block_spec, actual_num_subset_samples);
+                            diag.u_p_dims = Some((actual_num_snps_in_block, 0));
+                            diag
+                        };
+                        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                        let empty_diag_to_return = ();
+
+                        return Ok((
+                            PerBlockLocalSnpBasis {
+                                block_list_id,
+                                basis_vectors: Array2::<f32>::zeros((actual_num_snps_in_block, 0)),
+                            },
+                            empty_diag_to_return
+                        ));
                     }
                         genotype_data.get_standardized_snp_sample_block(
                             &block_spec.pca_snp_ids_in_block,
@@ -1113,7 +1129,7 @@ impl EigenSNPCoreAlgorithm {
             num_total_qc_samples
         );
 
-        let total_num_condensed_features: usize = all_local_bases.iter().map(|basis| basis.basis_vectors.ncols()).sum();
+        let total_num_condensed_features: usize = all_local_bases.iter().map(|basis| basis.0.basis_vectors.ncols()).sum();
 
         if total_num_condensed_features == 0 {
             info!("Total condensed features is 0. Returning empty RawCondensedFeatures.");
