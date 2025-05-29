@@ -11,7 +11,7 @@ use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayVi
 use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
 use ndarray_rand::RandomExt;
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, // Removed EigenSNPCoreOutput
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, LdBlockSpecification, EigenSNPCoreOutput,
     PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError, reorder_array_owned, reorder_columns_owned,
 };
 use rand::SeedableRng; // Already present, but ensure it's here
@@ -27,9 +27,10 @@ use std::fmt::Write as FmtWrite; // Import with an alias to avoid conflict with 
 use std::path::Path; // Add Path
 // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
 use std::fmt::Display; // To constrain T
-use std::fs::OpenOptions;
-use std::sync::Mutex;
+// use std::fs::OpenOptions; // Removed, will be imported in the module
+// use std::sync::Mutex; // Removed, will be imported in the module
 use lazy_static::lazy_static;
+// use ctor::dtor; // Removed, will be imported in the module
 
 // Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
@@ -37,7 +38,8 @@ use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
 use crate::eigensnp_integration_tests::generate_structured_data;
     use crate::eigensnp_integration_tests::get_python_reference_pca; // Already present, ensure it is
-    use efficient_pca::eigensnp::EigenSNPCoreOutput; // Ensure this is imported
+    // The EigenSNPCoreOutput import is now added to the main efficient_pca::eigensnp block above.
+    // This commented line can be removed or updated. For now, just updating comment.
 
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
@@ -170,6 +172,14 @@ fn save_vector_to_tsv<T: Display>(
 #[cfg(test)]
 mod eigensnp_integration_tests {
     use super::*; 
+    // Ensure std::io::Write is available for the summary writer function
+    use std::io::Write;
+    // File is in scope from top-level `use std::fs::{self, File};` via `use super::*;`
+    // So, only import OpenOptions here.
+    use std::fs::OpenOptions;
+    use std::path::Path; // Path is used by write_summary_file_impl for Path::new(artifact_dir)
+    use std::sync::Mutex; // Mutex is used for TEST_RESULTS
+    use ctor::dtor; // dtor is used for the final_summary_writer attribute
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
@@ -189,28 +199,35 @@ mod eigensnp_integration_tests {
         pub static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
     }
 
-    // Function to write results to TSV
-    pub fn write_results_to_tsv() -> Result<(), std::io::Error> {
-        let results = TEST_RESULTS.lock().unwrap();
-        if results.is_empty() {
+    // Renamed and modified function to write results to TSV
+    fn write_summary_file_impl() -> Result<(), std::io::Error> {
+        let results_guard = TEST_RESULTS.lock().unwrap();
+        if results_guard.is_empty() {
+            println!("[SUMMARY_WRITER] TEST_RESULTS is empty. No summary file will be written.");
             return Ok(()); // No results to write
         }
 
         let artifact_dir = "target/test_artifacts";
-        std::fs::create_dir_all(artifact_dir)?;
         let tsv_path = Path::new(artifact_dir).join("eigensnp_summary_results.tsv");
+        
+        println!("[SUMMARY_WRITER] Attempting to write {} records to {:?}", results_guard.len(), tsv_path);
+
+        if let Err(e) = std::fs::create_dir_all(artifact_dir) {
+            eprintln!("[SUMMARY_WRITER] Error creating artifact_dir '{}': {:?}", artifact_dir, e);
+            return Err(e);
+        }
         
         // Use OpenOptions to create or truncate the file
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(tsv_path)?;
+            .open(&tsv_path)?; // Pass tsv_path by reference
 
         // Write header
         writeln!(file, "TestName	NumFeatures_D	NumSamples_N	NumPCsRequested_K	NumPCsComputed	Success	OutcomeDetails	Notes")?;
 
-        for record in results.iter() {
+        for record in results_guard.iter() {
             writeln!(file, "{}	{}	{}	{}	{}	{}	{}	{}",
                 record.test_name,
                 record.num_features_d,
@@ -222,18 +239,18 @@ mod eigensnp_integration_tests {
                 record.notes.replace("	", " ").replace("\n", "; ") // Sanitize notes
             )?;
         }
+        println!("[SUMMARY_WRITER] Successfully wrote summary to {:?}", tsv_path);
         Ok(())
     }
 
-    // Hook for writing results after all tests in this module.
-    // This is a bit of a workaround. A proper test harness or `ctor` crate might be better.
-    // We define a "final" test that calls the write function.
-    // Ensure this test runs last (e.g. by naming convention, though Rust test order isn't guaranteed).
-    // For now, we will call this manually or make it the last test.
-    // A more robust solution would be a custom test framework or procedural macro.
-    #[test]
-    fn finalize_and_write_results() {
-        write_results_to_tsv().expect("Failed to write test results to TSV");
+    // Destructor function to write summary at the end of test execution
+    #[dtor]
+    fn final_summary_writer() {
+        println!("[SUMMARY_WRITER_DTOR] Test execution finished. Running summary writer destructor.");
+        if let Err(e) = write_summary_file_impl() {
+            eprintln!("[SUMMARY_WRITER_DTOR] CRITICAL: Failed to write eigensnp_summary_results.tsv: {:?}", e);
+            // Do not panic in dtor
+        }
     }
 
     // Function to call pca.py and parse its output
@@ -271,7 +288,7 @@ mod eigensnp_integration_tests {
             std::thread::spawn(move || {
                 if let Err(e) = stdin_pipe.write_all(stdin_data.as_bytes()) {
                     // eprintln is okay for a background thread error message in tests
-                    eprintln!("Failed to write to stdin of pca.py: {}", e);
+                    eprintln!("Failed to write to stdin of pca.py: {}", e); // Ensure this eprintln is acceptable or use logging framework
                 }
             });
         } else {
@@ -1194,7 +1211,7 @@ mod eigensnp_integration_tests {
                 overall_test_successful = false;
                 outcome_details.push_str(&format!("Rust PCA computation: FAILED. Error: {}. ", e));
                 // Create a dummy output to allow logging and avoid panics before logging
-                efficient_pca::eigensnp::EigenSNPCoreOutput {
+                EigenSNPCoreOutput { // Now directly in scope due to the import change
                     final_snp_principal_component_loadings: Array2::zeros((0,0)),
                     final_sample_principal_component_scores: Array2::zeros((0,0)),
                     final_principal_component_eigenvalues: Array1::zeros(0),
@@ -1960,7 +1977,7 @@ pub fn run_sample_projection_accuracy_test(
         pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
     }];
 
-    let mut rust_pca_output_option: Option<efficient_pca::eigensnp::EigenSNPCoreOutput> = None;
+    let mut rust_pca_output_option: Option<EigenSNPCoreOutput> = None; // Now directly in scope
     let mut k_eff_rust = 0;
 
     match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train) {
