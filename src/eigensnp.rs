@@ -763,17 +763,33 @@ impl EigenSNPCoreAlgorithm {
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
+            let output_final = EigenSNPCoreOutput {
+                final_snp_principal_component_loadings: final_sorted_snp_loadings,
+                final_sample_principal_component_scores: final_sorted_sample_scores,
+                final_principal_component_eigenvalues: final_sorted_eigenvalues,
+                num_qc_samples_used: num_total_qc_samples,
+                num_pca_snps_used: genotype_data.num_pca_snps(),
+                num_principal_components_computed: num_principal_components_computed_final,
+            };
             if let Some(dc) = diagnostics_collector.as_mut() {
                 if let Some(rt) = overall_start_time.elapsed().as_secs_f64_safe() {
                     dc.total_runtime_seconds = Some(rt);
                 }
                 dc.notes.push_str("EigenSNP PCA run finished. ");
             }
-            Ok((output, diagnostics_collector))
+            Ok((output_final, diagnostics_collector))
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         {
-            Ok((output, ()))
+            let output_final = EigenSNPCoreOutput { // Define output_final here as well
+                final_snp_principal_component_loadings: final_sorted_snp_loadings,
+                final_sample_principal_component_scores: final_sorted_sample_scores,
+                final_principal_component_eigenvalues: final_sorted_eigenvalues,
+                num_qc_samples_used: num_total_qc_samples,
+                num_pca_snps_used: genotype_data.num_pca_snps(),
+                num_principal_components_computed: num_principal_components_computed_final,
+            };
+            Ok((output_final, ()))
         }
     }
 
