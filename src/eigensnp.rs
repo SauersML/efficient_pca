@@ -458,7 +458,7 @@ impl EigenSNPCoreAlgorithm {
         }
 
         // --- START DIAGNOSTIC MODIFICATION ---
-        let mut subset_sample_ids_selected: Vec<QcSampleId>;
+        let subset_sample_ids_selected: Vec<QcSampleId>; // Removed mut as it's assigned in each branch
         let is_diagnostic_target_test = 
             num_total_qc_samples == 200 && 
             (num_total_pca_snps >= 950 && num_total_pca_snps <= 1050); // Approximate SNP count
@@ -899,7 +899,7 @@ impl EigenSNPCoreAlgorithm {
 
             match backend.svd_into(a_c_owned, false /* compute_u */, true /* compute_vt */) {
                 Ok(svd_output) => {
-                    debug!("Direct SVD Path: Singular values: {:.4e?}", svd_output.s);
+                    debug!("Direct SVD Path: Singular values: {:?}", svd_output.s);
                     if let Some(svd_output_vt) = svd_output.vt {
                         if svd_output_vt.is_empty() {
                              warn!("Direct SVD for initial global PCA: svd_output.vt is present but empty. M_c={}, N_samples={}", m_c, n_samples);
