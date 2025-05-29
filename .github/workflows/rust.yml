@@ -274,7 +274,7 @@ jobs:
   analyze_benchmarks:
     runs-on: ubuntu-latest
     needs: test
-    if: success() # 'test' job (all matrix legs) completed successfully
+    if: always() # 'test' job (all matrix legs) completed successfully
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
