@@ -752,7 +752,7 @@ impl EigenSNPCoreAlgorithm {
             num_principal_components_computed_final
         );
 
-        Ok(EigenSNPCoreOutput {
+        let output_final = EigenSNPCoreOutput {
             final_snp_principal_component_loadings: final_sorted_snp_loadings,
             final_sample_principal_component_scores: final_sorted_sample_scores,
             final_principal_component_eigenvalues: final_sorted_eigenvalues,
@@ -763,14 +763,6 @@ impl EigenSNPCoreAlgorithm {
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
-            let output_final = EigenSNPCoreOutput {
-                final_snp_principal_component_loadings: final_sorted_snp_loadings,
-                final_sample_principal_component_scores: final_sorted_sample_scores,
-                final_principal_component_eigenvalues: final_sorted_eigenvalues,
-                num_qc_samples_used: num_total_qc_samples,
-                num_pca_snps_used: genotype_data.num_pca_snps(),
-                num_principal_components_computed: num_principal_components_computed_final,
-            };
             if let Some(dc) = diagnostics_collector.as_mut() {
                 if let Some(rt) = overall_start_time.elapsed().as_secs_f64_safe() {
                     dc.total_runtime_seconds = Some(rt);
@@ -781,17 +773,10 @@ impl EigenSNPCoreAlgorithm {
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         {
-            let output_final = EigenSNPCoreOutput { // Define output_final here as well
-                final_snp_principal_component_loadings: final_sorted_snp_loadings,
-                final_sample_principal_component_scores: final_sorted_sample_scores,
-                final_principal_component_eigenvalues: final_sorted_eigenvalues,
-                num_qc_samples_used: num_total_qc_samples,
-                num_pca_snps_used: genotype_data.num_pca_snps(),
-                num_principal_components_computed: num_principal_components_computed_final,
-            };
+            // output_final is defined above and moved into the Ok tuple here
             Ok((output_final, ()))
         }
-    }
+}
 
     // Helper trait for f64 conversion from Duration, handling potential errors.
     trait DurationToF64Safe {
