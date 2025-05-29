@@ -31,7 +31,7 @@ use std::fs::OpenOptions;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
 
-use crate::eigensnp_integration_tests::parse_pca_py_output;
+// Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
@@ -2286,8 +2286,17 @@ where
             writeln!(outcome_details, "EigenSnp (Less Refined, {} passes): FAILED. Error: {}", pass_count_less_refined, e).unwrap_or_default();
             notes.push_str(&format!("EigenSnp A failed: {}. ", e));
             overall_test_success = false;
+            EigenSNPCoreOutput {
+                final_snp_principal_component_loadings: Array2::zeros((0, 0)),
+                final_sample_principal_component_scores: Array2::zeros((0, 0)),
+                final_principal_component_eigenvalues: Array1::zeros(0),
+                num_principal_components_computed: 0,
+                num_pca_snps_used: standardized_structured_data.nrows(),
+                num_qc_samples_used: standardized_structured_data.ncols(),
+            }
+
             // Return a dummy output to allow logging to proceed if one run fails
-            EigenSNPCoreOutput::default() 
+            EigenSNPCoreOutput::default()
         }
     };
     
@@ -2304,6 +2313,15 @@ where
             writeln!(outcome_details, "EigenSnp (More Refined, {} passes): FAILED. Error: {}", pass_count_more_refined, e).unwrap_or_default();
             notes.push_str(&format!("EigenSnp B failed: {}. ", e));
             overall_test_success = false;
+            EigenSNPCoreOutput {
+                final_snp_principal_component_loadings: Array2::zeros((0, 0)),
+                final_sample_principal_component_scores: Array2::zeros((0, 0)),
+                final_principal_component_eigenvalues: Array1::zeros(0),
+                num_principal_components_computed: 0,
+                num_pca_snps_used: standardized_structured_data.nrows(),
+                num_qc_samples_used: standardized_structured_data.ncols(),
+            }
+
             EigenSNPCoreOutput::default()
         }
     };
