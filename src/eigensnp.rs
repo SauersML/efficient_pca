@@ -32,6 +32,23 @@ use crate::diagnostics::{
 /// so they implement `Send` and `Sync`.
 pub type ThreadSafeStdError = Box<dyn Error + Send + Sync + 'static>;
 
+// Helper trait for f64 conversion from Duration, handling potential errors.
+trait DurationToF64Safe {
+    fn as_secs_f64_safe(&self) -> Option<f64>;
+}
+impl DurationToF64Safe for std::time::Duration {
+    fn as_secs_f64_safe(&self) -> Option<f64> {
+        let secs = self.as_secs();
+        let nanos = self.subsec_nanos();
+        let total_nanos = secs as f64 * 1_000_000_000.0 + nanos as f64;
+        if total_nanos.is_finite() {
+            Some(total_nanos / 1_000_000_000.0)
+        } else {
+            None // Or handle error appropriately
+        }
+    }
+}
+
 // --- Core Index Types ---
 
 /// Identifies a SNP included in the PCA (post-QC and part of an LD block).
@@ -192,6 +209,7 @@ pub struct EigenSNPCoreOutput {
 /// to prevent division by zero and for numerical stability.
 fn standardize_raw_condensed_features(
     raw_features_input: RawCondensedFeatures,
+    #[cfg_attr(not(feature = "enable-eigensnp-diagnostics"), allow(unused_variables))]
     collect_diagnostics_flag: bool,
     #[cfg(feature = "enable-eigensnp-diagnostics")] full_diagnostics_collector: Option<&mut crate::diagnostics::FullPcaRunDetailedDiagnostics>,
     #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _full_diagnostics_collector: Option<()>,
@@ -480,9 +498,9 @@ impl EigenSNPCoreAlgorithm {
     ) -> Result<(
         EigenSNPCoreOutput,
         #[cfg(feature = "enable-eigensnp-diagnostics")]
-        Option<crate::diagnostics::FullPcaRunDetailedDiagnostics>,
+        Option::<crate::diagnostics::FullPcaRunDetailedDiagnostics>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        (),
+        ()
     ), ThreadSafeStdError> {
         #[allow(unused_mut)] // May be unused if feature is disabled
         let mut diagnostics_collector: Option<FullPcaRunDetailedDiagnostics> = None;
@@ -773,27 +791,12 @@ impl EigenSNPCoreAlgorithm {
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         {
-            // output_final is defined above and moved into the Ok tuple here
+
             Ok((output_final, ()))
         }
 }
 
-    // Helper trait for f64 conversion from Duration, handling potential errors.
-    trait DurationToF64Safe {
-        fn as_secs_f64_safe(&self) -> Option<f64>;
-    }
-    impl DurationToF64Safe for std::time::Duration {
-        fn as_secs_f64_safe(&self) -> Option<f64> {
-            let secs = self.as_secs();
-            let nanos = self.subsec_nanos();
-            let total_nanos = secs as f64 * 1_000_000_000.0 + nanos as f64;
-            if total_nanos.is_finite() {
-                Some(total_nanos / 1_000_000_000.0)
-            } else {
-                None // Or handle error appropriately
-            }
-        }
-    }
+    // fn learn_all_ld_block_local_bases... (the trait was moved from here)
 
     fn learn_all_ld_block_local_bases<G: PcaReadyGenotypeAccessor>(
         &self,
@@ -816,7 +819,7 @@ impl EigenSNPCoreAlgorithm {
             }
         }
 
-        let local_bases_results: Vec<Result<PerBlockLocalSnpBasis, ThreadSafeStdError>> =
+        let local_bases_results: Vec<Result<(PerBlockLocalSnpBasis, PerBlockLocalBasisDiagnostics), ThreadSafeStdError>> =
             ld_block_specs
                 .par_iter()
                 .enumerate()
@@ -1286,7 +1289,7 @@ impl EigenSNPCoreAlgorithm {
         }
         
         if initial_scores.ncols() == 0 && k_glob > 0 {
-            warn!( /* ... */ );
+            warn!("Initial PCA scores have 0 columns (M_c={}, N_samples={}), but k_glob ({}) > 0. This might indicate an issue or empty input.", m_c, n_samples, k_glob);
         }
 
         Ok(InitialSamplePcScores { scores: initial_scores })
