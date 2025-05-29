@@ -140,6 +140,19 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
 
+      - name: Mark build failure
+        if: steps.build_step.outcome == 'failure'
+        run: |
+          mkdir -p ${{ runner.temp }}/build_failure_flags
+          touch ${{ runner.temp }}/build_failure_flags/build_failed_${{ matrix.backend }}.flag
+      - name: Upload build failure flag
+        if: steps.build_step.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-flag-${{ matrix.backend }}
+          path: ${{ runner.temp }}/build_failure_flags/build_failed_${{ matrix.backend }}.flag
+          retention-days: 1
+
       - name: Test
         run: |
           if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
@@ -202,10 +215,30 @@ jobs:
           path: failure-report-${{ matrix.backend }}.md
 
   consolidate-failures:
-    if: always() && needs.test.result == 'failure'
+    if: always() # Changed: Job now runs always, decision logic is in steps
     needs: test
     runs-on: ubuntu-latest
     steps:
+      - name: Download build failure flags
+        uses: actions/download-artifact@v4
+        id: download-build-flags
+        with:
+          pattern: build-failure-flag-*
+          path: ${{ runner.temp }}/build-failure-flags
+          # merge-multiple is true by default for patterns
+        continue-on-error: true # Important: don't fail if no flags are found
+
+      - name: Check if any build failure occurred
+        id: check-build-failure
+        run: |
+          if [[ -n "$(find ${{ runner.temp }}/build-failure-flags -type f -name 'build_failed_*.flag' -print -quit)" ]]; then
+            echo "Build failure detected."
+            echo "BUILD_FAILED=true" >> $GITHUB_OUTPUT
+          else
+            echo "No build failure detected."
+            echo "BUILD_FAILED=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download failure reports
         uses: actions/download-artifact@v4
         with:
@@ -214,6 +247,7 @@ jobs:
           merge-multiple: true
 
       - name: Consolidate reports
+        if: steps.check-build-failure.outputs.BUILD_FAILED == 'true' # Changed: Conditioned on build failure
         run: |
           exec > consolidated-report.md
           cat << EOF
@@ -240,13 +274,14 @@ jobs:
           done
 
       - name: Upload consolidated report
+        if: steps.check-build-failure.outputs.BUILD_FAILED == 'true' # Changed: Conditioned on build failure
         uses: actions/upload-artifact@v4
         with:
           name: consolidated-failure-report
           path: consolidated-report.md
 
       - name: Close stale issues
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' # Unchanged: Retains original condition
         uses: actions/github-script@v7
         with:
           script: |
@@ -271,7 +306,7 @@ jobs:
             }
 
       - name: Create failure issue
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.base_ref == 'main')
+        if: steps.check-build-failure.outputs.BUILD_FAILED == 'true' # Changed: Conditioned on build failure
         uses: peter-evans/create-issue-from-file@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
