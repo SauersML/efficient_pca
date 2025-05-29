@@ -797,7 +797,7 @@ impl EigenSNPCoreAlgorithm {
             ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during projection for block '{}': {}", block_tag, e_accessor))) as ThreadSafeStdError)?;
             
             // projected_scores_for_block = Sp_star = Up_star.T * Xp (cp x N)
-            let projected_scores_for_block = local_snp_basis_vectors.t().dot(&genotype_data_for_block_all_samples);
+            let projected_scores_for_block = Self::dot_product_at_b_mixed_precision(&local_snp_basis_vectors.view(), &genotype_data_for_block_all_samples.view())?;
 
             debug!("Block {}: Projected scores (Sp_star) dimensions: {:?}", 
                    block_tag, projected_scores_for_block.dim());
@@ -1478,7 +1478,7 @@ impl EigenSNPCoreAlgorithm {
         let backend = LinAlgBackendProvider::<f32>::new();
         
         // Y = A * Omega (M x N) * (N x L) -> (M x L)
-        let sketch_y = matrix_features_by_samples.dot(&random_projection_matrix_omega);
+        let sketch_y = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &random_projection_matrix_omega.view())?;
 
         if sketch_y.ncols() == 0 {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension_l);
@@ -1501,7 +1501,7 @@ impl EigenSNPCoreAlgorithm {
             trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
             
             // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
-            let q_tilde_candidate = matrix_features_by_samples.t().dot(&q_basis_m_by_l_actual);
+            let q_tilde_candidate = Self::dot_product_at_b_mixed_precision(matrix_features_by_samples, &q_basis_m_by_l_actual.view())?;
             if q_tilde_candidate.ncols() == 0 { 
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0)); 
                 trace!("RSVD Power Iteration {}: Q_tilde_candidate became empty.", iter_idx + 1);
@@ -1518,7 +1518,7 @@ impl EigenSNPCoreAlgorithm {
             }
 
             // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
-            let q_basis_candidate_next = matrix_features_by_samples.dot(&q_tilde_n_by_l_actual);
+            let q_basis_candidate_next = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &q_tilde_n_by_l_actual.view())?;
             if q_basis_candidate_next.ncols() == 0 {
                  q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
                  trace!("RSVD Power Iteration {}: Q_basis_candidate_next became empty.", iter_idx + 1);
@@ -1538,7 +1538,7 @@ impl EigenSNPCoreAlgorithm {
         }
         
         // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
-        let projected_b_l_actual_by_n = q_basis_m_by_l_actual.t().dot(matrix_features_by_samples);
+        let projected_b_l_actual_by_n = Self::dot_product_at_b_mixed_precision(&q_basis_m_by_l_actual.view(), matrix_features_by_samples)?;
         
         // SVD of B: B = U_B * S_B * V_B.T
         // U_B is L_actual x rank_b
