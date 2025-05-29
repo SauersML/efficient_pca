@@ -4,6 +4,7 @@
 pub mod linalg_backends; // Consolidated module
 pub mod pca;
 pub mod eigensnp;
+pub mod diagnostics;
 
 
 pub use pca::PCA;

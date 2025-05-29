@@ -628,7 +628,7 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            algorithm.compute_pca(&test_data, &ld_blocks, None)
         });
 
         match output_result {
@@ -797,7 +797,7 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            algorithm.compute_pca(&test_data, &ld_blocks, None)
         });
 
         match output_result {
@@ -945,7 +945,7 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            algorithm.compute_pca(&test_data, &ld_blocks, None)
         });
 
         match output_result {
@@ -1069,7 +1069,7 @@ mod eigensnp_integration_tests {
         let algorithm = EigenSNPCoreAlgorithm::new(config);
         let ld_blocks = vec![]; 
 
-        let output = algorithm.compute_pca(&test_data, &ld_blocks).expect("PCA with 0 SNPs failed");
+        let output = algorithm.compute_pca(&test_data, &ld_blocks, None).expect("PCA with 0 SNPs failed");
 
         assert_eq!(output.num_pca_snps_used, 0);
         assert_eq!(output.num_qc_samples_used, num_samples);
@@ -1111,7 +1111,7 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
         }];
 
-        let output = algorithm.compute_pca(&test_data, &ld_blocks).expect("PCA with 0 samples failed");
+        let output = algorithm.compute_pca(&test_data, &ld_blocks, None).expect("PCA with 0 samples failed");
 
         assert_eq!(output.num_qc_samples_used, 0);
         assert_eq!(output.num_pca_snps_used, num_snps);
@@ -1191,7 +1191,7 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_total_snps).map(PcaSnpId).collect(),
         }];
 
-        let rust_output_result = algorithm.compute_pca(&test_data, &ld_blocks);
+        let rust_output_result = algorithm.compute_pca(&test_data, &ld_blocks, None);
         
         let rust_output = match rust_output_result {
             Ok(output) => {
@@ -1505,7 +1505,7 @@ pub fn run_pc_correlation_with_truth_set_test(
     }];
 
     let mut rust_pcs_computed = 0;
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, None) {
         Ok(rust_result) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
             save_matrix_to_tsv(&rust_result.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_loadings.tsv").unwrap_or_default();
@@ -1685,7 +1685,7 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
     }];
 
     let mut rust_pcs_computed = 0;
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, None) {
         Ok(rust_result) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
             outcome_details.push_str(&format!("eigensnp PCA successful. rust_pcs_computed: {}. ", rust_pcs_computed));
@@ -1837,7 +1837,7 @@ pub fn run_generic_large_matrix_test(
     
     let mut rust_pcs_computed = 0;
 
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, None) {
         Ok(output) => {
             rust_pcs_computed = output.num_principal_components_computed;
             write!(
@@ -1972,7 +1972,7 @@ pub fn run_sample_projection_accuracy_test(
     let mut rust_pca_output_option: Option<EigenSNPCoreOutput> = None; // Now directly in scope
     let mut k_eff_rust = 0;
 
-    match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train) {
+    match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train, None) {
         Ok(output) => {
             k_eff_rust = output.num_principal_components_computed;
             save_matrix_to_tsv(&output.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap_or("."), "rust_train_loadings.tsv").unwrap_or_default();
@@ -2283,7 +2283,7 @@ where
     let algorithm_b = EigenSNPCoreAlgorithm::new(config_b);
 
     // Run EigenSnp A
-    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs) {
+    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs, None) {
         Ok(out) => {
             writeln!(outcome_details, "EigenSnp (Less Refined, {} passes): SUCCESS.", pass_count_less_refined).unwrap_or_default();
             save_matrix_to_tsv(&out.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap(), "eigensnp_less_refined_loadings.tsv").unwrap_or_default();
@@ -2307,7 +2307,7 @@ where
     };
     
     // Run EigenSnp B
-    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs) {
+    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs, None) {
         Ok(out) => {
             writeln!(outcome_details, "EigenSnp (More Refined, {} passes): SUCCESS.", pass_count_more_refined).unwrap_or_default();
             save_matrix_to_tsv(&out.final_snp_principal_component_loadings.view(), artifact_dir.to_str().unwrap(), "eigensnp_more_refined_loadings.tsv").unwrap_or_default();
@@ -2776,7 +2776,7 @@ fn test_min_passes_for_quality_convergence() {
     let mut min_passes_found: i32 = -1;
     let mut overall_outcome_details = String::new();
     writeln!(overall_outcome_details, "Test: {}", test_logging_name).unwrap_or_default();
-    let mut num_pcs_computed_at_convergence_or_last_successful_run = 0; // Store PCs from the run that met criteria or last one that ran
+    let mut num_pcs_computed_at_convergence = 0; 
 
     for current_pass_count in 1..=max_passes_to_test {
         writeln!(overall_outcome_details, "\n--- Evaluating with {} refinement pass(es) ---", current_pass_count).unwrap_or_default();
@@ -2795,9 +2795,14 @@ fn test_min_passes_for_quality_convergence() {
         let test_data_accessor = TestDataAccessor::new(standardized_structured_data.clone());
         let algorithm = EigenSNPCoreAlgorithm::new(config);
 
-        match algorithm.compute_pca(&test_data_accessor, &ld_block_specs) {
+        match algorithm.compute_pca(&test_data_accessor, &ld_block_specs, None) {
             Ok(eigensnp_output_current_pass) => {
-                num_pcs_computed_at_convergence_or_last_successful_run = eigensnp_output_current_pass.num_principal_components_computed;
+                // This variable will store the PC count from the pass that *first* meets criteria,
+                // or the last successful one if criteria are never met.
+                // If min_passes_found is already set, we don't update num_pcs_computed_at_convergence.
+                if min_passes_found == -1 { 
+                    num_pcs_computed_at_convergence = eigensnp_output_current_pass.num_principal_components_computed;
+                }
                 
                 let pass_artifact_dir_name = format!("eigensnp_pass_{}", current_pass_count);
                 let pass_artifact_dir = artifact_dir.join(pass_artifact_dir_name);
@@ -2820,70 +2825,41 @@ fn test_min_passes_for_quality_convergence() {
                        loading_corr >= thresholds.min_loading_correlation &&
                        eigen_acc >= thresholds.max_neg_eigenvalue_accuracy {
                         min_passes_found = current_pass_count as i32;
-                        writeln!(overall_outcome_details, "  SUCCESS: All quality thresholds MET at {} pass(es).", current_pass_count).unwrap_or_default();
-                        // No break here, continue to see if quality is maintained or degrades.
+                        // num_pcs_computed_at_convergence is already set from this successful pass.
+                        writeln!(overall_outcome_details, "  SUCCESS: All quality thresholds MET at {} pass(es). PCs in this run: {}.", current_pass_count, num_pcs_computed_at_convergence).unwrap_or_default();
                     } else {
                         writeln!(overall_outcome_details, "  INFO: Quality thresholds NOT MET at {} pass(es).", current_pass_count).unwrap_or_default();
                     }
-                } else {
-                     // Already converged, just log current pass metrics
+                } else { // min_passes_found != -1 (i.e., convergence already met)
                      writeln!(overall_outcome_details, "  INFO: Thresholds previously met at {} passes. Current pass {} metrics recorded.", min_passes_found, current_pass_count).unwrap_or_default();
                      if !(score_corr >= thresholds.min_score_correlation &&
                           loading_corr >= thresholds.min_loading_correlation &&
                           eigen_acc >= thresholds.max_neg_eigenvalue_accuracy) {
                          writeln!(overall_outcome_details, "  WARNING: Quality REGRESSED at {} passes after prior convergence at {} passes.", current_pass_count, min_passes_found).unwrap_or_default();
-                         // This warning does not change min_passes_found or overall test success directly,
-                         // but it's important for diagnostics. The test asserts min_passes_found <= expected.
                      }
                 }
             }
             Err(e) => {
                 writeln!(overall_outcome_details, "  FAILURE: EigenSnp compute_pca failed for {} pass(es): {}", current_pass_count, e).unwrap_or_default();
-                // If a pass fails to compute, we cannot evaluate metrics for it.
-                // If convergence was met earlier, this failure might be an issue.
                 if min_passes_found != -1 {
                      writeln!(overall_outcome_details, "  WARNING: PCA computation FAILED at {} passes after prior convergence at {} passes.", current_pass_count, min_passes_found).unwrap_or_default();
                 }
-                // Stop further testing if a pass fails, as subsequent passes depend on the output of prior ones in some refinement strategies.
-                // For this test's purpose (finding MIN passes), if a pass fails, we can't know if it *would* have converged.
-                // However, the prompt implies logging and continuing. If all passes fail, min_passes_found remains -1.
-                // If num_pcs_computed_at_convergence_or_last_successful_run is used, it should be from the *actual* converging pass.
-                // Let's ensure that if min_passes_found is set, num_pcs_computed_at_convergence_or_last_successful_run reflects that pass.
-                // If this pass fails, and it was *the* converging pass, that's complex.
-                // For now, num_pcs_computed_at_convergence_or_last_successful_run will hold the value from the last *successful* PCA.
-                // If this pass (which failed) was *after* min_passes_found was set, num_pcs_computed_at_convergence_or_last_successful_run remains correct.
+                // If this pass fails, num_pcs_computed_at_convergence should ideally hold the value from the *actual* converging pass,
+                // or from the last successful pass if convergence was never met.
+                // Since num_pcs_computed_at_convergence is only updated if min_passes_found is -1 (i.e., before convergence is met),
+                // it will correctly hold the PC count of the *first* converging pass if convergence happens.
+                // If convergence never happens, it holds PC count of last successful run. If all fail, it's 0.
             }
         }
     }
 
     if min_passes_found == -1 {
         writeln!(overall_outcome_details, "\n--- High quality NOT ACHIEVED within {} passes. ---", max_passes_to_test).unwrap_or_default();
-        // If no convergence, num_pcs_computed_at_convergence_or_last_successful_run might be from the last successful pass, or 0 if all failed.
-        // For logging, if min_passes_found is -1, it implies no specific pass met convergence criteria for its PCs.
-        if min_passes_found == -1 { num_pcs_computed_at_convergence_or_last_successful_run = 0; }
+        // If no convergence, num_pcs_computed_at_convergence is from the last successful run, or 0 if all failed.
     } else {
-        // If min_passes_found is set, num_pcs_computed_at_convergence_or_last_successful_run should ideally be from that specific pass.
-        // The current logic updates it on every successful pass. So if pass 3 converges, and pass 4 also runs successfully,
-        // it will hold pass 4's PC count. This needs refinement if we want PC count *at convergence*.
-        // For now, this is the PC count of the last successful run if convergence occurred.
-        // The prompt asks for "num_pcs_computed (e.g., from the run that met criteria)".
-        // Let's adjust: num_pcs_computed_at_convergence will be set when min_passes_found is first set.
-        // Re-running the specific converging pass to get its PC count is too complex for this setup.
-        // The current code sets num_pcs_computed_at_convergence_or_last_successful_run on each successful pass.
-        // This means if convergence is at pass 2, but pass 5 also runs, it will have pass 5's PC count.
-        // This is acceptable if the number of PCs is stable.
-        // The logic has been updated to capture num_pcs_computed_at_convergence when min_passes_found is first set.
-         writeln!(overall_outcome_details, "\n--- Minimum passes for convergence: {}. PCs computed in that run: {} ---", min_passes_found, num_pcs_computed_at_convergence_or_last_successful_run).unwrap_or_default();
+         writeln!(overall_outcome_details, "\n--- Minimum passes for convergence: {}. PCs computed in that run: {} ---", min_passes_found, num_pcs_computed_at_convergence).unwrap_or_default();
     }
     
-    // If min_passes_found is set, it means convergence was achieved. The PC count from that specific pass
-    // is stored in num_pcs_computed_at_convergence (this variable was renamed for clarity).
-    // The variable num_pcs_computed_at_convergence_or_last_successful_run has been updated to reflect the PC count
-    // of the specific pass that first met the criteria.
-    // The variable `num_pcs_computed_at_convergence` is now correctly updated when `min_passes_found` is first set.
-    // (The code was already doing this, the comment was just clarifying the logic for the log).
-
-
     // 7. Logging & Assertion
     let expected_max_passes_for_convergence = 2;
     let success = min_passes_found != -1 && min_passes_found <= expected_max_passes_for_convergence;
@@ -2893,7 +2869,7 @@ fn test_min_passes_for_quality_convergence() {
         num_features_d: d_total_snps,
         num_samples_n: n_samples,
         num_pcs_requested_k: k_true_components,
-        num_pcs_computed: num_pcs_computed_at_convergence_or_last_successful_run, 
+        num_pcs_computed: num_pcs_computed_at_convergence, 
         success,
         outcome_details: overall_outcome_details.clone(),
         notes: format!(
@@ -3002,7 +2978,7 @@ fn test_refinement_projection_accuracy() {
         }];
 
         let algorithm = EigenSNPCoreAlgorithm::new(config);
-        match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train) {
+        match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train, None) {
             Ok(eigensnp_train_output) => {
                 save_matrix_to_tsv(
                     &eigensnp_train_output.final_snp_principal_component_loadings.view(),

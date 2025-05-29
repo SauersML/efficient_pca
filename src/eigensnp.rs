@@ -10,6 +10,7 @@ use log::{info, debug, trace, warn};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
+use crate::diagnostics::{FullPcaRunDiagnostics, RsvdStepDiagnostics, PcaStepDiagnostics, SrPassDiagnostics};
 
 /// A thread-safe wrapper for standard dynamic errors,
 /// so they implement `Send` and `Sync`.
@@ -373,6 +374,8 @@ pub struct EigenSNPCoreAlgorithmConfig {
     ///         Final_p2: S_final_p2 = U_rot_p2 S_prime_p2, V_final_p2 = V_qr_p2 V_rot_p2.
     /// Additional passes follow the same pattern.
     pub refine_pass_count: usize,
+    /// Whether to collect detailed diagnostics during PCA computation.
+    pub collect_diagnostics: bool,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -391,6 +394,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             random_seed: 2025,
             snp_processing_strip_size: 2000, // Default based on previous hardcoded value
             refine_pass_count: 1, // Default to 1 refinement pass
+            collect_diagnostics: false,
         }
     }
 }
@@ -408,7 +412,15 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
+        diagnostics_collector: Option<&mut FullPcaRunDiagnostics>,
     ) -> Result<EigenSNPCoreOutput, ThreadSafeStdError> {
+        // Basic diagnostic plumbing example:
+        // if self.config.collect_diagnostics {
+        //     if let Some(dc) = diagnostics_collector {
+        //         dc.notes.push_str("compute_pca started; ");
+        //     }
+        // }
+
         let num_total_qc_samples = genotype_data.num_qc_samples();
         let num_total_pca_snps = genotype_data.num_pca_snps();
 
@@ -706,6 +718,7 @@ impl EigenSNPCoreAlgorithm {
                         self.config.local_rsvd_sketch_oversampling,
                         self.config.local_rsvd_num_power_iterations,
                         local_seed,
+                        None, // diagnostics_collector for perform_randomized_svd_for_loadings
                     ).map_err(|e_rsvd| -> ThreadSafeStdError {
                         Box::new(std::io::Error::new(
                             std::io::ErrorKind::Other,
@@ -797,7 +810,7 @@ impl EigenSNPCoreAlgorithm {
             ).map_err(|e_accessor| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to get standardized SNP/sample block during projection for block '{}': {}", block_tag, e_accessor))) as ThreadSafeStdError)?;
             
             // projected_scores_for_block = Sp_star = Up_star.T * Xp (cp x N)
-            let projected_scores_for_block = local_snp_basis_vectors.t().dot(&genotype_data_for_block_all_samples);
+            let projected_scores_for_block = Self::dot_product_at_b_mixed_precision(&local_snp_basis_vectors.view(), &genotype_data_for_block_all_samples.view())?;
 
             debug!("Block {}: Projected scores (Sp_star) dimensions: {:?}", 
                    block_tag, projected_scores_for_block.dim());
@@ -951,6 +964,7 @@ impl EigenSNPCoreAlgorithm {
                 p_glob,
                 q_glob,
                 random_seed,
+                None, // diagnostics_collector for perform_randomized_svd_for_scores
             )?;
             // Logging for initial_scores from RSVD
             debug!("RSVD Path: Initial scores dimensions: {:?}", initial_scores.dim());
@@ -978,7 +992,15 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
+        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        // Example of how this would create a step and pass it down:
+        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_scores_internal".to_string(), ..Default::default() })
+        // } else {
+        //     None
+        // };
+
         let (_u_opt, _s_opt, v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -988,7 +1010,12 @@ impl EigenSNPCoreAlgorithm {
             false, // request_u_components
             false, // request_s_components
             true,  // request_v_components
+            None, // step_diag.as_mut(), // Pass mut ref if Some, else None
         )?;
+        
+        // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
+        //    if self.config.collect_diagnostics { collector.push(diag); }
+        // }
 
         v_opt.ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -1006,7 +1033,14 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
+        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_loadings_internal".to_string(), ..Default::default() })
+        // } else {
+        //     None
+        // };
+
         let (u_opt, _s_opt, _v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -1016,7 +1050,12 @@ impl EigenSNPCoreAlgorithm {
             true,  // request_u_components
             false, // request_s_components
             false, // request_v_components
+            None, // step_diag.as_mut(),
         )?;
+
+        // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
+        //    if self.config.collect_diagnostics { collector.push(diag); }
+        // }
 
         u_opt.ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -1433,8 +1472,15 @@ impl EigenSNPCoreAlgorithm {
         random_seed: u64,
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
-        request_v_components: bool  // True if V (right singular vectors) is needed
+        request_v_components: bool,  // True if V (right singular vectors) is needed
+        diagnostics_step_collector: Option<&mut RsvdStepDiagnostics>,
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
+        // Example of how this would be used:
+        // if let Some(dsc) = diagnostics_step_collector {
+        //    dsc.input_matrix_dims = Some((matrix_features_by_samples.nrows(), matrix_features_by_samples.ncols()));
+        //    // ... populate other fields ...
+        // }
+
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
 
@@ -1478,7 +1524,7 @@ impl EigenSNPCoreAlgorithm {
         let backend = LinAlgBackendProvider::<f32>::new();
         
         // Y = A * Omega (M x N) * (N x L) -> (M x L)
-        let sketch_y = matrix_features_by_samples.dot(&random_projection_matrix_omega);
+        let sketch_y = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &random_projection_matrix_omega.view())?;
 
         if sketch_y.ncols() == 0 {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension_l);
@@ -1501,7 +1547,7 @@ impl EigenSNPCoreAlgorithm {
             trace!("RSVD Power Iteration {}/{}", iter_idx + 1, num_power_iterations);
             
             // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
-            let q_tilde_candidate = matrix_features_by_samples.t().dot(&q_basis_m_by_l_actual);
+            let q_tilde_candidate = Self::dot_product_at_b_mixed_precision(matrix_features_by_samples, &q_basis_m_by_l_actual.view())?;
             if q_tilde_candidate.ncols() == 0 { 
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0)); 
                 trace!("RSVD Power Iteration {}: Q_tilde_candidate became empty.", iter_idx + 1);
@@ -1518,7 +1564,7 @@ impl EigenSNPCoreAlgorithm {
             }
 
             // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
-            let q_basis_candidate_next = matrix_features_by_samples.dot(&q_tilde_n_by_l_actual);
+            let q_basis_candidate_next = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &q_tilde_n_by_l_actual.view())?;
             if q_basis_candidate_next.ncols() == 0 {
                  q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
                  trace!("RSVD Power Iteration {}: Q_basis_candidate_next became empty.", iter_idx + 1);
@@ -1538,7 +1584,7 @@ impl EigenSNPCoreAlgorithm {
         }
         
         // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
-        let projected_b_l_actual_by_n = q_basis_m_by_l_actual.t().dot(matrix_features_by_samples);
+        let projected_b_l_actual_by_n = Self::dot_product_at_b_mixed_precision(&q_basis_m_by_l_actual.view(), matrix_features_by_samples)?;
         
         // SVD of B: B = U_B * S_B * V_B.T
         // U_B is L_actual x rank_b
