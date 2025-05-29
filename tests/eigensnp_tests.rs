@@ -30,6 +30,7 @@ use std::fmt::Display; // To constrain T
 use std::fs::OpenOptions;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
+use ctor::dtor; // Added for summary writer
 
 // Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
 use crate::eigensnp_integration_tests::TestDataAccessor;
@@ -37,7 +38,8 @@ use crate::eigensnp_integration_tests::TestResultRecord;
 use crate::eigensnp_integration_tests::TEST_RESULTS;
 use crate::eigensnp_integration_tests::generate_structured_data;
     use crate::eigensnp_integration_tests::get_python_reference_pca; // Already present, ensure it is
-    use efficient_pca::eigensnp::EigenSNPCoreOutput; // Ensure this is imported
+    // use efficient_pca::eigensnp::EigenSNPCoreOutput; // Ensure this is imported - This line seems to be duplicated from efficient_pca::eigensnp below, removing one.
+    // It is also directly used in some test helpers, so it should be fine.
 
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
@@ -170,6 +172,12 @@ fn save_vector_to_tsv<T: Display>(
 #[cfg(test)]
 mod eigensnp_integration_tests {
     use super::*; 
+    // Ensure std::io::Write is available for the summary writer function
+    use std::io::Write;
+    use std::fs::{File, OpenOptions}; // Already at top level, ensure visible or re-import if needed
+    use std::path::Path; // Already at top level
+    use std::sync::Mutex; // Already at top level
+    use ctor::dtor; // Already at top level, ensure visible or re-import
 
     // Define TestResultRecord struct
     #[derive(Clone, Debug)] // Added Debug
@@ -189,28 +197,35 @@ mod eigensnp_integration_tests {
         pub static ref TEST_RESULTS: Mutex<Vec<TestResultRecord>> = Mutex::new(Vec::new());
     }
 
-    // Function to write results to TSV
-    pub fn write_results_to_tsv() -> Result<(), std::io::Error> {
-        let results = TEST_RESULTS.lock().unwrap();
-        if results.is_empty() {
+    // Renamed and modified function to write results to TSV
+    fn write_summary_file_impl() -> Result<(), std::io::Error> {
+        let results_guard = TEST_RESULTS.lock().unwrap();
+        if results_guard.is_empty() {
+            println!("[SUMMARY_WRITER] TEST_RESULTS is empty. No summary file will be written.");
             return Ok(()); // No results to write
         }
 
         let artifact_dir = "target/test_artifacts";
-        std::fs::create_dir_all(artifact_dir)?;
         let tsv_path = Path::new(artifact_dir).join("eigensnp_summary_results.tsv");
+        
+        println!("[SUMMARY_WRITER] Attempting to write {} records to {:?}", results_guard.len(), tsv_path);
+
+        if let Err(e) = std::fs::create_dir_all(artifact_dir) {
+            eprintln!("[SUMMARY_WRITER] Error creating artifact_dir '{}': {:?}", artifact_dir, e);
+            return Err(e);
+        }
         
         // Use OpenOptions to create or truncate the file
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(tsv_path)?;
+            .open(&tsv_path)?; // Pass tsv_path by reference
 
         // Write header
         writeln!(file, "TestName	NumFeatures_D	NumSamples_N	NumPCsRequested_K	NumPCsComputed	Success	OutcomeDetails	Notes")?;
 
-        for record in results.iter() {
+        for record in results_guard.iter() {
             writeln!(file, "{}	{}	{}	{}	{}	{}	{}	{}",
                 record.test_name,
                 record.num_features_d,
@@ -222,18 +237,18 @@ mod eigensnp_integration_tests {
                 record.notes.replace("	", " ").replace("\n", "; ") // Sanitize notes
             )?;
         }
+        println!("[SUMMARY_WRITER] Successfully wrote summary to {:?}", tsv_path);
         Ok(())
     }
 
-    // Hook for writing results after all tests in this module.
-    // This is a bit of a workaround. A proper test harness or `ctor` crate might be better.
-    // We define a "final" test that calls the write function.
-    // Ensure this test runs last (e.g. by naming convention, though Rust test order isn't guaranteed).
-    // For now, we will call this manually or make it the last test.
-    // A more robust solution would be a custom test framework or procedural macro.
-    #[test]
-    fn finalize_and_write_results() {
-        write_results_to_tsv().expect("Failed to write test results to TSV");
+    // Destructor function to write summary at the end of test execution
+    #[dtor]
+    fn final_summary_writer() {
+        println!("[SUMMARY_WRITER_DTOR] Test execution finished. Running summary writer destructor.");
+        if let Err(e) = write_summary_file_impl() {
+            eprintln!("[SUMMARY_WRITER_DTOR] CRITICAL: Failed to write eigensnp_summary_results.tsv: {:?}", e);
+            // Do not panic in dtor
+        }
     }
 
     // Function to call pca.py and parse its output
@@ -271,7 +286,7 @@ mod eigensnp_integration_tests {
             std::thread::spawn(move || {
                 if let Err(e) = stdin_pipe.write_all(stdin_data.as_bytes()) {
                     // eprintln is okay for a background thread error message in tests
-                    eprintln!("Failed to write to stdin of pca.py: {}", e);
+                    eprintln!("Failed to write to stdin of pca.py: {}", e); // Ensure this eprintln is acceptable or use logging framework
                 }
             });
         } else {
