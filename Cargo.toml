@@ -59,6 +59,7 @@ linfa-reduction = "0.7.1"
 ndarray_v15 = { version = "0.15.6", package = "ndarray" }
 jemallocator = "0.5"
 lazy_static = "1.5.0"
+serde_json = "1.0"
 
 [features]
 default = ["backend_openblas"]
@@ -70,6 +71,7 @@ faer_links_ndarray_static_openblas = [
     "dep:faer",
     "ndarray-linalg/openblas-static"
 ]
+enable-eigensnp-diagnostics = []
 
 [[bench]]
 name = "benchmarks"
