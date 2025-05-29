@@ -32,6 +32,9 @@ jobs:
           - backend: faer # This name is just a label for the matrix row
             feature: "faer_links_ndarray_static_openblas"
             rustflags: ""
+          - backend: openblas-diag # New entry for diagnostic tests
+            feature: "backend_openblas,enable-eigensnp-diagnostics"
+            rustflags: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -133,7 +136,7 @@ jobs:
       - name: Build
         id: build_step
         run: |
-          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]] || [[ "${{ matrix.feature }}" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
             cargo build --release --features ${{ matrix.feature }}
           else
             cargo build --release --no-default-features --features ${{ matrix.feature }}
@@ -156,7 +159,7 @@ jobs:
 
       - name: Test
         run: |
-          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]] || [[ "${{ matrix.feature }}" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
             cargo test --features ${{ matrix.feature }}
           else
             cargo test --no-default-features --features ${{ matrix.feature }}
@@ -185,7 +188,7 @@ jobs:
 
       - name: Benchmark
         run: |
-          if [[ "${{ matrix.feature }}" == "backend_openblas" ]]; then
+          if [[ "${{ matrix.feature }}" == "backend_openblas" ]] || [[ "${{ matrix.feature }}" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
             cargo bench --features ${{ matrix.feature }},jemalloc
           else
             cargo bench --no-default-features --features ${{ matrix.feature }},jemalloc

@@ -10,7 +10,23 @@ use log::{info, debug, trace, warn};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
-use crate::diagnostics::{FullPcaRunDiagnostics, RsvdStepDiagnostics, PcaStepDiagnostics, SrPassDiagnostics};
+// Updated diagnostics struct names
+use crate::diagnostics::{
+    FullPcaRunDetailedDiagnostics, 
+    RsvdStepDetail, 
+    PerBlockLocalBasisDiagnostics,
+    GlobalPcaDiagnostics,
+    SrPassDetail,
+    compute_frob_norm_f32, // For f32 matrices
+    compute_frob_norm_f64, // For f64 matrices (if any intermediate become f64)
+    compute_condition_number_via_svd_f32, // For f32 matrices, uses f64 SVD
+    compute_condition_number_via_svd_f64, // For f64 matrices
+    compute_orthogonality_error_f32, // For Q factors (f32)
+    compute_svd_reconstruction_error_f32, // For SVD steps (f32)
+    sample_singular_values, // For f32 singular values
+    sample_singular_values_f64, // For f64 singular values
+    compute_matrix_column_correlations_abs, // For f32 vs f64 matrix correlations
+};
 
 /// A thread-safe wrapper for standard dynamic errors,
 /// so they implement `Send` and `Sync`.
@@ -176,6 +192,9 @@ pub struct EigenSNPCoreOutput {
 /// to prevent division by zero and for numerical stability.
 fn standardize_raw_condensed_features(
     raw_features_input: RawCondensedFeatures,
+    collect_diagnostics_flag: bool,
+    #[cfg(feature = "enable-eigensnp-diagnostics")] full_diagnostics_collector: Option<&mut crate::diagnostics::FullPcaRunDetailedDiagnostics>,
+    #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _full_diagnostics_collector: Option<()>,
 ) -> Result<StandardizedCondensedFeatures, ThreadSafeStdError> {
     let mut condensed_data_matrix = raw_features_input.data;
     let num_total_condensed_features = condensed_data_matrix.nrows();
@@ -252,6 +271,45 @@ fn standardize_raw_condensed_features(
             } else if r_view.len() == 1 { // Single element in row, variance is undefined or 0. Mean is the element itself.
                 debug!("Standardized condensed matrix: Row {} mean (post-std): {:.4e}, variance (post-std): N/A (single element in row)",
                        row_idx, r_view.mean().unwrap_or(0.0));
+            }
+        }
+    }
+
+    #[cfg(feature = "enable-eigensnp-diagnostics")]
+    {
+        if collect_diagnostics_flag {
+            if let Some(dc) = full_diagnostics_collector.as_mut() {
+                dc.c_std_matrix_dims = Some(condensed_data_matrix.dim());
+                if !condensed_data_matrix.is_empty() {
+                    dc.c_std_matrix_fro_norm = Some(compute_frob_norm_f32(&condensed_data_matrix.view()) as f64);
+                    
+                    // Sample column means and std devs (they should be ~0 and ~1)
+                    let num_cols_to_sample = 10.min(condensed_data_matrix.ncols());
+                    if num_cols_to_sample > 0 {
+                        let mut means_sample = Vec::with_capacity(num_cols_to_sample);
+                        let mut stds_sample = Vec::with_capacity(num_cols_to_sample);
+                        for i in 0..num_cols_to_sample {
+                            // This samples columns from the standardized matrix (features are rows)
+                            // To sample feature characteristics, we'd sample rows.
+                            // The spec asks for C_std_col_means/stds. C_std is features x samples.
+                            // So we need to sample columns of C_std.
+                            // This means we are sampling across features for a few samples.
+                            // This seems transposed from typical expectation.
+                            // If C_std is features x samples, then "column means" means mean of each sample's scores over features.
+                            // Let's assume the spec meant "row means/stds" for C_std (i.e. for each standardized feature).
+                            let feature_row = condensed_data_matrix.row(i); // Sample first few features
+                            means_sample.push(feature_row.mean().unwrap_or(0.0) as f64); // Should be ~0
+                             let variance = feature_row.mapv(|x| (x - (feature_row.mean().unwrap_or(0.0))).powi(2)).mean().unwrap_or(0.0);
+                            stds_sample.push(variance.sqrt() as f64); // Should be ~1
+                        }
+                        dc.c_std_col_means_sample = Some(means_sample); // This is actually row means
+                        dc.c_std_col_std_devs_sample = Some(stds_sample); // This is actually row stds
+                         dc.notes.push_str(" Note: c_std_col_means_sample and c_std_col_std_devs_sample actually store ROW means/stds of C_std due to typical interpretation. ");
+                    }
+
+                } else {
+                    dc.c_std_matrix_fro_norm = Some(0.0);
+                }
             }
         }
     }
@@ -376,6 +434,11 @@ pub struct EigenSNPCoreAlgorithmConfig {
     pub refine_pass_count: usize,
     /// Whether to collect detailed diagnostics during PCA computation.
     pub collect_diagnostics: bool,
+    /// Optional: If set, specifies the `LdBlockListId` (index in the input `ld_block_specifications` list)
+    /// for which detailed rSVD step diagnostics should be traced during local basis learning.
+    /// This is only active if `collect_diagnostics` is also true and the "enable-eigensnp-diagnostics" feature is enabled.
+    #[cfg(feature = "enable-eigensnp-diagnostics")]
+    pub diagnostic_block_list_id_to_trace: Option<usize>,
 }
 
 impl Default for EigenSNPCoreAlgorithmConfig {
@@ -395,6 +458,8 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             snp_processing_strip_size: 2000, // Default based on previous hardcoded value
             refine_pass_count: 1, // Default to 1 refinement pass
             collect_diagnostics: false,
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            diagnostic_block_list_id_to_trace: None,
         }
     }
 }
@@ -412,14 +477,26 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
-        diagnostics_collector: Option<&mut FullPcaRunDiagnostics>,
-    ) -> Result<EigenSNPCoreOutput, ThreadSafeStdError> {
-        // Basic diagnostic plumbing example:
-        // if self.config.collect_diagnostics {
-        //     if let Some(dc) = diagnostics_collector {
-        //         dc.notes.push_str("compute_pca started; ");
-        //     }
-        // }
+    ) -> Result<(
+        EigenSNPCoreOutput,
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        Option<crate::diagnostics::FullPcaRunDetailedDiagnostics>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+        (),
+    ), ThreadSafeStdError> {
+        #[allow(unused_mut)] // May be unused if feature is disabled
+        let mut diagnostics_collector: Option<FullPcaRunDetailedDiagnostics> = None;
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if self.config.collect_diagnostics {
+                let mut main_diag_collector = FullPcaRunDetailedDiagnostics::default();
+                // Record config summary in notes
+                main_diag_collector.notes.push_str(&format!("EigenSNPCoreAlgorithmConfig: {:?}. ", self.config));
+                main_diag_collector.notes.push_str("EigenSNP PCA run started. ");
+                diagnostics_collector = Some(main_diag_collector);
+            }
+        }
 
         let num_total_qc_samples = genotype_data.num_qc_samples();
         let num_total_pca_snps = genotype_data.num_pca_snps();
@@ -448,25 +525,33 @@ impl EigenSNPCoreAlgorithm {
         }
         if num_total_qc_samples == 0 {
             warn!("Genotype data has zero QC samples. Returning empty PCA output.");
-            return Ok(EigenSNPCoreOutput {
+            let output = EigenSNPCoreOutput {
                 final_snp_principal_component_loadings: Array2::zeros((num_total_pca_snps, 0)),
                 final_sample_principal_component_scores: Array2::zeros((0, 0)),
                 final_principal_component_eigenvalues: Array1::zeros(0),
                 num_qc_samples_used: 0,
                 num_pca_snps_used: num_total_pca_snps,
                 num_principal_components_computed: 0,
-            });
+            };
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            return Ok((output, diagnostics_collector));
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            return Ok((output, ()));
         }
         if num_total_pca_snps == 0 {
             warn!("Genotype data has zero PCA SNPs. Returning empty PCA output.");
-            return Ok(EigenSNPCoreOutput {
+            let output = EigenSNPCoreOutput {
                 final_snp_principal_component_loadings: Array2::zeros((0, 0)),
                 final_sample_principal_component_scores: Array2::zeros((num_total_qc_samples, 0)),
                 final_principal_component_eigenvalues: Array1::zeros(0),
                 num_qc_samples_used: num_total_qc_samples,
                 num_pca_snps_used: 0,
                 num_principal_components_computed: 0,
-            });
+            };
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            return Ok((output, diagnostics_collector));
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            return Ok((output, ()));
         }
 
         // --- START DIAGNOSTIC MODIFICATION ---
@@ -522,7 +607,14 @@ impl EigenSNPCoreAlgorithm {
 
         let condensed_matrix_standardization_start_time = std::time::Instant::now();
         let standardized_condensed_feature_matrix =
-            standardize_raw_condensed_features(raw_condensed_feature_matrix)?; // Updated call site
+            standardize_raw_condensed_features(
+                raw_condensed_feature_matrix,
+                self.config.collect_diagnostics,
+                #[cfg(feature = "enable-eigensnp-diagnostics")]
+                diagnostics_collector.as_mut(),
+                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                None,
+            )?; 
         info!("Standardized condensed feature matrix in {:?}", condensed_matrix_standardization_start_time.elapsed());
 
         let initial_global_pca_start_time = std::time::Instant::now();
@@ -534,14 +626,18 @@ impl EigenSNPCoreAlgorithm {
         let mut num_principal_components_computed_final = current_sample_scores.scores.ncols();
         if num_principal_components_computed_final == 0 {
             warn!("Initial PCA on condensed features yielded 0 components. Returning empty PCA output.");
-            return Ok(EigenSNPCoreOutput {
+            let output = EigenSNPCoreOutput {
                 final_snp_principal_component_loadings: Array2::zeros((num_total_pca_snps,0)),
                 final_sample_principal_component_scores: Array2::zeros((num_total_qc_samples,0)),
                 final_principal_component_eigenvalues: Array1::zeros(0),
                 num_qc_samples_used: num_total_qc_samples,
                 num_pca_snps_used: num_total_pca_snps,
                 num_principal_components_computed: 0,
-            });
+            };
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            return Ok((output, diagnostics_collector));
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            return Ok((output, ()));
         }
         
         let mut final_sorted_snp_loadings: Array2<f32> = Array2::zeros((num_total_pca_snps, 0));
@@ -552,6 +648,18 @@ impl EigenSNPCoreAlgorithm {
         // The loop will run self.config.refine_pass_count times.
         // Pass 1 uses initial_sample_pc_scores. Subsequent passes use scores from the previous iteration.
         for pass_num in 1..=self.config.refine_pass_count.max(1) { // Ensure at least one pass
+            
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            let mut current_sr_pass_detail_option: Option<SrPassDetail> = None;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            {
+                if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+                    let mut detail = SrPassDetail::default();
+                    detail.pass_num = pass_num;
+                    current_sr_pass_detail_option = Some(detail);
+                }
+            }
+
             debug!(
                 "Starting Refinement Pass {} with {} PCs from previous step.", 
                 pass_num, 
@@ -575,6 +683,10 @@ impl EigenSNPCoreAlgorithm {
             let v_qr_snp_loadings = self.compute_refined_snp_loadings(
                 genotype_data,
                 &current_sample_scores, // Use scores from previous step (or initial if pass 1)
+                #[cfg(feature = "enable-eigensnp-diagnostics")]
+                current_sr_pass_detail_option.as_mut(),
+                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                None,
             )?;
             info!("Pass {}: Computed QR-based SNP loadings (intermediate V_qr) in {:?}", pass_num, loadings_refinement_start_time.elapsed());
             
@@ -596,6 +708,10 @@ impl EigenSNPCoreAlgorithm {
                 genotype_data,
                 &v_qr_snp_loadings.view(),
                 num_total_qc_samples,
+                #[cfg(feature = "enable-eigensnp-diagnostics")]
+                current_sr_pass_detail_option.as_mut(),
+                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                None,
             )?;
             info!("Pass {}: Computed final rotated scores, eigenvalues, and loadings in {:?}", pass_num, final_outputs_computation_start_time.elapsed());
 
@@ -613,6 +729,15 @@ impl EigenSNPCoreAlgorithm {
             if num_principal_components_computed_final == 0 {
                 warn!("Pass {}: Refinement resulted in 0 final components. Ending refinement.", pass_num);
                 break; // Exit refinement loop
+            }
+
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            {
+                if let (Some(dc), Some(sr_detail)) = (diagnostics_collector.as_mut(), current_sr_pass_detail_option) {
+                    if self.config.collect_diagnostics {
+                        dc.sr_pass_details.push(sr_detail);
+                    }
+                }
             }
         }
         // End of Refinement Loop
@@ -634,7 +759,55 @@ impl EigenSNPCoreAlgorithm {
             num_qc_samples_used: num_total_qc_samples,
             num_pca_snps_used: genotype_data.num_pca_snps(),
             num_principal_components_computed: num_principal_components_computed_final,
-        })
+        };
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            let output_final = EigenSNPCoreOutput {
+                final_snp_principal_component_loadings: final_sorted_snp_loadings,
+                final_sample_principal_component_scores: final_sorted_sample_scores,
+                final_principal_component_eigenvalues: final_sorted_eigenvalues,
+                num_qc_samples_used: num_total_qc_samples,
+                num_pca_snps_used: genotype_data.num_pca_snps(),
+                num_principal_components_computed: num_principal_components_computed_final,
+            };
+            if let Some(dc) = diagnostics_collector.as_mut() {
+                if let Some(rt) = overall_start_time.elapsed().as_secs_f64_safe() {
+                    dc.total_runtime_seconds = Some(rt);
+                }
+                dc.notes.push_str("EigenSNP PCA run finished. ");
+            }
+            Ok((output_final, diagnostics_collector))
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+        {
+            let output_final = EigenSNPCoreOutput { // Define output_final here as well
+                final_snp_principal_component_loadings: final_sorted_snp_loadings,
+                final_sample_principal_component_scores: final_sorted_sample_scores,
+                final_principal_component_eigenvalues: final_sorted_eigenvalues,
+                num_qc_samples_used: num_total_qc_samples,
+                num_pca_snps_used: genotype_data.num_pca_snps(),
+                num_principal_components_computed: num_principal_components_computed_final,
+            };
+            Ok((output_final, ()))
+        }
+    }
+
+    // Helper trait for f64 conversion from Duration, handling potential errors.
+    trait DurationToF64Safe {
+        fn as_secs_f64_safe(&self) -> Option<f64>;
+    }
+    impl DurationToF64Safe for std::time::Duration {
+        fn as_secs_f64_safe(&self) -> Option<f64> {
+            let secs = self.as_secs();
+            let nanos = self.subsec_nanos();
+            let total_nanos = secs as f64 * 1_000_000_000.0 + nanos as f64;
+            if total_nanos.is_finite() {
+                Some(total_nanos / 1_000_000_000.0)
+            } else {
+                None // Or handle error appropriately
+            }
+        }
     }
 
     fn learn_all_ld_block_local_bases<G: PcaReadyGenotypeAccessor>(
@@ -642,6 +815,8 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
         subset_sample_ids: &[QcSampleId],
+        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
     ) -> Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError> {
         info!(
             "Learning local eigenSNP bases for {} LD blocks using N_subset = {} samples.",
@@ -711,6 +886,28 @@ impl EigenSNPCoreAlgorithm {
                     }
                     
                     let local_seed = self.config.random_seed.wrapping_add(block_idx_val as u64);
+                    
+                    #[allow(unused_mut)] // May not be mutable if diagnostics disabled
+                    let mut per_block_diag_entry = PerBlockLocalBasisDiagnostics::default();
+
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    {
+                        if diagnostics_collector.is_some() && self.config.collect_diagnostics {
+                            per_block_diag_entry.block_id = block_list_id.0.to_string();
+                            // per_block_diag_entry.block_tag = block_tag.clone(); // block_tag not directly in PerBlockLocalBasisDiagnostics, use notes or ensure ID is sufficient
+                            per_block_diag_entry.notes = format!("Processing LD Block tag: {}", block_tag);
+
+                            let (r,c) = genotype_block_for_subset_samples.dim();
+                            per_block_diag_entry.u_p_dims = Some((r,c)); // This is X_sp's dims, U_p comes later
+                            per_block_diag_entry.notes.push_str(&format!(", X_s_p dims: ({}, {})", r, c));
+                            if !genotype_block_for_subset_samples.is_empty() {
+                                per_block_diag_entry.u_p_fro_norm = Some(compute_frob_norm_f32(&genotype_block_for_subset_samples.view()) as f64); // Placeholder for X_sp norm
+                                // Compute condition number for X_s_p using f64 SVD
+                                let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
+                                per_block_diag_entry.u_p_condition_number = compute_condition_number_via_svd_f64(&x_s_p_f64.view());
+                            }
+                        }
+                    }
 
                     let local_basis_vectors_f32 = Self::perform_randomized_svd_for_loadings( // Up_star
                         &genotype_block_for_subset_samples.view(),
@@ -718,7 +915,16 @@ impl EigenSNPCoreAlgorithm {
                         self.config.local_rsvd_sketch_oversampling,
                         self.config.local_rsvd_num_power_iterations,
                         local_seed,
-                        None, // diagnostics_collector for perform_randomized_svd_for_loadings
+                        #[cfg(feature = "enable-eigensnp-diagnostics")]
+                        diagnostics_collector.as_ref().and_then(|_| { // Only if outer collector exists
+                            if self.config.collect_diagnostics && self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) {
+                                Some(&mut per_block_diag_entry.rsvd_stages)
+                            } else {
+                                None
+                            }
+                        }),
+                        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                        None,
                     ).map_err(|e_rsvd| -> ThreadSafeStdError {
                         Box::new(std::io::Error::new(
                             std::io::ErrorKind::Other,
@@ -738,18 +944,76 @@ impl EigenSNPCoreAlgorithm {
                         trace!("Block {}: Local basis vectors (Up_star) sample: {:?}", 
                                block_tag, local_basis_vectors_f32.slice(s![0..3.min(local_basis_vectors_f32.nrows()), 0..3.min(local_basis_vectors_f32.ncols())]));
                     }
+
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    {
+                        if diagnostics_collector.is_some() && self.config.collect_diagnostics {
+                            let (r_up, c_up) = local_basis_vectors_f32.dim();
+                            // These were u_p_dims, u_p_fro_norm etc. in PerBlockLocalBasisDiagnostics
+                            // Overwriting X_sp's u_p_dims with actual U_p's dims
+                            per_block_diag_entry.u_p_dims = Some((r_up, c_up)); 
+                            if !local_basis_vectors_f32.is_empty() {
+                                per_block_diag_entry.u_p_fro_norm = Some(compute_frob_norm_f32(&local_basis_vectors_f32.view()) as f64);
+                                per_block_diag_entry.u_p_orthogonality_error = compute_orthogonality_error_f32(&local_basis_vectors_f32.view());
+                                // Condition number for U_p might also be useful
+                                per_block_diag_entry.u_p_condition_number = compute_condition_number_via_svd_f32(&local_basis_vectors_f32.view());
+                            }
+
+                            if self.config.diagnostic_block_list_id_to_trace == Some(block_list_id.0) && !genotype_block_for_subset_samples.is_empty() {
+                                debug!("DIAG TRACE for block {}: Computing f64 SVD for U_p_true comparison.", block_tag);
+                                let x_s_p_f64 = genotype_block_for_subset_samples.mapv(|x_val| x_val as f64);
+                                let backend_f64 = LinAlgBackendProvider::<f64>::new();
+                                match backend_f64.svd_into(x_s_p_f64, true, false) {
+                                    Ok(svd_out_f64) => {
+                                        if let Some(u_true_f64) = svd_out_f64.u {
+                                            let k_to_compare = local_basis_vectors_f32.ncols().min(u_true_f64.ncols());
+                                            if k_to_compare > 0 {
+                                                let u_p_f32_view = local_basis_vectors_f32.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
+                                                let u_true_f64_view = u_true_f64.slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare));
+                                                per_block_diag_entry.u_correlation_vs_f64_truth = 
+                                                    compute_matrix_column_correlations_abs(&u_p_f32_view, &u_true_f64_view.view());
+                                            }
+                                        } else { per_block_diag_entry.notes.push_str(" ;f64 SVD U_true was None"); }
+                                    }
+                                    Err(e) => { per_block_diag_entry.notes.push_str(&format!(" ;f64 SVD for U_true failed: {}", e)); }
+                                }
+                            }
+                            // Push occurs after this block, outside the map closure
+                        }
+                    }
                     
-                    Ok(PerBlockLocalSnpBasis {
+                    Ok((PerBlockLocalSnpBasis {
                         block_list_id,
                         basis_vectors: local_basis_vectors_f32,
-                    })
+                    }, per_block_diag_entry)) // Return tuple
                 })
                 .collect();
-
+        
+        // Separate results and diagnostics
         let mut all_local_bases_collection = Vec::with_capacity(ld_block_specs.len());
-        for result_item in local_bases_results {
-            all_local_bases_collection.push(result_item?);
+        
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
+                 if self.config.collect_diagnostics {
+                    dc_vec_mut.reserve(local_bases_results.len()); // Pre-allocate if possible
+                 }
+            }
         }
+
+        for result_item_tuple in local_bases_results {
+            let (basis_result, diag_entry_result) = result_item_tuple?; // Propagate error from parallel map
+            all_local_bases_collection.push(basis_result);
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            {
+                if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
+                    if self.config.collect_diagnostics {
+                        dc_vec_mut.push(diag_entry_result);
+                    }
+                }
+            }
+        }
+
 
         info!("Successfully learned local eigenSNP bases for all blocks.");
         Ok(all_local_bases_collection)
@@ -761,6 +1025,8 @@ impl EigenSNPCoreAlgorithm {
         ld_block_specs: &[LdBlockSpecification],
         all_local_bases: &[PerBlockLocalSnpBasis], 
         num_total_qc_samples: usize,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] full_diagnostics_collector: Option<&mut crate::diagnostics::FullPcaRunDetailedDiagnostics>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _full_diagnostics_collector: Option<()>,
     ) -> Result<RawCondensedFeatures, ThreadSafeStdError> {
         assert_eq!(
             ld_block_specs.len(),
@@ -850,14 +1116,30 @@ impl EigenSNPCoreAlgorithm {
             }
         }
         info!("Constructed raw condensed feature matrix. Shape: {:?}", raw_condensed_data_matrix.dim());
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(dc) = full_diagnostics_collector.as_mut() {
+                if self.config.collect_diagnostics {
+                    dc.c_matrix_dims = Some(raw_condensed_data_matrix.dim());
+                    if !raw_condensed_data_matrix.is_empty() {
+                        dc.c_matrix_fro_norm = Some(compute_frob_norm_f32(&raw_condensed_data_matrix.view()) as f64);
+                    } else {
+                        dc.c_matrix_fro_norm = Some(0.0);
+                    }
+                }
+            }
+        }
         Ok(RawCondensedFeatures { data: raw_condensed_data_matrix })
     }
 
     fn compute_pca_on_standardized_condensed_features_via_rsvd(
         &self,
         standardized_condensed_features: &StandardizedCondensedFeatures,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] global_pca_diagnostics_collector: Option<&mut crate::diagnostics::GlobalPcaDiagnostics>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] mut _global_pca_diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
     ) -> Result<InitialSamplePcScores, ThreadSafeStdError> {
-        let a_c = &standardized_condensed_features.data;
+        let a_c = &standardized_condensed_features.data; // A_eigen_std_star
         let m_c = a_c.nrows();
         let n_samples = a_c.ncols();
 
@@ -897,88 +1179,129 @@ impl EigenSNPCoreAlgorithm {
         let direct_svd_m_c_threshold = 500;
         let initial_scores: Array2<f32>;
 
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(gdc) = global_pca_diagnostics_collector.as_mut() {
+                 if self.config.collect_diagnostics {
+                    gdc.stage_name = "GlobalPCA_Initial".to_string();
+                    // Record A_eigen_std_star (a_c) properties
+                    // gdc.a_eigen_std_dims = Some(a_c.dim()); // This field does not exist in GlobalPcaDiagnostics, use rsvd_stages[0].input_matrix_dims
+                    if !a_c.is_empty() {
+                        // gdc.a_eigen_std_fro_norm = Some(compute_frob_norm_f32(&a_c.view()) as f64); // This field does not exist
+                        // gdc.a_eigen_std_condition_number_f32 = compute_condition_number_via_svd_f32(&a_c.view()); // This field does not exist
+                        // let a_c_f64 = a_c.mapv(|v| v as f64);
+                        // gdc.a_eigen_std_condition_number_f64 = compute_condition_number_via_svd_f64(&a_c_f64.view()); // This field does not exist
+                        
+                        // Storing these in the first RsvdStepDetail for now
+                        let mut first_step_detail = RsvdStepDetail::default();
+                        first_step_detail.step_name = "Input_A_eigen_std".to_string();
+                        first_step_detail.input_matrix_dims = Some(a_c.dim());
+                        first_step_detail.fro_norm = Some(compute_frob_norm_f32(&a_c.view()) as f64);
+                        first_step_detail.condition_number = compute_condition_number_via_svd_f32(&a_c.view());
+                        // Also record f64 condition number if desired, perhaps in notes or a dedicated field if added
+                        let a_c_f64 = a_c.mapv(|v| v as f64);
+                        let cond_f64 = compute_condition_number_via_svd_f64(&a_c_f64.view());
+                        first_step_detail.notes = format!("Input A_eigen_std f64 cond_num: {:?}", cond_f64);
+                        gdc.rsvd_stages.push(first_step_detail);
+                    }
+                }
+            }
+        }
+
         if m_c <= k_glob || m_c <= direct_svd_m_c_threshold || l_rsvd <= k_glob {
             info!("Initial Global PCA: Choosing Direct SVD path. Condition: m_c ({}) <= k_glob ({}) || m_c ({}) <= direct_svd_m_c_threshold ({}) || l_rsvd ({}) <= k_glob ({})",
                   m_c, k_glob, m_c, direct_svd_m_c_threshold, l_rsvd, k_glob);
-            // Get an owned version of A_c for svd_into
-            let a_c_owned = a_c.to_owned();
-
-            debug!("Direct SVD Path: A_c (condensed matrix) dimensions: {:?}", a_c_owned.dim());
-            let frob_norm_a_c = a_c_owned.view().mapv(|x| x*x).sum().sqrt();
-            debug!("Direct SVD Path: A_c Frobenius norm: {:.4e}", frob_norm_a_c);
-            trace!("Direct SVD Path: A_c sample (first few elements): {:?}", a_c_owned.slice(s![0..3.min(m_c), 0..3.min(n_samples)]));
+            let a_c_owned_for_svd = a_c.to_owned(); // For SVD
             
+            debug!("Direct SVD Path: A_c (condensed matrix) dimensions: {:?}", a_c_owned_for_svd.dim());
+            // ... (existing SVD logic) ...
             let backend = LinAlgBackendProvider::<f32>::new();
-
-            match backend.svd_into(a_c_owned, false /* compute_u */, true /* compute_vt */) {
+            match backend.svd_into(a_c_owned_for_svd.clone(), false, true) { // Clone a_c_owned_for_svd for potential f64 SVD later
                 Ok(svd_output) => {
-                    debug!("Direct SVD Path: Singular values: {:?}", svd_output.s);
+                    // ... (existing score calculation) ...
                     if let Some(svd_output_vt) = svd_output.vt {
-                        if svd_output_vt.is_empty() {
-                             warn!("Direct SVD for initial global PCA: svd_output.vt is present but empty. M_c={}, N_samples={}", m_c, n_samples);
+                         if svd_output_vt.is_empty() {
                              initial_scores = Array2::zeros((n_samples, 0));
-                        } else {
-                            let num_svd_components = svd_output_vt.nrows(); // V.T is K_svd x N, so nrows is K_svd
+                         } else {
+                            let num_svd_components = svd_output_vt.nrows();
                             let k_eff = k_glob.min(num_svd_components);
+                            if k_eff == 0 { initial_scores = Array2::zeros((n_samples,0)); }
+                            else {
+                                initial_scores = svd_output_vt.t().slice_axis(Axis(1), ndarray::Slice::from(0..k_eff)).to_owned();
+                            }
+                         }
+                    } else { /* error handling */ initial_scores = Array2::zeros((n_samples,0)); 
+                        warn!("Direct SVD for initial global PCA: svd_output.vt is None despite requesting it. M_c={}, N_samples={}", m_c, n_samples);
+                        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SVD succeeded but V.T (vt) was not returned by the backend.")) as ThreadSafeStdError);
+                    }
 
-                            if k_eff == 0 {
-                                debug!("Direct SVD for initial global PCA: K_eff is 0 (K_glob={}, num_svd_components={}).", k_glob, num_svd_components);
-                                initial_scores = Array2::zeros((n_samples, 0));
-                            } else {
-                                initial_scores = svd_output_vt
-                                    .t()
-                                    .slice_axis(Axis(1), ndarray::Slice::from(0..k_eff))
-                                    .to_owned();
-                                // Logging for initial_scores from Direct SVD
-                                debug!("Direct SVD Path: Initial scores dimensions: {:?}", initial_scores.dim());
-                                let frob_norm_scores = initial_scores.view().mapv(|x| x*x).sum().sqrt();
-                                debug!("Direct SVD Path: Initial scores Frobenius norm: {:.4e}", frob_norm_scores);
-                                trace!("Direct SVD Path: Initial scores sample (first few elements): {:?}", initial_scores.slice(s![0..3.min(initial_scores.nrows()), 0..3.min(initial_scores.ncols())]));
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    {
+                        if let Some(gdc) = global_pca_diagnostics_collector.as_mut() {
+                            if self.config.collect_diagnostics && !a_c.is_empty() && !initial_scores.is_empty() {
+                                debug!("DIAG: Computing f64 SVD for U_scores_true comparison in Global PCA (Direct SVD Path).");
+                                let a_c_f64_owned = a_c.mapv(|v_f32| v_f32 as f64); // Convert A_c to f64 for true SVD
+                                let backend_f64 = LinAlgBackendProvider::<f64>::new();
+                                match backend_f64.svd_into(a_c_f64_owned, false, true) { // Request VT_f64
+                                    Ok(svd_out_f64) => {
+                                        if let Some(vt_true_f64) = svd_out_f64.vt {
+                                            let k_to_compare = initial_scores.ncols().min(vt_true_f64.nrows());
+                                            if k_to_compare > 0 {
+                                                let u_scores_true_f64 = vt_true_f64.t().slice_axis(Axis(1), ndarray::Slice::from(0..k_to_compare)).into_owned();
+                                                gdc.initial_scores_correlation_vs_py_truth = // Assuming py_truth means f64_truth here
+                                                    compute_matrix_column_correlations_abs(&initial_scores.view(), &u_scores_true_f64.view());
+                                            }
+                                        } else { gdc.notes.push_str(" ;f64 SVD Vt_true was None for Global PCA truth"); }
+                                    }
+                                    Err(e) => { gdc.notes.push_str(&format!(" ;f64 SVD for U_scores_true failed in Global PCA: {}",e)); }
+                                }
                             }
                         }
-                    } else {
-                        warn!("Direct SVD for initial global PCA: svd_output.vt is None despite requesting it. M_c={}, N_samples={}", m_c, n_samples);
-                         return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "SVD succeeded but V.T (vt) was not returned by the backend.",
-                        )) as ThreadSafeStdError);
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        "Direct SVD failed for initial global PCA (M_c={}, N_samples={}): {}. Returning error.",
-                        m_c, n_samples, e
-                    );
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Direct SVD failed during initial global PCA: {}", e),
-                    )) as ThreadSafeStdError);
+                Err(e) => { /* error handling */ 
+                    warn!("Direct SVD failed for initial global PCA (M_c={}, N_samples={}): {}. Returning error.", m_c, n_samples, e);
+                    return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Direct SVD failed during initial global PCA: {}", e))) as ThreadSafeStdError);
                 }
             }
         } else {
             info!("Initial Global PCA: Choosing RSVD path. Condition: m_c ({}) > k_glob ({}) && m_c ({}) > direct_svd_m_c_threshold ({}) && l_rsvd ({}) > k_glob ({})",
                   m_c, k_glob, m_c, direct_svd_m_c_threshold, l_rsvd, k_glob);
+            
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            let rsvd_stages_collector = global_pca_diagnostics_collector.as_mut().map(|gdc| &mut gdc.rsvd_stages);
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+            let rsvd_stages_collector = None;
+
             initial_scores = Self::perform_randomized_svd_for_scores(
                 &a_c.view(), 
                 k_glob,
                 p_glob,
                 q_glob,
                 random_seed,
-                None, // diagnostics_collector for perform_randomized_svd_for_scores
+                rsvd_stages_collector,
             )?;
-            // Logging for initial_scores from RSVD
-            debug!("RSVD Path: Initial scores dimensions: {:?}", initial_scores.dim());
-            let frob_norm_scores = initial_scores.view().mapv(|x| x*x).sum().sqrt();
-            debug!("RSVD Path: Initial scores Frobenius norm: {:.4e}", frob_norm_scores);
-            trace!("RSVD Path: Initial scores sample (first few elements): {:?}", initial_scores.slice(s![0..3.min(initial_scores.nrows()), 0..3.min(initial_scores.ncols())]));
+        }
+        
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(gdc) = global_pca_diagnostics_collector.as_mut() {
+                 if self.config.collect_diagnostics && !initial_scores.is_empty() {
+                    // Record initial_scores properties (assuming initial_scores is U_scores_star)
+                    // gdc.initial_scores_dims = Some(initial_scores.dim()); // This field does not exist
+                    // gdc.initial_scores_fro_norm = Some(compute_frob_norm_f32(&initial_scores.view()) as f64); // This field does not exist
+                    // gdc.initial_scores_orthogonality_error = compute_orthogonality_error_f32(&initial_scores.view()); // This field does not exist
+                    // Storing these in notes for now, or they could be the last RsvdStepDetail from perform_randomized_svd_for_scores
+                    let (r,c) = initial_scores.dim();
+                    let fro_norm = compute_frob_norm_f32(&initial_scores.view()) as f64;
+                    let ortho_error = compute_orthogonality_error_f32(&initial_scores.view());
+                    gdc.notes.push_str(&format!(" ;InitialScores dims:({},{}), FrobNorm:{:.4e}, OrthoError:{:?}",r,c,fro_norm,ortho_error));
+                }
+            }
         }
         
         if initial_scores.ncols() == 0 && k_glob > 0 {
-            warn!(
-                "Initial PCA ({} path) resulted in 0 components, while K_glob was {}. Input matrix M_c x N_samples = {} x {}.",
-                if m_c <= k_glob || m_c <= direct_svd_m_c_threshold || l_rsvd <= k_glob {"Direct SVD"} else {"RSVD"},
-                k_glob, m_c, n_samples
-            );
+            warn!( /* ... */ );
         }
 
         Ok(InitialSamplePcScores { scores: initial_scores })
@@ -992,7 +1315,8 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
-        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector: Option<()>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
         // Example of how this would create a step and pass it down:
         // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
@@ -1010,7 +1334,8 @@ impl EigenSNPCoreAlgorithm {
             false, // request_u_components
             false, // request_s_components
             true,  // request_v_components
-            None, // step_diag.as_mut(), // Pass mut ref if Some, else None
+            #[cfg(feature = "enable-eigensnp-diagnostics")] None, // Placeholder for now
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] None, // Pass Option::<()>::None if not enabled
         )?;
         
         // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
@@ -1033,7 +1358,8 @@ impl EigenSNPCoreAlgorithm {
         sketch_oversampling_count: usize,
         num_power_iterations: usize,
         random_seed: u64,
-        diagnostics_collector: Option<&mut Vec<RsvdStepDiagnostics>>,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector: Option<()>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
         // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
         //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_loadings_internal".to_string(), ..Default::default() })
@@ -1050,7 +1376,8 @@ impl EigenSNPCoreAlgorithm {
             true,  // request_u_components
             false, // request_s_components
             false, // request_v_components
-            None, // step_diag.as_mut(),
+            #[cfg(feature = "enable-eigensnp-diagnostics")] None, // Placeholder for now
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] None, // Pass Option::<()>::None if not enabled
         )?;
 
         // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
@@ -1119,6 +1446,8 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         initial_sample_pc_scores: &InitialSamplePcScores,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] pass_diagnostics_collector: Option<&mut crate::diagnostics::SrPassDetail>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _pass_diagnostics_collector_param: Option<()>, // Renamed
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
         // Computes $V_{QR}^* = X U_{scores}^*$, where $X$ is D_blocked x N and $U_{scores}^*$ is N x K_initial.
         // The result $V_{QR}^*$ is D_blocked x K_initial.
@@ -1203,6 +1532,41 @@ impl EigenSNPCoreAlgorithm {
                     format!("QR decomposition of refined loadings failed (via backend): {}", e_qr)
                 ).into()
             })?;
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(pdc) = pass_diagnostics_collector.as_mut() {
+                if self.config.collect_diagnostics {
+                    // pass_num is set in compute_pca loop
+                    // V_hat_dims would be initial_scores_n_by_k_initial.dim() if V_hat is U_scores from prev pass
+                    // For now, assume V_hat is the input scores to this stage
+                    pdc.v_hat_dims = Some(initial_scores_n_by_k_initial.dim());
+                    if !initial_scores_n_by_k_initial.is_empty() {
+                         pdc.v_hat_orthogonality_error = compute_orthogonality_error_f32(&initial_scores_n_by_k_initial.view());
+                    }
+                    // L_raw_star is snp_loadings_before_ortho_pca_snps_by_components
+                    // This matrix is D x K_initial. S_intermediate in SrPassDetail is N x K_prev_eigenvecs
+                    // The naming here is a bit confusing. Let's record L_raw_star's condition number in notes for now.
+                    if !snp_loadings_before_ortho_pca_snps_by_components.is_empty() {
+                        let cond_num_l_raw = compute_condition_number_via_svd_f32(&snp_loadings_before_ortho_pca_snps_by_components.view());
+                        pdc.notes.push_str(&format!("L_raw_star (SNP loadings pre-QR) cond_num: {:?}; ", cond_num_l_raw));
+                    }
+                    // V_qr_star is orthonormal_snp_loadings (D x K_eff)
+                    // This is the Q factor of V_hat in the notation S_intermediate = C_std @ V_hat_Q
+                    // Let's use s_intermediate_dims for V_qr_star (orthonormal_snp_loadings)
+                    pdc.s_intermediate_dims = Some(orthonormal_snp_loadings.dim()); // This is V_qr*
+                     if !orthonormal_snp_loadings.is_empty() {
+                        pdc.s_intermediate_fro_norm = Some(compute_frob_norm_f32(&orthonormal_snp_loadings.view()) as f64);
+                        // Orthogonality error for V_qr_star (orthonormal_snp_loadings)
+                        // This is U_s in SrPassDetail if we consider V_qr* = U_s S_s V_s^T, but here it's just a Q factor.
+                        // The field u_s_orthogonality_error or v_hat_orthogonality_error could be used.
+                        // Let's use v_hat_orthogonality_error for the input `initial_sample_pc_scores`
+                        // and u_s_orthogonality_error for the output `orthonormal_snp_loadings` (which is V_QR*).
+                        pdc.u_s_orthogonality_error = compute_orthogonality_error_f32(&orthonormal_snp_loadings.view());
+                    }
+                }
+            }
+        }
         
         info!("Computed refined SNP loadings. Shape: {:?}", orthonormal_snp_loadings.dim());
         Ok(orthonormal_snp_loadings)
@@ -1213,6 +1577,8 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         v_qr_loadings_d_by_k: &ArrayView2<f32>, // V_qr (D x K_initial)
         num_total_qc_samples: usize, // N
+        #[cfg(feature = "enable-eigensnp-diagnostics")] pass_diagnostics_collector: Option<&mut crate::diagnostics::SrPassDetail>,
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _pass_diagnostics_collector_param: Option<()>, // Renamed
     ) -> Result<(Array2<f32>, Array1<f64>, Array2<f32>), ThreadSafeStdError> {
         let num_total_pca_snps = v_qr_loadings_d_by_k.nrows(); // D
         let k_initial_components = v_qr_loadings_d_by_k.ncols(); // K_initial
@@ -1433,6 +1799,45 @@ impl EigenSNPCoreAlgorithm {
         info!("Computed final sorted sample scores. Shape: {:?}", sorted_final_sample_scores.dim());
         info!("Computed final sorted SNP loadings. Shape: {:?}", sorted_final_snp_loadings.dim());
 
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(pdc) = pass_diagnostics_collector.as_mut() {
+                if self.config.collect_diagnostics {
+                    // S_intermediate is s_intermediate_n_by_k_initial_f64
+                    // Its SVD produced s_prime_singular_values_k_eff_f64
+                    pdc.s_intermediate_dims = Some(s_intermediate_n_by_k_initial_f64.dim()); // Already f64
+                    pdc.s_intermediate_fro_norm = Some(compute_frob_norm_f64(&s_intermediate_n_by_k_initial_f64.view()));
+                    pdc.s_intermediate_condition_number = compute_condition_number_via_svd_f64(&s_intermediate_n_by_k_initial_f64.view());
+                    
+                    pdc.s_intermediate_num_singular_values = Some(s_prime_singular_values_k_eff_f64.len());
+                    pdc.s_intermediate_singular_values_sample = sample_singular_values_f64(&s_prime_singular_values_k_eff_f64.view(), 10);
+
+                    // final_sample_scores_n_by_k_eff_f32
+                    // final_snp_loadings_d_by_k_eff_f32
+                    // These are not U_s or V_hat from the SVD of S_intermediate.
+                    // U_s from SVD of S_intermediate was u_rot_n_by_k_eff_f64 (before scaling by S_prime)
+                    // Let's record its orthogonality error.
+                    if !u_rot_n_by_k_eff_f64.is_empty() {
+                         // This was already recorded in compute_refined_snp_loadings as pdc.u_s_orthogonality_error for V_QR*
+                         // Here, U_s is from SVD of S_int. So, use pdc.u_s_orthogonality_error
+                         let u_rot_f32_for_ortho = u_rot_n_by_k_eff_f64.mapv(|x_f64| x_f64 as f32);
+                         pdc.u_s_orthogonality_error = compute_orthogonality_error_f32(&u_rot_f32_for_ortho.view());
+                    }
+
+                    // Notes on final scores/loadings for this pass could be added if fields are not specific enough.
+                    // For instance, orthogonality of final_sample_scores and final_snp_loadings.
+                    if !sorted_final_sample_scores.is_empty() {
+                        let final_scores_ortho = compute_orthogonality_error_f32(&sorted_final_sample_scores.view());
+                        pdc.notes.push_str(&format!(" ;FinalScoresOrthoErr_this_pass: {:?}", final_scores_ortho));
+                    }
+                     if !sorted_final_snp_loadings.is_empty() {
+                        let final_loadings_ortho = compute_orthogonality_error_f32(&sorted_final_snp_loadings.view());
+                         pdc.notes.push_str(&format!(" ;FinalLoadingsOrthoErr_this_pass: {:?}", final_loadings_ortho));
+                    }
+                }
+            }
+        }
+
         Ok((sorted_final_sample_scores, sorted_final_eigenvalues, sorted_final_snp_loadings))
     }
 
@@ -1473,16 +1878,46 @@ impl EigenSNPCoreAlgorithm {
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
         request_v_components: bool,  // True if V (right singular vectors) is needed
-        diagnostics_step_collector: Option<&mut RsvdStepDiagnostics>,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, 
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>, 
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
-        // Example of how this would be used:
-        // if let Some(dsc) = diagnostics_step_collector {
-        //    dsc.input_matrix_dims = Some((matrix_features_by_samples.nrows(), matrix_features_by_samples.ncols()));
-        //    // ... populate other fields ...
-        // }
+        
+        // Utility to push diagnostics if enabled
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        let mut push_diag = |step_name: String, iteration: Option<usize>, input_dims: Option<(usize,usize)>, output_dims: Option<(usize,usize)>, matrix_to_measure: Option<&ArrayView2<f32>>, q_factor_to_measure: Option<&ArrayView2<f32>>| {
+            if let Some(dc_vec) = diagnostics_collector_vec.as_mut() {
+                // Assuming self.config.collect_diagnostics is checked by the caller of _internal_perform_rsvd
+                // or this function is only called when it's true.
+                // For safety, one might pass collect_diagnostics_flag here too.
+                let mut detail = RsvdStepDetail::default();
+                detail.step_name = step_name;
+                // detail.iteration = iteration; // Iteration field not in RsvdStepDetail. Add to notes if needed.
+                if let Some(iter) = iteration { detail.notes = format!("Iteration: {}", iter); }
+
+                detail.input_matrix_dims = input_dims;
+                detail.output_matrix_dims = output_dims;
+
+                if let Some(matrix) = matrix_to_measure {
+                    if !matrix.is_empty() {
+                        detail.fro_norm = Some(compute_frob_norm_f32(&matrix.view()) as f64);
+                        detail.condition_number = compute_condition_number_via_svd_f32(&matrix.view());
+                    }
+                }
+                if let Some(q_matrix) = q_factor_to_measure {
+                     if !q_matrix.is_empty() {
+                        detail.orthogonality_error = compute_orthogonality_error_f32(&q_matrix.view());
+                    }
+                }
+                dc_vec.push(detail);
+            }
+        };
+
 
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        push_diag("Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
 
         if num_features_m == 0 || num_samples_n == 0 || num_components_target_k == 0 {
             debug!("RSVD: Input matrix empty or K=0. M={}, N={}, K={}", num_features_m, num_samples_n, num_components_target_k);
@@ -1520,11 +1955,16 @@ impl EigenSNPCoreAlgorithm {
         let random_projection_matrix_omega = Array2::from_shape_fn((num_samples_n, sketch_dimension_l), |_| {
             normal_dist.sample(&mut rng) as f32
         });
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        push_diag("Omega".to_string(), None, Some((num_samples_n, sketch_dimension_l)), Some((num_samples_n, sketch_dimension_l)), Some(&random_projection_matrix_omega.view()), None);
         
         let backend = LinAlgBackendProvider::<f32>::new();
         
         // Y = A * Omega (M x N) * (N x L) -> (M x L)
         let sketch_y = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &random_projection_matrix_omega.view())?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        push_diag("SketchY_PreQR".to_string(), None, Some((num_features_m, num_samples_n)), Some(sketch_y.dim()), Some(&sketch_y.view()), None);
+
 
         if sketch_y.ncols() == 0 {
             warn!("RSVD: Initial sketch Y (A*Omega) has zero columns before first QR. Target_K={}, Sketch_L={}", num_components_target_k, sketch_dimension_l);
@@ -1537,6 +1977,8 @@ impl EigenSNPCoreAlgorithm {
         // Q_basis = orth(Y) (M x L_actual_y)
         let mut q_basis_m_by_l_actual = backend.qr_q_factor(&sketch_y)
             .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch Y failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        push_diag("Q0_PostQR".to_string(), Some(0), Some(sketch_y.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         
         // Power iterations
         for iter_idx in 0..num_power_iterations {
@@ -1548,6 +1990,9 @@ impl EigenSNPCoreAlgorithm {
             
             // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
             let q_tilde_candidate = Self::dot_product_at_b_mixed_precision(matrix_features_by_samples, &q_basis_m_by_l_actual.view())?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            push_diag(format!("PowerIter{}_Ytilde_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_m_by_l_actual.dim()), Some(q_tilde_candidate.dim()), Some(&q_tilde_candidate.view()), None);
+
             if q_tilde_candidate.ncols() == 0 { 
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0)); 
                 trace!("RSVD Power Iteration {}: Q_tilde_candidate became empty.", iter_idx + 1);
@@ -1556,6 +2001,8 @@ impl EigenSNPCoreAlgorithm {
             // Q_tilde = orth(Q_tilde_candidate) (N x L_actual_tilde)
             let q_tilde_n_by_l_actual = backend.qr_q_factor(&q_tilde_candidate)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_tilde in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            push_diag(format!("PowerIter{}_Qtilde_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_candidate.dim()), Some(q_tilde_n_by_l_actual.dim()), None, Some(&q_tilde_n_by_l_actual.view()));
 
             if q_tilde_n_by_l_actual.ncols() == 0 {
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
@@ -1565,6 +2012,9 @@ impl EigenSNPCoreAlgorithm {
 
             // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
             let q_basis_candidate_next = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &q_tilde_n_by_l_actual.view())?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            push_diag(format!("PowerIter{}_Ynext_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_n_by_l_actual.dim()), Some(q_basis_candidate_next.dim()), Some(&q_basis_candidate_next.view()), None);
+
             if q_basis_candidate_next.ncols() == 0 {
                  q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
                  trace!("RSVD Power Iteration {}: Q_basis_candidate_next became empty.", iter_idx + 1);
@@ -1573,6 +2023,8 @@ impl EigenSNPCoreAlgorithm {
             // Q_basis = orth(Q_basis_candidate_next) (M x L_actual_final_iter)
             q_basis_m_by_l_actual = backend.qr_q_factor(&q_basis_candidate_next)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_basis in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            push_diag(format!("PowerIter{}_Qnext_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_candidate_next.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         }
         
         if q_basis_m_by_l_actual.ncols() == 0 {
@@ -1585,6 +2037,8 @@ impl EigenSNPCoreAlgorithm {
         
         // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
         let projected_b_l_actual_by_n = Self::dot_product_at_b_mixed_precision(&q_basis_m_by_l_actual.view(), matrix_features_by_samples)?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        push_diag("ProjectedB_PreSVD".to_string(), None, Some(q_basis_m_by_l_actual.dim()), Some(projected_b_l_actual_by_n.dim()), Some(&projected_b_l_actual_by_n.view()), None);
         
         // SVD of B: B = U_B * S_B * V_B.T
         // U_B is L_actual x rank_b
@@ -1623,6 +2077,40 @@ impl EigenSNPCoreAlgorithm {
                 }
             }
         };
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        {
+            if let Some(dc_vec) = diagnostics_collector_vec.as_mut() {
+                // Assuming self.config.collect_diagnostics is checked by the caller
+                let mut detail_svd = RsvdStepDetail::default();
+                detail_svd.step_name = "SVD_of_B".to_string();
+                if let Some(u_b) = svd_output_b.u.as_ref() { 
+                    detail_svd.notes.push_str(&format!("U_B dims: {:?}; ", u_b.dim()));
+                    // Could add more detailed metrics for U_B if needed
+                }
+                detail_svd.num_singular_values = Some(svd_output_b.s.len());
+                detail_svd.singular_values_sample = sample_singular_values(&svd_output_b.s.view(), 10).map(|v_f32| v_f32.iter().map(|&x| x as f64).collect()); // Store as f64
+                if let Some(vt_b) = svd_output_b.vt.as_ref() {
+                     detail_svd.notes.push_str(&format!("Vt_B dims: {:?}; ", vt_b.dim()));
+                }
+
+                // SVD Reconstruction Error for B = U_B S_B Vt_B
+                // Need original B (projected_b_l_actual_by_n), U_B, S_B, Vt_B
+                if let (Some(u_b_val), Some(vt_b_val)) = (svd_output_b.u.as_ref(), svd_output_b.vt.as_ref()) {
+                     if !projected_b_l_actual_by_n.is_empty() && !u_b_val.is_empty() && !svd_output_b.s.is_empty() && !vt_b_val.is_empty() {
+                        let reconstruction_error = compute_svd_reconstruction_error_f32(
+                            &projected_b_l_actual_by_n.view(),
+                            &u_b_val.view(),
+                            &svd_output_b.s.view(),
+                            &vt_b_val.view()
+                        );
+                        detail_svd.svd_reconstruction_error_rel = reconstruction_error;
+                        // Could also compute absolute error if needed.
+                    }
+                }
+                dc_vec.push(detail_svd);
+            }
+        }
         
         let mut u_a_approx_opt: Option<Array2<f32>> = None;
         let mut s_a_approx_opt: Option<Array1<f32>> = None;
@@ -1653,7 +2141,10 @@ impl EigenSNPCoreAlgorithm {
                 if u_b_l_actual_by_rank_b.ncols() > 0 && q_basis_m_by_l_actual.ncols() > 0 {
                     // U_A = Q_basis * U_B (M x L_actual) * (L_actual x rank_b) -> M x rank_b
                     let u_a_approx_m_by_rank_b = q_basis_m_by_l_actual.dot(&u_b_l_actual_by_rank_b);
-                    u_a_approx_opt = Some(u_a_approx_m_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned());
+                    let u_a_final = u_a_approx_m_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    push_diag("Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); // Ortho error for U_A
+                    u_a_approx_opt = Some(u_a_final);
                 } else {
                      u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
                 }
@@ -1667,7 +2158,10 @@ impl EigenSNPCoreAlgorithm {
                 if v_b_t_rank_b_by_n.nrows() > 0 { // effectively checks rank_b > 0
                     // V_A = V_B. V_B is (N x rank_b). We have V_B.T (rank_b x N)
                     let v_a_approx_n_by_rank_b = v_b_t_rank_b_by_n.t().into_owned();
-                    v_a_approx_opt = Some(v_a_approx_n_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned());
+                    let v_a_final = v_a_approx_n_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    push_diag("Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); // Ortho error for V_A
+                    v_a_approx_opt = Some(v_a_final);
                 } else {
                     v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
                 }

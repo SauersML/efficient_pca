@@ -10,9 +10,125 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import sys
+from pathlib import Path # Ensure Path is imported
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+
+import json # Added for JSON parsing
+
+def parse_diagnostic_json(file_path):
+    """Parses a single diagnostic JSON file."""
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        logging.info(f"Successfully parsed diagnostic JSON: {file_path}")
+        return data
+    except FileNotFoundError:
+        logging.error(f"Diagnostic JSON file not found: {file_path}")
+        return None
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON from file {file_path}: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"An unexpected error occurred while parsing {file_path}: {e}")
+        return None
+
+def extract_key_metrics_from_diagnostics(parsed_json_data, diag_test_name, backend_name):
+    """
+    Extracts key metrics from parsed diagnostic JSON data.
+    Returns a flat dictionary of these metrics.
+    """
+    metrics = {
+        "diag_test_name": diag_test_name,
+        "backend": backend_name,
+        "overall_runtime_seconds": None,
+        "local_block0_xsp_cond_num": None,
+        "local_block0_avg_projb_cond_num": None,
+        "local_block0_max_projb_cond_num": None,
+        "local_block0_avg_q_ortho_error": None,
+        "local_block0_max_q_ortho_error": None,
+        "local_block0_up_avg_corr_vs_f64": None,
+        "global_aeigen_cond_f32": None,
+        # "global_aeigen_cond_f64": None, # This was in notes, harder to parse reliably
+        "global_initial_scores_avg_corr": None,
+        "sr_pass1_vqr_ortho_error": None,
+        "sr_pass1_s_inter_cond_num": None,
+    }
+
+    if not parsed_json_data:
+        return metrics
+
+    try:
+        metrics["overall_runtime_seconds"] = parsed_json_data.get("total_runtime_seconds")
+
+        # Local basis diagnostics (assuming block 0 if it exists)
+        per_block_diags = parsed_json_data.get("per_block_diagnostics", [])
+        if per_block_diags and isinstance(per_block_diags, list) and len(per_block_diags) > 0:
+            block0_diag = per_block_diags[0] # Taking the first block as representative
+            if isinstance(block0_diag, dict):
+                # This was 'u_p_condition_number' in the Rust struct, which was for X_s_p
+                metrics["local_block0_xsp_cond_num"] = block0_diag.get("u_p_condition_number") 
+
+                rsvd_stages = block0_diag.get("rsvd_stages", [])
+                if isinstance(rsvd_stages, list):
+                    projected_b_cond_nums = []
+                    q_ortho_errors = []
+                    for step in rsvd_stages:
+                        if isinstance(step, dict):
+                            if step.get("step_name") == "ProjectedB_PreSVD":
+                                projected_b_cond_nums.append(step.get("condition_number"))
+                            if step.get("step_name", "").endswith("_PostQR"): # Q0_PostQR, PowerIterX_Qtilde_PostQR, etc.
+                                q_ortho_errors.append(step.get("orthogonality_error"))
+                    
+                    valid_projb_cond_nums = [x for x in projected_b_cond_nums if x is not None]
+                    if valid_projb_cond_nums:
+                        metrics["local_block0_avg_projb_cond_num"] = sum(valid_projb_cond_nums) / len(valid_projb_cond_nums)
+                        metrics["local_block0_max_projb_cond_num"] = max(valid_projb_cond_nums)
+
+                    valid_q_ortho_errors = [x for x in q_ortho_errors if x is not None]
+                    if valid_q_ortho_errors:
+                        metrics["local_block0_avg_q_ortho_error"] = sum(valid_q_ortho_errors) / len(valid_q_ortho_errors)
+                        metrics["local_block0_max_q_ortho_error"] = max(valid_q_ortho_errors)
+
+                u_corr = block0_diag.get("u_correlation_vs_f64_truth")
+                if u_corr and isinstance(u_corr, list) and len(u_corr) > 0:
+                    valid_u_corr = [x for x in u_corr if x is not None]
+                    if valid_u_corr:
+                        metrics["local_block0_up_avg_corr_vs_f64"] = sum(valid_u_corr) / len(valid_u_corr)
+        
+        # Global PCA diagnostics
+        global_pca_diag = parsed_json_data.get("global_pca_diag")
+        if isinstance(global_pca_diag, dict):
+            global_rsvd_stages = global_pca_diag.get("rsvd_stages", [])
+            if isinstance(global_rsvd_stages, list) and len(global_rsvd_stages) > 0:
+                first_global_step = global_rsvd_stages[0] # Input_A_eigen_std
+                if isinstance(first_global_step, dict):
+                    metrics["global_aeigen_cond_f32"] = first_global_step.get("condition_number")
+                    # global_aeigen_cond_f64 was in notes, harder to parse robustly here.
+
+            initial_scores_corr = global_pca_diag.get("initial_scores_correlation_vs_py_truth")
+            if initial_scores_corr and isinstance(initial_scores_corr, list) and len(initial_scores_corr) > 0:
+                valid_is_corr = [x for x in initial_scores_corr if x is not None]
+                if valid_is_corr:
+                     metrics["global_initial_scores_avg_corr"] = sum(valid_is_corr) / len(valid_is_corr)
+
+        # SR Pass Details (assuming first pass if it exists)
+        sr_passes = parsed_json_data.get("sr_pass_details", [])
+        if isinstance(sr_passes, list) and len(sr_passes) > 0:
+            pass1_diag = sr_passes[0]
+            if isinstance(pass1_diag, dict):
+                # v_qr_ortho_error was originally planned, but SrPassDetail has v_hat_orthogonality_error and u_s_orthogonality_error.
+                # u_s_orthogonality_error corresponds to the V_QR* from compute_refined_snp_loadings
+                metrics["sr_pass1_vqr_ortho_error"] = pass1_diag.get("u_s_orthogonality_error") 
+                metrics["sr_pass1_s_inter_cond_num"] = pass1_diag.get("s_intermediate_condition_number")
+
+
+    except Exception as e:
+        logging.error(f"Error extracting metrics for test {diag_test_name}, backend {backend_name}: {e}")
+        # Keep already extracted metrics, others will remain None or default
+    
+    return metrics
 
 def parse_arguments():
     """Parses command-line arguments."""
@@ -109,14 +225,142 @@ def main():
     # --- TSV Manifest ---
     manifest_df = pd.DataFrame(all_tsv_files_manifest)
     if not manifest_df.empty:
-        manifest_path = os.path.join(args.output_dir, "manifest.txt")
+        manifest_path = os.path.join(args.output_dir, "all_tsv_manifest.txt") # Renamed
         manifest_df.to_csv(manifest_path, sep='\t', index=False, columns=["Backend", "RelativePath", "AbsolutePath", "Size"])
-        logging.info(f"Manifest file created at: {manifest_path}")
+        logging.info(f"Manifest file for all TSVs created at: {manifest_path}") # Updated log
     else:
         logging.info("No TSV files found to create a manifest.")
         # Create an empty manifest if none found but backends existed
-        with open(os.path.join(args.output_dir, "manifest.txt"), "w") as f:
+        with open(os.path.join(args.output_dir, "all_tsv_manifest.txt"), "w") as f: # Renamed
             f.write("Backend\tRelativePath\tAbsolutePath\tSize\n")
+
+    # --- Diagnostic JSON File Discovery ---
+    all_diag_json_files_manifest = []
+    logging.info("Starting discovery of diagnostic JSON files...")
+
+    for original_dir_name, actual_backend_name in backend_dirs_to_process:
+        # Path to where test artifacts for this backend are stored.
+        # Based on CI structure, this is: args.input_dir / original_dir_name / "target" / "test_artifacts"
+        # And diagnostic JSONs are in a "test_outputs" subdirectory within that.
+        # So, backend_artifacts_path for glob should point to .../test_artifacts/
+        
+        # The structure of downloaded artifacts is:
+        # args.input_dir / original_dir_name (e.g. "eigensnp-test-artifacts-openblas-diag") / ...
+        # The actual test outputs (like JSON files) are usually in a nested `target/test_artifacts/test_outputs`
+        # if the tests are run via `cargo test` which places artifacts relative to `target/`.
+        
+        # Construct the path to the directory where diagnostic JSONs are expected for this backend.
+        # This matches where `run_diagnostic_test_with_params` saves them.
+        # The `original_dir_name` is like `eigensnp-test-artifacts-openblas-diag`.
+        # The JSONs are saved by tests into `test_outputs/` relative to where tests run.
+        # In CI, artifacts are uploaded from `target/test_artifacts/`.
+        # So, the path to search is `args.input_dir / original_dir_name / target/test_artifacts / test_outputs / diagnostics_*.json`
+        
+        current_backend_base_path = os.path.join(args.input_dir, original_dir_name)
+        # The test helper saves into "test_outputs/" relative to where the test runs.
+        # Cargo tests run from the package root. `target/test_artifacts` is where these are collected from.
+        # So, the effective path within the downloaded artifact for `test_outputs` is `target/test_artifacts/test_outputs`.
+        
+        diag_json_search_path = os.path.join(current_backend_base_path, "target", "test_artifacts", "test_outputs")
+        search_pattern = os.path.join(diag_json_search_path, "diagnostics_*.json")
+        
+        logging.info(f"Searching for diagnostic JSONs in: {diag_json_search_path} for backend {actual_backend_name} with pattern {search_pattern}")
+        
+        found_json_files = glob.glob(search_pattern, recursive=False) # JSONs are directly in test_outputs
+
+        for json_file_path in found_json_files:
+            absolute_path = os.path.abspath(json_file_path)
+            relative_path = os.path.relpath(absolute_path, args.input_dir)
+            file_size = os.path.getsize(absolute_path)
+            
+            # Extract DiagTestName from filename
+            # Filename example: diagnostics_n100_d1000_b1_cpb5_k5_sr1_locIter0_globIter2_local0_global2.json
+            # We want the suffix part like "local0_global2"
+            filename_stem = os.path.splitext(os.path.basename(json_file_path))[0]
+            parts = filename_stem.split('_')
+            diag_test_name_from_file = "unknown_variant"
+            # Try to find the suffix that indicates the test variant
+            # This depends on the naming convention from `run_diagnostic_test_with_params`
+            # Example suffix: "local0_global2", "local2_global2", "local4_global2"
+            if len(parts) > 0:
+                # The last part of the filename (before .json) is the "output_filename_suffix" from the test.
+                diag_test_name_from_file = parts[-1]
+
+
+            all_diag_json_files_manifest.append({
+                "Backend": actual_backend_name,
+                "DiagTestName": diag_test_name_from_file, 
+                "RelativePath": relative_path,
+                "AbsolutePath": absolute_path,
+                "Size": file_size
+            })
+            logging.info(f"Found diagnostic JSON: {absolute_path} for backend {actual_backend_name}, test variant {diag_test_name_from_file}")
+
+    # --- Diagnostic JSON Manifest ---
+    diag_manifest_df = pd.DataFrame(all_diag_json_files_manifest)
+    if not diag_manifest_df.empty:
+        diag_manifest_path = os.path.join(args.output_dir, "diagnostic_json_manifest.tsv")
+        # Ensure columns are in a consistent order
+        diag_manifest_df = diag_manifest_df[["Backend", "DiagTestName", "RelativePath", "AbsolutePath", "Size"]]
+        diag_manifest_df.to_csv(diag_manifest_path, sep='\t', index=False)
+        logging.info(f"Diagnostic JSON manifest file created at: {diag_manifest_path}")
+    else:
+        logging.info("No diagnostic JSON files found to create a manifest.")
+        # Create an empty manifest if none found
+        with open(os.path.join(args.output_dir, "diagnostic_json_manifest.tsv"), "w") as f:
+            f.write("Backend\tDiagTestName\tRelativePath\tAbsolutePath\tSize\n")
+
+    # --- Parse Discovered Diagnostic JSON Files ---
+    parsed_diag_data = []
+    if not diag_manifest_df.empty:
+        logging.info(f"Parsing {len(diag_manifest_df)} discovered diagnostic JSON files...")
+        for index, row in diag_manifest_df.iterrows():
+            abs_path = row['AbsolutePath']
+            parsed_content = parse_diagnostic_json(abs_path)
+            if parsed_content:
+                # Store parsed data along with some manifest info for context
+                parsed_diag_data.append({
+                    "Backend": row['Backend'],
+                    "DiagTestName": row['DiagTestName'],
+                    "RelativePath": row['RelativePath'],
+                    "ParsedData": parsed_content 
+                })
+        logging.info(f"Successfully parsed {len(parsed_diag_data)} out of {len(diag_manifest_df)} diagnostic JSON files.")
+    else:
+        logging.info("Diagnostic JSON manifest is empty. Nothing to parse.")
+
+    # --- Extract Key Metrics from Parsed Diagnostic Data ---
+    detailed_diagnostic_summaries = []
+    if parsed_diag_data:
+        logging.info(f"Extracting key metrics from {len(parsed_diag_data)} parsed diagnostic datasets...")
+        for diag_item in parsed_diag_data:
+            summary_dict = extract_key_metrics_from_diagnostics(
+                diag_item["ParsedData"],
+                diag_item["DiagTestName"],
+                diag_item["Backend"]
+            )
+            detailed_diagnostic_summaries.append(summary_dict)
+        logging.info(f"Successfully extracted metrics for {len(detailed_diagnostic_summaries)} diagnostic datasets.")
+
+    if detailed_diagnostic_summaries:
+        summary_diag_df = pd.DataFrame(detailed_diagnostic_summaries)
+        summary_diag_path = os.path.join(args.output_dir, "consolidated_diagnostic_summary.tsv")
+        summary_diag_df.to_csv(summary_diag_path, sep='\t', index=False)
+        logging.info(f"Consolidated diagnostic summary saved to: {summary_diag_path}")
+    else:
+        logging.info("No detailed diagnostic summaries to save.")
+        # Create an empty file if no summaries generated
+        with open(os.path.join(args.output_dir, "consolidated_diagnostic_summary.tsv"), "w") as f:
+            # Write header based on keys in 'metrics' dict from extract_key_metrics_from_diagnostics
+            # This is a bit manual; could be more dynamic if needed
+            header_keys = [
+                "diag_test_name", "backend", "overall_runtime_seconds",
+                "local_block0_xsp_cond_num", "local_block0_avg_projb_cond_num", "local_block0_max_projb_cond_num",
+                "local_block0_avg_q_ortho_error", "local_block0_max_q_ortho_error", "local_block0_up_avg_corr_vs_f64",
+                "global_aeigen_cond_f32", "global_initial_scores_avg_corr",
+                "sr_pass1_vqr_ortho_error", "sr_pass1_s_inter_cond_num"
+            ]
+            f.write("\t".join(header_keys) + "\n")
 
 
     # --- Consolidation and Analysis of eigensnp_summary_results.tsv ---
@@ -228,12 +472,41 @@ def main():
         else:
             logging.warning("Not enough data to generate test success plot.")
             md_file.write("## Test Success/Failure Plot\n\nNot enough data to generate this plot.\n\n")
+        
+        # --- Diagnostic JSON Manifest in Report ---
+        md_file.write("## Diagnostic JSON Files Found\n\n")
+        if not diag_manifest_df.empty:
+            # Display relevant columns for the report
+            md_file.write(diag_manifest_df[['Backend', 'DiagTestName', 'RelativePath', 'Size']].to_markdown(index=False) + "\n\n")
+        else:
+            md_file.write("No diagnostic JSON files were found.\n\n")
+
+        # --- Key Diagnostic Metrics Summary in Report ---
+        md_file.write("## Key Diagnostic Metrics Summary\n\n")
+        if 'summary_diag_df' in locals() and not summary_diag_df.empty:
+            # Select key columns for the markdown report for brevity
+            key_cols_for_report = [
+                "diag_test_name", "backend", "overall_runtime_seconds",
+                "local_block0_xsp_cond_num", 
+                # "local_block0_avg_projb_cond_num", # Maybe too detailed for top summary
+                "local_block0_up_avg_corr_vs_f64",
+                "global_aeigen_cond_f32", 
+                "global_initial_scores_avg_corr",
+                # "sr_pass1_vqr_ortho_error", # Maybe too detailed
+                "sr_pass1_s_inter_cond_num"
+            ]
+            # Ensure only existing columns are selected to avoid KeyErrors
+            existing_key_cols = [col for col in key_cols_for_report if col in summary_diag_df.columns]
+            
+            md_file.write(summary_diag_df[existing_key_cols].to_markdown(index=False, floatfmt=".3e") + "\n\n")
+        else:
+            md_file.write("No detailed diagnostic metrics were extracted or available to summarize.\n\n")
 
         # --- Analysis of Specific Test TSVs (Example: Eigenvalues) ---
-        md_file.write("## Eigenvalue Comparison Analysis\n\n")
+        md_file.write("## Eigenvalue Comparison Analysis (from all_tsv_manifest.txt)\n\n") # Clarified source
         
-        if manifest_df.empty:
-            md_file.write("No TSV files were found in the manifest, so no eigenvalue comparison can be performed.\n\n")
+        if manifest_df.empty: # This refers to all_tsv_manifest.txt now
+            md_file.write("No TSV files were found in the all_tsv_manifest.txt, so no eigenvalue comparison can be performed.\n\n")
         else:
             # Find files that might be eigenvalue files
             # A common pattern could be '*_eigenvalues.tsv' or 'eigenvalues.tsv'
