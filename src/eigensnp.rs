@@ -752,35 +752,31 @@ impl EigenSNPCoreAlgorithm {
             num_principal_components_computed_final
         );
 
-        Ok(EigenSNPCoreOutput {
+        let output_final = EigenSNPCoreOutput {
             final_snp_principal_component_loadings: final_sorted_snp_loadings,
             final_sample_principal_component_scores: final_sorted_sample_scores,
             final_principal_component_eigenvalues: final_sorted_eigenvalues,
             num_qc_samples_used: num_total_qc_samples,
             num_pca_snps_used: genotype_data.num_pca_snps(),
             num_principal_components_computed: num_principal_components_computed_final,
-        }, // <-- MODIFIED: removed semicolon, added comma
+        };
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
-        // This entire block is MOVED inside Ok()
         {
-            // The output_final variable is instantiated inside Ok() to avoid moving it
-            // We use the main diagnostics_collector defined at the start of the function
             if let Some(dc) = diagnostics_collector.as_mut() {
                 if let Some(rt) = overall_start_time.elapsed().as_secs_f64_safe() {
                     dc.total_runtime_seconds = Some(rt);
                 }
                 dc.notes.push_str("EigenSNP PCA run finished. ");
             }
-            diagnostics_collector // Return the collector itself
+            Ok((output_final, diagnostics_collector))
         }
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        // This entire block is MOVED inside Ok()
         {
-            () // Return an empty tuple
+            // output_final is defined above and moved into the Ok tuple here
+            Ok((output_final, ()))
         }
-    )) // <-- MODIFIED: This is the closing parenthesis for Ok(...)
-} // <-- MODIFIED: This brace at 793 becomes the function's closing brace. The one at 794 is removed.
+}
 
     // Helper trait for f64 conversion from Duration, handling potential errors.
     trait DurationToF64Safe {
