@@ -152,14 +152,14 @@ jobs:
       - name: Mark build failure
         if: steps.build_step.outcome == 'failure'
         run: |
-          mkdir -p ${{ runner.temp }}/build_failure_flags
-          touch ${{ runner.temp }}/build_failure_flags/build_failed_${{ matrix.backend }}.flag
+          mkdir -p /home/runner/work/_temp/build_failure_flags
+          touch /home/runner/work/_temp/build_failure_flags/build_failed_${{ matrix.backend }}.flag
       - name: Upload build failure flag
         if: steps.build_step.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: build-failure-flag-${{ matrix.backend }}
-          path: ${{ runner.temp }}/build_failure_flags/build_failed_${{ matrix.backend }}.flag
+          path: /home/runner/work/_temp/build_failure_flags/build_failed_${{ matrix.backend }}.flag
           retention-days: 1
 
       - name: Test
@@ -233,15 +233,15 @@ jobs:
         id: download-build-flags
         with:
           pattern: build-failure-flag-*
-          path: ${{ runner.temp }}/build-failure-flags
+          path: /home/runner/work/_temp/build-failure-flags
           # merge-multiple is true by default for patterns
         continue-on-error: true # Important: don't fail if no flags are found
 
       - name: Check if any build failure occurred
         id: check-build-failure
         run: |
-          mkdir -p ${{ runner.temp }}/build-failure-flags
-          if [[ -n "$(find ${{ runner.temp }}/build-failure-flags -type f -name 'build_failed_*.flag' -print -quit)" ]]; then
+          mkdir -p /home/runner/work/_temp/build-failure-flags
+          if [[ -n "$(find /home/runner/work/_temp/build-failure-flags -type f -name 'build_failed_*.flag' -print -quit)" ]]; then
             echo "Build failure detected."
             echo "BUILD_FAILED=true" >> $GITHUB_OUTPUT
           else
