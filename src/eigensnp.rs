@@ -546,7 +546,7 @@ impl EigenSNPCoreAlgorithm {
             }
         }
 
-        // When diagnostics are not enabled, diagnostics_collector is not declared.
+        // When 'enable-eigensnp-diagnostics' is not enabled, the 'diagnostics_collector' variable is not compiled.
         // The return type PcaOutputWithDiagnostics correctly becomes (EigenSNPCoreOutput, ()),
         // and the () is provided directly in return statements for that configuration.
 
@@ -850,7 +850,7 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
         subset_sample_ids: &[QcSampleId],
-        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>,
+        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>, // Added mut
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
     ) -> Result<Vec<LocalBasisWithDiagnostics>, ThreadSafeStdError> {
         info!(
@@ -913,7 +913,7 @@ impl EigenSNPCoreAlgorithm {
                     {
                         if diagnostics_collector.is_some() && self.config.collect_diagnostics {
                             let (r,c) = genotype_block_for_subset_samples.dim();
-                            per_block_diag_entry_for_map.input_x_s_p_dims = Some((r,c)); // New field perhaps, or update u_p_dims if X_s_p is U_p initially
+                            per_block_diag_entry_for_map.input_x_s_p_dims = Some((r,c));
                             per_block_diag_entry_for_map.notes.push_str(&format!(", X_s_p dims: ({}, {})", r, c));
                             if !genotype_block_for_subset_samples.is_empty() {
                                 per_block_diag_entry_for_map.input_x_s_p_fro_norm = Some(compute_frob_norm_f32(&genotype_block_for_subset_samples.view()) as f64);
@@ -1245,13 +1245,7 @@ impl EigenSNPCoreAlgorithm {
                  if self.config.collect_diagnostics {
                     gdc.stage_name = "GlobalPCA_Initial".to_string();
                     // Record A_eigen_std_star (a_c) properties
-                    // gdc.a_eigen_std_dims = Some(a_c.dim()); // This field does not exist in GlobalPcaDiagnostics, use rsvd_stages[0].input_matrix_dims
                     if !a_c.is_empty() {
-                        // gdc.a_eigen_std_fro_norm = Some(compute_frob_norm_f32(&a_c.view()) as f64); // This field does not exist
-                        // gdc.a_eigen_std_condition_number_f32 = compute_condition_number_via_svd_f32(&a_c.view()); // This field does not exist
-                        // let a_c_f64 = a_c.mapv(|v| v as f64);
-                        // gdc.a_eigen_std_condition_number_f64 = compute_condition_number_via_svd_f64(&a_c_f64.view()); // This field does not exist
-                        
                         // Storing these in the first RsvdStepDetail for now
                         let mut first_step_detail = RsvdStepDetail::default();
                         first_step_detail.step_name = "Input_A_eigen_std".to_string();
@@ -1378,13 +1372,6 @@ impl EigenSNPCoreAlgorithm {
         #[cfg(feature = "enable-eigensnp-diagnostics")] _diagnostics_collector: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector: Option<()>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
-        // Example of how this would create a step and pass it down:
-        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
-        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_scores_internal".to_string(), ..Default::default() })
-        // } else {
-        //     None
-        // };
-
         let (_u_opt, _s_opt, v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -1394,8 +1381,8 @@ impl EigenSNPCoreAlgorithm {
             false, // request_u_components
             false, // request_s_components
             true,  // request_v_components
-            #[cfg(feature = "enable-eigensnp-diagnostics")] None, // Placeholder for now
-            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] None, // Pass Option::<()>::None if not enabled
+            #[cfg(feature = "enable-eigensnp-diagnostics")] _diagnostics_collector,
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector,
         )?;
         
         // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
@@ -1421,12 +1408,6 @@ impl EigenSNPCoreAlgorithm {
         #[cfg(feature = "enable-eigensnp-diagnostics")] _diagnostics_collector: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector: Option<()>,
     ) -> Result<Array2<f32>, ThreadSafeStdError> {
-        // let mut step_diag = if self.config.collect_diagnostics && diagnostics_collector.is_some() {
-        //     Some(RsvdStepDiagnostics { step_name: "perform_randomized_svd_for_loadings_internal".to_string(), ..Default::default() })
-        // } else {
-        //     None
-        // };
-
         let (u_opt, _s_opt, _v_opt) = Self::_internal_perform_rsvd(
             matrix_features_by_samples,
             num_components_target_k,
@@ -1436,8 +1417,8 @@ impl EigenSNPCoreAlgorithm {
             true,  // request_u_components
             false, // request_s_components
             false, // request_v_components
-            #[cfg(feature = "enable-eigensnp-diagnostics")] None, // Placeholder for now
-            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] None, // Pass Option::<()>::None if not enabled
+            #[cfg(feature = "enable-eigensnp-diagnostics")] _diagnostics_collector,
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector,
         )?;
 
         // if let (Some(collector), Some(diag)) = (diagnostics_collector, step_diag) {
@@ -1979,15 +1960,20 @@ impl EigenSNPCoreAlgorithm {
             }
         };
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        let push_diag_fn = |_: Option<&mut ()>, _: String, _: Option<usize>, _: Option<(usize,usize)>, _: Option<(usize,usize)>, _: Option<&ArrayView2<f32>>, _: Option<&ArrayView2<f32>>| {
+        let push_diag_fn = |_: Option<()>, _: String, _: Option<usize>, _: Option<(usize,usize)>, _: Option<(usize,usize)>, _: Option<&ArrayView2<f32>>, _: Option<&ArrayView2<f32>>| { // Changed Option<&mut ()> to Option<()>
             // No-op for non-diagnostics build
         };
 
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
 
-        // Call the new closure, passing diagnostics_collector_vec.as_mut()
-        push_diag_fn(diagnostics_collector_vec.as_mut(), "Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        let collector_for_push_fn = diag_collector_input; // Removed mut
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+        let collector_for_push_fn = _diag_collector_input; // Changed to direct assignment, removed mut
+
+        // Call the push_diag_fn closure, passing the appropriate collector.
+        push_diag_fn(collector_for_push_fn, "Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
 
         if num_features_m == 0 || num_samples_n == 0 || num_components_target_k == 0 {
             debug!("RSVD: Input matrix empty or K=0. M={}, N={}, K={}", num_features_m, num_samples_n, num_components_target_k);
@@ -2142,8 +2128,10 @@ impl EigenSNPCoreAlgorithm {
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
-            if let Some(dc_vec) = diagnostics_collector_vec.as_mut() {
-                // Assuming self.config.collect_diagnostics is checked by the caller
+            // collector_for_push_fn is Option<&mut Vec<RsvdStepDetail>>
+            // To get &mut Vec<RsvdStepDetail> from it:
+            if let Some(dc_vec) = collector_for_push_fn {
+                // dc_vec is now &mut Vec<RsvdStepDetail>
                 let mut detail_svd = RsvdStepDetail::default();
                 detail_svd.step_name = "SVD_of_B".to_string();
                 if let Some(u_b) = svd_output_b.u.as_ref() { 
