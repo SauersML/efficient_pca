@@ -1,7 +1,7 @@
 // src/diagnostics.rs
 #![cfg(feature = "enable-eigensnp-diagnostics")]
 
-use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis, Ix2};
+use ndarray::{Array2, ArrayView1, ArrayView2};
 use crate::linalg_backends::LinAlgBackendProvider; // SVDOutput might not be needed directly
 use serde::{Serialize, Deserialize};
 use std::f64::INFINITY;
@@ -156,7 +156,7 @@ pub fn compute_condition_number_via_svd_f64(matrix: &ArrayView2<f64>) -> Option<
     }
 
     let backend_f64 = LinAlgBackendProvider::<f64>::new();
-    let svd_result = backend_f64.svd_s(matrix.to_owned(), false, false);
+    let svd_result = backend_f64.svd_into(matrix.to_owned(), false, false);
     
     let singular_values = match svd_result {
         Ok(output) => output.s,
@@ -355,7 +355,7 @@ pub fn sample_singular_values(s_values: &ArrayView1<f32>, count: usize) -> Optio
     
     // Add the last element
     sampled.push(s_values[len - 1]);
-    sampled.dedup_by(|a, b| (a - b).abs() < 1e-7); // Adjusted epsilon for f32
+    sampled.dedup_by(|a, b| (*a - *b).abs() < 1e-7); // Adjusted epsilon for f32
     
     Some(sampled)
 }
@@ -441,7 +441,7 @@ pub fn sample_singular_values_f64(s_values: &ArrayView1<f64>, count: usize) -> O
         final_sampled.push(s_values[len - 1]); // Last value
     }
     
-    final_sampled.dedup_by(|a, b| (a - b).abs() < 1e-9); // Keep unique values, f64 comparison
+    final_sampled.dedup_by(|a, b| (*a - *b).abs() < 1e-9); // Keep unique values, f64 comparison
 
     // If dedup resulted in fewer than count, it means some values were very close.
     // This is usually fine. If a strict `count` is needed even with duplicates, remove dedup.
