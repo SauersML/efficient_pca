@@ -412,21 +412,6 @@ pub fn sample_singular_values_f64(s_values: &ArrayView1<f64>, count: usize) -> O
             }
         }
     }
-    // If due to rounding, we don't have enough, fill from end or distinct values?
-    // The current logic aims for distinct points. If rounding causes fewer than `count` unique points,
-    // it might return fewer. This might be acceptable.
-    // A simpler strategy:
-    // sampled.push(s_values[0]);
-    // for i in 1..(count - 1) { sampled.push(s_values[ (i * (len -1) / (count-1)) as usize]); }
-    // if count > 1 { sampled.push(s_values[len-1]); }
-    // sampled.dedup(); // if strict unique values are needed and order matters less for duplicates.
-
-    // Re-implementing sampling logic for clarity and correctness:
-    // This initial block of code for f64 was a bit messy with multiple return paths.
-    // The logic below is cleaner.
-    // if count == 1 && len > 0 { return Some(vec![s_values[0]]); } // Covered by general logic if count=1
-    // if count >= len { return Some(s_values.to_vec()); } // Covered by general logic
-
     let len = s_values.len(); // Original length
     if count == 0 || len == 0 { return Some(Vec::new());}
     if count >= len { return Some(s_values.to_vec()); } // If asking for more or equal to available, return all
