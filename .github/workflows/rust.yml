@@ -248,6 +248,7 @@ jobs:
 
       - name: List downloaded build flags
         run: |
+          mkdir -p /home/runner/work/_temp/build-failure-flags # Added this line
           echo "Listing contents of /home/runner/work/_temp/build-failure-flags after download:"
           ls -R /home/runner/work/_temp/build-failure-flags
           echo "Looking for *.flag files specifically:"
@@ -256,7 +257,7 @@ jobs:
       - name: Check if any build failure occurred
         id: check-build-failure
         run: |
-          mkdir -p /home/runner/work/_temp/build-failure-flags
+          mkdir -p /home/runner/work/_temp/build-failure-flags # Ensure this line is present
           if [[ -n "$(find /home/runner/work/_temp/build-failure-flags -type f -name 'build_failed_*.flag' -print -quit)" ]]; then
             echo "Build failure detected."
             echo "BUILD_FAILED=true" >> $GITHUB_OUTPUT
