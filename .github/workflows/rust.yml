@@ -215,9 +215,15 @@ jobs:
       - name: Generate failure report
         if: steps.build_step.outcome == 'failure'
         run: |
+          echo ">>> Generate failure report step triggered for ${{ matrix.backend }}."
+          set -e
           cargo install getdoc --locked
           getdoc --features ${{ matrix.feature }}
+          echo "DEBUG: Checking for report.md after getdoc:"
+          ls -al report.md || echo "report.md not found"
           mv report.md failure-report-${{ matrix.backend }}.md
+          echo "DEBUG: Checking for failure-report-${{ matrix.backend }}.md after mv:"
+          ls -al failure-report-${{ matrix.backend }}.md || echo "failure-report-${{ matrix.backend }}.md not found"
 
       - name: Upload failure report
         if: steps.build_step.outcome == 'failure'
@@ -239,6 +245,13 @@ jobs:
           path: /home/runner/work/_temp/build-failure-flags
           # merge-multiple is true by default for patterns
         continue-on-error: true # Important: don't fail if no flags are found
+
+      - name: List downloaded build flags
+        run: |
+          echo "Listing contents of /home/runner/work/_temp/build-failure-flags after download:"
+          ls -R /home/runner/work/_temp/build-failure-flags
+          echo "Looking for *.flag files specifically:"
+          find /home/runner/work/_temp/build-failure-flags -type f -name '*.flag' -print || echo "No .flag files found by find"
 
       - name: Check if any build failure occurred
         id: check-build-failure
