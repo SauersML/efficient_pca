@@ -240,6 +240,7 @@ jobs:
       - name: Check if any build failure occurred
         id: check-build-failure
         run: |
+          mkdir -p ${{ runner.temp }}/build-failure-flags
           if [[ -n "$(find ${{ runner.temp }}/build-failure-flags -type f -name 'build_failed_*.flag' -print -quit)" ]]; then
             echo "Build failure detected."
             echo "BUILD_FAILED=true" >> $GITHUB_OUTPUT
