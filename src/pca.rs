@@ -867,7 +867,7 @@ impl PCA {
             .map_err(|e| format!("PCA::save_model: Failed to create file at {:?}: {}", path.as_ref(), e))?;
         let mut writer = BufWriter::new(file); 
         
-        bincode::serialize_into(&mut writer, self)
+        bincode::serde::encode_into_std_write(self, &mut writer, bincode::config::standard())
             .map_err(|e| format!("PCA::save_model: Failed to serialize PCA model: {}", e))?;
         Ok(())
     }
@@ -885,7 +885,7 @@ impl PCA {
             .map_err(|e| format!("PCA::load_model: Failed to open file at {:?}: {}", path.as_ref(), e))?;
         let mut reader = BufReader::new(file); 
         
-        let pca_model: PCA = bincode::deserialize_from(&mut reader)
+        let pca_model: PCA = bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
             .map_err(|e| format!("PCA::load_model: Failed to deserialize PCA model: {}", e))?;
 
         let rotation = pca_model.rotation.as_ref().ok_or("PCA::load_model: Loaded PCA model is missing rotation matrix.")?;
