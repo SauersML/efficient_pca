@@ -51,8 +51,20 @@ pub type PcaOutputWithDiagnostics = (EigenSNPCoreOutput, ());
 #[cfg(feature = "enable-eigensnp-diagnostics")]
 pub type PcaConditionally<T> = T;
 #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-#[allow(unused_type_parameters)]
-pub type PcaConditionally<T> = ();
+pub type PcaConditionally<T> = std::marker::PhantomData<T>;
+
+// --- Conditional Type for Local Basis Learning Output ---
+
+/// Defines the output structure for local basis learning, conditionally including diagnostics.
+/// This is used as the per-block result type in `learn_all_ld_block_local_bases`.
+#[cfg(feature = "enable-eigensnp-diagnostics")]
+pub type LocalBasisWithDiagnostics = (
+    PerBlockLocalSnpBasis,
+    crate::diagnostics::PerBlockLocalBasisDiagnostics,
+);
+
+#[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+pub type LocalBasisWithDiagnostics = (PerBlockLocalSnpBasis, ());
 
 
 // Helper trait for f64 conversion from Duration, handling potential errors.
@@ -839,7 +851,7 @@ impl EigenSNPCoreAlgorithm {
         subset_sample_ids: &[QcSampleId],
         #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
-    ) -> Result<Vec<(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>)>, ThreadSafeStdError> {
+    ) -> Result<Vec<LocalBasisWithDiagnostics>, ThreadSafeStdError> {
         info!(
             "Learning local eigenSNP bases for {} LD blocks using N_subset = {} samples.",
             ld_block_specs.len(),
@@ -853,7 +865,7 @@ impl EigenSNPCoreAlgorithm {
             }
         }
 
-        let local_bases_results: Vec<Result<(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>), ThreadSafeStdError>> = ld_block_specs
+        let local_bases_results: Vec<Result<LocalBasisWithDiagnostics, ThreadSafeStdError>> = ld_block_specs
             .par_iter()
             .enumerate()
             .map(|(block_idx_val, block_spec)| {
@@ -1112,7 +1124,7 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
-        all_local_bases: &[(PerBlockLocalSnpBasis, PcaConditionally<crate::diagnostics::PerBlockLocalBasisDiagnostics>)], 
+        all_local_bases: &[LocalBasisWithDiagnostics], 
         num_total_qc_samples: usize,
         #[cfg(feature = "enable-eigensnp-diagnostics")] full_diagnostics_collector: Option<&mut crate::diagnostics::FullPcaRunDetailedDiagnostics>,
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _full_diagnostics_collector: Option<()>,
