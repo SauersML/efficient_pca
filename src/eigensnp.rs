@@ -1047,7 +1047,6 @@ impl EigenSNPCoreAlgorithm {
             .collect();
         
         // Separate results and diagnostics
-        let mut all_local_bases_collection = Vec::with_capacity(ld_block_specs.len());
         
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
@@ -1058,65 +1057,26 @@ impl EigenSNPCoreAlgorithm {
             }
         }
 
+        let mut final_results_with_conditional_diagnostics = Vec::with_capacity(local_bases_results.len());
         for result_item_tuple in local_bases_results {
-            // The type of result_item_tuple is now Result<(PerBlockLocalSnpBasis, PcaConditionally<PBD>), TSE>
-            let (basis_result, diag_entry_cond) = result_item_tuple?; 
-            all_local_bases_collection.push(basis_result);
+            let (basis_result, _diag_entry_cond) = result_item_tuple?; // _diag_entry_cond is ActualDiagType
 
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             {
-                // diag_entry_cond is PerBlockLocalBasisDiagnostics here
-                if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
-                    if self.config.collect_diagnostics {
-                        dc_vec_mut.push(diag_entry_cond); // diag_entry_cond is PBD
+                // _diag_entry_cond is PerBlockLocalBasisDiagnostics here
+                if self.config.collect_diagnostics { // This is the flag from algorithm config
+                    if let Some(dc_vec_mut) = diagnostics_collector.as_mut() { // This is the mutable vec passed to function
+                        dc_vec_mut.push(_diag_entry_cond.clone()); 
                     }
                 }
             }
-            // When not enabled, diag_entry_cond is (), and diagnostics_collector is None or not available.
+            // If diagnostics are not enabled, _diag_entry_cond is (), which is Copy.
+            // If diagnostics are enabled, _diag_entry_cond is PerBlockLocalBasisDiagnostics.
+            // If collected, it was cloned above. If not collected, it's moved here.
+            final_results_with_conditional_diagnostics.push((basis_result, _diag_entry_cond));
         }
 
         info!("Successfully learned local eigenSNP bases for all blocks.");
-        // The function signature now expects Vec<(PerBlockLocalSnpBasis, PcaConditionally<PBD>)>
-        // However, the caller `compute_pca` expects Vec<PerBlockLocalSnpBasis> and populates its own diagnostics.
-        // So, we should return only `all_local_bases_collection` (Vec<PerBlockLocalSnpBasis>)
-        // and the per-block diagnostics are already pushed to the collector passed as argument.
-        // Let's adjust the return type of this function back to Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError>
-        // and ensure the `diagnostics_collector` argument is correctly populated.
-        // The `local_bases_results` internal variable needs to produce the conditional tuple,
-        // but only the basis part is added to `all_local_bases_collection`.
-        // The diagnostic part is pushed to the `diagnostics_collector` argument.
-
-        // The above loop already does this:
-        // all_local_bases_collection.push(basis_result);
-        // and when diagnostics are enabled: dc_vec_mut.push(diag_entry_cond);
-        // So the Ok value should just be all_local_bases_collection.
-        // This means the function signature should revert to Result<Vec<PerBlockLocalSnpBasis>, TSE>
-        // I will make this adjustment in the next step if this one applies, or combine it.
-
-        // For now, assuming the return type change to Vec<(Basis, PcaConditionally<Diag>)> was intended to be propagated.
-        // If not, the caller `compute_pca` would need to be changed to expect this, or this function's
-        // processing loop needs to be modified to return only Vec<PerBlockLocalSnpBasis> while populating
-        // the `diagnostics_collector` argument.
-
-        // Sticking to the interpretation that the return type of learn_all_ld_block_local_bases
-        // itself should be Vec<(PerBlockLocalSnpBasis, PcaConditionally<_>)>
-        // This means `all_local_bases_collection` should store these tuples.
-        
-        // Re-evaluating: The task was to modify `learn_all_ld_block_local_bases` return type.
-        // The current code collects `(PerBlockLocalSnpBasis, PcaConditionally<PBD>)` into `local_bases_results`.
-        // Then it iterates and separates them. `all_local_bases_collection` gets `PerBlockLocalSnpBasis`.
-        // `diag_entry_cond` (which is `PcaConditionally<PBD>`) is pushed to `diagnostics_collector` (if enabled).
-        // So, the function should still return `Result<Vec<PerBlockLocalSnpBasis>, ThreadSafeStdError>`.
-        // The internal `local_bases_results` correctly handles the conditional diagnostic part.
-        // The error `E0412` was about `PerBlockLocalBasisDiagnostics` not being in scope for `local_bases_results`
-        // when the feature is off. This is now solved by `PcaConditionally`.
-
-        // Let's adjust the final collection part to build the Vec of tuples as per the new return type.
-        let mut final_results_with_conditional_diagnostics = Vec::with_capacity(ld_block_specs.len());
-        for result_item_tuple in local_bases_results {
-            let (basis_result, diag_entry_cond) = result_item_tuple?;
-            final_results_with_conditional_diagnostics.push((basis_result, diag_entry_cond));
-        }
         Ok(final_results_with_conditional_diagnostics)
     }
 
