@@ -1976,7 +1976,7 @@ impl EigenSNPCoreAlgorithm {
         // collector_for_push_fn for diagnostic path is removed.
         // Non-diagnostic collector_for_push_fn remains as is.
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        let collector_for_push_fn = _diagnostics_collector_vec;
+        let collector_for_push_fn = _diagnostics_collector_vec; 
 
         // Call the push_diag_fn closure, passing the appropriate collector.
         // This call needs to be updated per point 4.
@@ -2247,7 +2247,7 @@ impl EigenSNPCoreAlgorithm {
                         push_diag_fn(actual_collector, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view()));
                     }
                     #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-                    push_diag_fn(collector_for_push_fn, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view()));
+                    push_diag_fn(collector_for_push_fn, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); 
                     u_a_approx_opt = Some(u_a_final);
                 } else {
                      u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
@@ -2268,7 +2268,7 @@ impl EigenSNPCoreAlgorithm {
                         push_diag_fn(actual_collector, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view()));
                     }
                     #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-                    push_diag_fn(collector_for_push_fn, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view()));
+                    push_diag_fn(collector_for_push_fn, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); 
                     v_a_approx_opt = Some(v_a_final);
                 } else {
                     v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
