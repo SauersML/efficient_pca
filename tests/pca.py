@@ -222,7 +222,9 @@ def output_array_human_readable_original(arr, name="Array"):
     print(f"--- {name} (shape={arr.shape}) ---")
     if arr.ndim == 1: print("[" + ", ".join([f"{v: .6f}" for v in arr]) + "]")
     else:
-        for i, row in enumerate(arr): print(f"Row {i}: {", ".join([f'{v: .6f}' for v in row])}")
+        for i, row in enumerate(arr):
+            formatted_values = ", ".join([f"{v:.6f}" for v in row])
+            print(f"Row {i}: {formatted_values}")
     print("-" * 40)
 
 def run_random_test_suite_original(num_tests=5):
