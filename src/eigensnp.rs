@@ -1038,9 +1038,11 @@ impl EigenSNPCoreAlgorithm {
             .collect();
         
         // Separate results and diagnostics
-        let mut collected_diagnostics_entries = Vec::new(); // Temp vec for diagnostics if collected
-
         let mut final_results_tuples = Vec::with_capacity(local_bases_results.len());
+
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        let mut collected_diagnostics_entries: Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics> = Vec::new();
+
         for result_item_tuple in local_bases_results {
             // Each item in local_bases_results is Result<(PerBlockLocalSnpBasis, ActualDiagType), ThreadSafeStdError>>
             // where ActualDiagType is PerBlockLocalBasisDiagnostics or ()
@@ -1049,7 +1051,10 @@ impl EigenSNPCoreAlgorithm {
             #[cfg(feature = "enable-eigensnp-diagnostics")]
             {
                 // Here, diag_entry_for_this_block is PerBlockLocalBasisDiagnostics
-                if diagnostics_collector.is_some() && self.config.collect_diagnostics {
+                // Ensure self.config.collect_diagnostics is the primary guard.
+                // The diagnostics_collector.is_some() check is also good to ensure it's not None
+                // if self.config.collect_diagnostics was true but initialization somehow failed (though less likely).
+                if self.config.collect_diagnostics && diagnostics_collector.is_some() {
                     collected_diagnostics_entries.push(diag_entry_for_this_block.clone()); // Clone and store
                 }
             }
@@ -1063,10 +1068,11 @@ impl EigenSNPCoreAlgorithm {
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
-            if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
-                 if self.config.collect_diagnostics {
+            // Ensure this whole block is guarded by self.config.collect_diagnostics as well
+            if self.config.collect_diagnostics {
+                if let Some(dc_vec_mut) = diagnostics_collector.as_mut() {
                     dc_vec_mut.extend(collected_diagnostics_entries);
-                 }
+                }
             }
         }
 
@@ -2011,13 +2017,13 @@ impl EigenSNPCoreAlgorithm {
         let random_projection_matrix_omega = Array2::from_shape_fn((num_samples_n, sketch_dimension_l), |_| {
             normal_dist.sample(&mut rng) as f32
         });
-        push_diag_fn(diagnostics_collector_vec.as_mut(), "Omega".to_string(), None, Some((num_samples_n, sketch_dimension_l)), Some((num_samples_n, sketch_dimension_l)), Some(&random_projection_matrix_omega.view()), None);
+        push_diag_fn(collector_for_push_fn, "Omega".to_string(), None, Some((num_samples_n, sketch_dimension_l)), Some((num_samples_n, sketch_dimension_l)), Some(&random_projection_matrix_omega.view()), None);
         
         let backend = LinAlgBackendProvider::<f32>::new();
         
         // Y = A * Omega (M x N) * (N x L) -> (M x L)
         let sketch_y = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &random_projection_matrix_omega.view())?;
-        push_diag_fn(diagnostics_collector_vec.as_mut(), "SketchY_PreQR".to_string(), None, Some((num_features_m, num_samples_n)), Some(sketch_y.dim()), Some(&sketch_y.view()), None);
+        push_diag_fn(collector_for_push_fn, "SketchY_PreQR".to_string(), None, Some((num_features_m, num_samples_n)), Some(sketch_y.dim()), Some(&sketch_y.view()), None);
 
 
         if sketch_y.ncols() == 0 {
@@ -2031,7 +2037,7 @@ impl EigenSNPCoreAlgorithm {
         // Q_basis = orth(Y) (M x L_actual_y)
         let mut q_basis_m_by_l_actual = backend.qr_q_factor(&sketch_y)
             .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch Y failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?;
-        push_diag_fn(diagnostics_collector_vec.as_mut(), "Q0_PostQR".to_string(), Some(0), Some(sketch_y.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
+        push_diag_fn(collector_for_push_fn, "Q0_PostQR".to_string(), Some(0), Some(sketch_y.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         
         // Power iterations
         for iter_idx in 0..num_power_iterations {
@@ -2043,7 +2049,7 @@ impl EigenSNPCoreAlgorithm {
             
             // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
             let q_tilde_candidate = Self::dot_product_at_b_mixed_precision(matrix_features_by_samples, &q_basis_m_by_l_actual.view())?;
-            push_diag_fn(diagnostics_collector_vec.as_mut(), format!("PowerIter{}_Ytilde_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_m_by_l_actual.dim()), Some(q_tilde_candidate.dim()), Some(&q_tilde_candidate.view()), None);
+            push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Ytilde_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_m_by_l_actual.dim()), Some(q_tilde_candidate.dim()), Some(&q_tilde_candidate.view()), None);
 
             if q_tilde_candidate.ncols() == 0 { 
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0)); 
@@ -2053,7 +2059,7 @@ impl EigenSNPCoreAlgorithm {
             // Q_tilde = orth(Q_tilde_candidate) (N x L_actual_tilde)
             let q_tilde_n_by_l_actual = backend.qr_q_factor(&q_tilde_candidate)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_tilde in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
-            push_diag_fn(diagnostics_collector_vec.as_mut(), format!("PowerIter{}_Qtilde_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_candidate.dim()), Some(q_tilde_n_by_l_actual.dim()), None, Some(&q_tilde_n_by_l_actual.view()));
+            push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Qtilde_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_candidate.dim()), Some(q_tilde_n_by_l_actual.dim()), None, Some(&q_tilde_n_by_l_actual.view()));
 
             if q_tilde_n_by_l_actual.ncols() == 0 {
                 q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
@@ -2063,7 +2069,7 @@ impl EigenSNPCoreAlgorithm {
 
             // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
             let q_basis_candidate_next = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &q_tilde_n_by_l_actual.view())?;
-            push_diag_fn(diagnostics_collector_vec.as_mut(), format!("PowerIter{}_Ynext_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_n_by_l_actual.dim()), Some(q_basis_candidate_next.dim()), Some(&q_basis_candidate_next.view()), None);
+            push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Ynext_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_n_by_l_actual.dim()), Some(q_basis_candidate_next.dim()), Some(&q_basis_candidate_next.view()), None);
 
             if q_basis_candidate_next.ncols() == 0 {
                  q_basis_m_by_l_actual = Array2::zeros((q_basis_m_by_l_actual.nrows(),0));
@@ -2073,7 +2079,7 @@ impl EigenSNPCoreAlgorithm {
             // Q_basis = orth(Q_basis_candidate_next) (M x L_actual_final_iter)
             q_basis_m_by_l_actual = backend.qr_q_factor(&q_basis_candidate_next)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_basis in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
-            push_diag_fn(diagnostics_collector_vec.as_mut(), format!("PowerIter{}_Qnext_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_candidate_next.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
+            push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Qnext_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_candidate_next.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         }
         
         if q_basis_m_by_l_actual.ncols() == 0 {
@@ -2086,7 +2092,7 @@ impl EigenSNPCoreAlgorithm {
         
         // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
         let projected_b_l_actual_by_n = Self::dot_product_at_b_mixed_precision(&q_basis_m_by_l_actual.view(), matrix_features_by_samples)?;
-        push_diag_fn(diagnostics_collector_vec.as_mut(), "ProjectedB_PreSVD".to_string(), None, Some(q_basis_m_by_l_actual.dim()), Some(projected_b_l_actual_by_n.dim()), Some(&projected_b_l_actual_by_n.view()), None);
+        push_diag_fn(collector_for_push_fn, "ProjectedB_PreSVD".to_string(), None, Some(q_basis_m_by_l_actual.dim()), Some(projected_b_l_actual_by_n.dim()), Some(&projected_b_l_actual_by_n.view()), None);
         
         // SVD of B: B = U_B * S_B * V_B.T
         // U_B is L_actual x rank_b
@@ -2192,7 +2198,7 @@ impl EigenSNPCoreAlgorithm {
                     // U_A = Q_basis * U_B (M x L_actual) * (L_actual x rank_b) -> M x rank_b
                     let u_a_approx_m_by_rank_b = q_basis_m_by_l_actual.dot(&u_b_l_actual_by_rank_b);
                     let u_a_final = u_a_approx_m_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
-                    push_diag_fn(diagnostics_collector_vec.as_mut(), "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); // Ortho error for U_A
+                    push_diag_fn(collector_for_push_fn, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); // Ortho error for U_A
                     u_a_approx_opt = Some(u_a_final);
                 } else {
                      u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
@@ -2208,7 +2214,7 @@ impl EigenSNPCoreAlgorithm {
                     // V_A = V_B. V_B is (N x rank_b). We have V_B.T (rank_b x N)
                     let v_a_approx_n_by_rank_b = v_b_t_rank_b_by_n.t().into_owned();
                     let v_a_final = v_a_approx_n_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
-                    push_diag_fn(diagnostics_collector_vec.as_mut(), "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); // Ortho error for V_A
+                    push_diag_fn(collector_for_push_fn, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); // Ortho error for V_A
                     v_a_approx_opt = Some(v_a_final);
                 } else {
                     v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
