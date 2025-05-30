@@ -3,6 +3,7 @@
 
 use ndarray::{Array2, ArrayView1, ArrayView2};
 use crate::linalg_backends::LinAlgBackendProvider; // SVDOutput might not be needed directly
+use crate::linalg_backends::BackendSVD; // Added to bring the trait into scope
 use serde::{Serialize, Deserialize};
 use std::f64::INFINITY;
 // use std::fmt; // Not used currently
@@ -342,7 +343,7 @@ pub fn sample_singular_values(s_values: &ArrayView1<f32>, count: usize) -> Optio
     let step = (len - 2) as f64 / (count - 1) as f64; // step between selected original indices, including ends
 
     for i in 1..(count - 1) {
-        let original_idx = (i as f64 * step).round() as usize;
+        let _original_idx = (i as f64 * step).round() as usize;
         // Ensure index is within bounds [1, len-2] for intermediate values
         // This logic is simplified: take evenly spaced points across the whole array, then pick.
         // A better approach:
