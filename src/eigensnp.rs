@@ -2136,7 +2136,7 @@ impl EigenSNPCoreAlgorithm {
         {
             // collector_for_push_fn is Option<&mut Vec<RsvdStepDetail>>
             // To get &mut Vec<RsvdStepDetail> from it:
-            if let Some(dc_vec) = collector_for_push_fn {
+            if let Some(dc_vec) = collector_for_push_fn { 
                 // dc_vec is now &mut Vec<RsvdStepDetail>
                 let mut detail_svd = RsvdStepDetail::default();
                 detail_svd.step_name = "SVD_of_B".to_string();
