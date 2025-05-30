@@ -1938,8 +1938,8 @@ impl EigenSNPCoreAlgorithm {
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
         request_v_components: bool,  // True if V (right singular vectors) is needed
-        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>,
-        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>, 
+        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, // Removed mut, reverted name
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>, // Reverted name
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
         
         #[cfg(feature = "enable-eigensnp-diagnostics")]
@@ -1974,9 +1974,9 @@ impl EigenSNPCoreAlgorithm {
         let num_samples_n = matrix_features_by_samples.ncols();
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
-        let collector_for_push_fn = diag_collector_input; // Removed mut
+        let collector_for_push_fn = diagnostics_collector_vec; // Use corrected parameter name
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        let collector_for_push_fn = _diag_collector_input; // Changed to direct assignment, removed mut
+        let collector_for_push_fn = _diagnostics_collector_vec; // Use corrected parameter name
 
         // Call the push_diag_fn closure, passing the appropriate collector.
         push_diag_fn(collector_for_push_fn, "Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
