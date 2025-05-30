@@ -68,9 +68,11 @@ pub type LocalBasisWithDiagnostics = (PerBlockLocalSnpBasis, ());
 
 
 // Helper trait for f64 conversion from Duration, handling potential errors.
+#[cfg(feature = "enable-eigensnp-diagnostics")]
 trait DurationToF64Safe {
     fn as_secs_f64_safe(&self) -> Option<f64>;
 }
+#[cfg(feature = "enable-eigensnp-diagnostics")]
 impl DurationToF64Safe for std::time::Duration {
     fn as_secs_f64_safe(&self) -> Option<f64> {
         let secs = self.as_secs();
