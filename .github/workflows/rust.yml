@@ -52,10 +52,10 @@ jobs:
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/rust.yml') }}
+          path: ~/.local/lib/python${{ steps.setup-python.outputs.python-version }}/site-packages
+          key: ${{ runner.os }}-pip-installed-packages-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/rust.yml') }}
           restore-keys: |
-            ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-
+            ${{ runner.os }}-pip-installed-packages-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Install Python dependencies
         run: |
@@ -82,15 +82,17 @@ jobs:
           fi
           sudo apt-get install -y gfortran
 
-      - name: Cache MKL installation directory
+      - name: Cache MKL apt packages
         uses: actions/cache@v4
-        id: cache-mkl-installation # Important: This ID is used in the next step
+        id: cache-mkl-apt
         if: matrix.backend == 'mkl'
         with:
-          path: /opt/intel/oneapi
-          key: ${{ runner.os }}-mkl-installation-v1-${{ matrix.backend }}
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: ${{ runner.os }}-apt-mkl-key-v2-${{ hashFiles('.github/workflows/rust.yml') }}
           restore-keys: |
-            ${{ runner.os }}-mkl-installation-v1-${{ matrix.backend }}
+            ${{ runner.os }}-apt-mkl-key-v2-
 
       - name: Setup Intel MKL Repository
         if: matrix.backend == 'mkl'
@@ -103,7 +105,7 @@ jobs:
       - name: Install Intel MKL
         if: matrix.backend == 'mkl'
         run: |
-          if [[ "${{ steps.cache-mkl-installation.outputs.cache-hit }}" != 'true' ]]; then
+          if [[ "${{ steps.cache-mkl-apt.outputs.cache-hit }}" != 'true' ]]; then
             echo "MKL installation cache MISS. Installing MKL via apt..."
             # apt-get update is needed here because "Setup Intel MKL Repository" (which runs before this)
             # adds a new repository, and apt needs to be aware of its contents.
@@ -133,10 +135,11 @@ jobs:
         id: cache-cargo-target
         with:
           path: target
-          key: ${{ runner.os }}-cargo-target-${{ matrix.backend }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-${{ hashFiles('src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-target-deps-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-target-${{ matrix.backend }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-target-${{ matrix.backend }}-
+            ${{ runner.os }}-cargo-target-deps-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+            ${{ runner.os }}-cargo-target-deps-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-target-deps-${{ matrix.backend }}-
 
       - name: Build
         id: build_step
