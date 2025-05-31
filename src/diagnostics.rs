@@ -39,6 +39,11 @@ pub struct PerBlockLocalBasisDiagnostics {
     pub block_id: String,                       // Identifier for the LD block or segment
     pub rsvd_stages: Vec<RsvdStepDetail>,       // Diagnostics for each rSVD stage applied
     
+    // --- Metrics for input X_s_p (genotype block for subset samples) to local rSVD ---
+    pub input_x_s_p_dims: Option<(usize, usize)>,
+    pub input_x_s_p_fro_norm: Option<f64>,
+    pub input_x_s_p_condition_number: Option<f64>,
+
     // --- Correlation with f64 Ground Truth (if available) ---
     // Absolute Pearson correlation coefficients for each column vector
     pub u_correlation_vs_f64_truth: Option<Vec<f64>>, 
