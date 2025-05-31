@@ -5,6 +5,9 @@ pub mod pca;
 pub mod eigensnp;
 pub mod diagnostics;
 
+#[cfg(feature = "enable-eigensnp-diagnostics")]
+pub mod eigensnp_tests;
+
 
 pub use pca::PCA;
 
