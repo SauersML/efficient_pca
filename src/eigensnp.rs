@@ -1938,7 +1938,7 @@ impl EigenSNPCoreAlgorithm {
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
         request_v_components: bool,  // True if V (right singular vectors) is needed
-        #[cfg(feature = "enable-eigensnp-diagnostics")] diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, // Removed mut, reverted name
+        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, // Added mut back
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>, // Reverted name
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
         
