@@ -1943,10 +1943,10 @@ impl EigenSNPCoreAlgorithm {
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
         
         #[cfg(feature = "enable-eigensnp-diagnostics")]
-        let push_diag_fn = |dc_vec_opt: Option<&mut Vec<RsvdStepDetail>>, step_name: String, iteration: Option<usize>, input_dims: Option<(usize,usize)>, output_dims: Option<(usize,usize)>, matrix_to_measure: Option<&ArrayView2<f32>>, q_factor_to_measure: Option<&ArrayView2<f32>>| {
-            if let Some(dc_vec) = dc_vec_opt { // dc_vec is &mut Vec<RsvdStepDetail>
-                let mut detail = RsvdStepDetail::default();
-                detail.step_name = step_name;
+        let push_diag_fn = |dc_vec: &mut Vec<RsvdStepDetail>, step_name: String, iteration: Option<usize>, input_dims: Option<(usize,usize)>, output_dims: Option<(usize,usize)>, matrix_to_measure: Option<&ArrayView2<f32>>, q_factor_to_measure: Option<&ArrayView2<f32>>| {
+            // dc_vec is now &mut Vec<RsvdStepDetail> directly
+            let mut detail = RsvdStepDetail::default();
+            detail.step_name = step_name;
                 if let Some(iter) = iteration { detail.notes = format!("Iteration: {}", iter); }
                 detail.input_matrix_dims = input_dims;
                 detail.output_matrix_dims = output_dims;
@@ -1963,22 +1963,28 @@ impl EigenSNPCoreAlgorithm {
                     }
                 }
                 dc_vec.push(detail);
-            }
+            // Removed if let Some(dc_vec) = dc_vec_opt wrapper
         };
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        let push_diag_fn = |_: Option<()>, _: String, _: Option<usize>, _: Option<(usize,usize)>, _: Option<(usize,usize)>, _: Option<&ArrayView2<f32>>, _: Option<&ArrayView2<f32>>| { // Changed Option<&mut ()> to Option<()>
+        let push_diag_fn = |_: Option<()>, _: String, _: Option<usize>, _: Option<(usize,usize)>, _: Option<(usize,usize)>, _: Option<&ArrayView2<f32>>, _: Option<&ArrayView2<f32>>| { // This signature is correct for non-diagnostic
             // No-op for non-diagnostics build
         };
 
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
 
-        #[cfg(feature = "enable-eigensnp-diagnostics")]
-        let collector_for_push_fn = diagnostics_collector_vec; // Use corrected parameter name
+        // collector_for_push_fn for diagnostic path is removed.
+        // Non-diagnostic collector_for_push_fn remains as is.
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-        let collector_for_push_fn = _diagnostics_collector_vec; // Use corrected parameter name
+        let collector_for_push_fn = _diagnostics_collector_vec; 
 
         // Call the push_diag_fn closure, passing the appropriate collector.
+        // This call needs to be updated per point 4.
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+            push_diag_fn(actual_collector, "Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         push_diag_fn(collector_for_push_fn, "Input_A".to_string(), None, None, Some((num_features_m, num_samples_n)), Some(&matrix_features_by_samples.view()), None);
 
         if num_features_m == 0 || num_samples_n == 0 || num_components_target_k == 0 {
@@ -2017,12 +2023,22 @@ impl EigenSNPCoreAlgorithm {
         let random_projection_matrix_omega = Array2::from_shape_fn((num_samples_n, sketch_dimension_l), |_| {
             normal_dist.sample(&mut rng) as f32
         });
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+            push_diag_fn(actual_collector, "Omega".to_string(), None, Some((num_samples_n, sketch_dimension_l)), Some((num_samples_n, sketch_dimension_l)), Some(&random_projection_matrix_omega.view()), None);
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         push_diag_fn(collector_for_push_fn, "Omega".to_string(), None, Some((num_samples_n, sketch_dimension_l)), Some((num_samples_n, sketch_dimension_l)), Some(&random_projection_matrix_omega.view()), None);
         
         let backend = LinAlgBackendProvider::<f32>::new();
         
         // Y = A * Omega (M x N) * (N x L) -> (M x L)
         let sketch_y = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &random_projection_matrix_omega.view())?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+            push_diag_fn(actual_collector, "SketchY_PreQR".to_string(), None, Some((num_features_m, num_samples_n)), Some(sketch_y.dim()), Some(&sketch_y.view()), None);
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         push_diag_fn(collector_for_push_fn, "SketchY_PreQR".to_string(), None, Some((num_features_m, num_samples_n)), Some(sketch_y.dim()), Some(&sketch_y.view()), None);
 
 
@@ -2037,6 +2053,11 @@ impl EigenSNPCoreAlgorithm {
         // Q_basis = orth(Y) (M x L_actual_y)
         let mut q_basis_m_by_l_actual = backend.qr_q_factor(&sketch_y)
             .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR decomposition of initial sketch Y failed in RSVD: {}", e_qr))) as ThreadSafeStdError)?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+            push_diag_fn(actual_collector, "Q0_PostQR".to_string(), Some(0), Some(sketch_y.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         push_diag_fn(collector_for_push_fn, "Q0_PostQR".to_string(), Some(0), Some(sketch_y.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         
         // Power iterations
@@ -2049,6 +2070,11 @@ impl EigenSNPCoreAlgorithm {
             
             // Q_tilde_candidate = A.T * Q_basis (N x M) * (M x L_actual) -> (N x L_actual)
             let q_tilde_candidate = Self::dot_product_at_b_mixed_precision(matrix_features_by_samples, &q_basis_m_by_l_actual.view())?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                push_diag_fn(actual_collector, format!("PowerIter{}_Ytilde_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_m_by_l_actual.dim()), Some(q_tilde_candidate.dim()), Some(&q_tilde_candidate.view()), None);
+            }
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
             push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Ytilde_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_m_by_l_actual.dim()), Some(q_tilde_candidate.dim()), Some(&q_tilde_candidate.view()), None);
 
             if q_tilde_candidate.ncols() == 0 { 
@@ -2059,6 +2085,11 @@ impl EigenSNPCoreAlgorithm {
             // Q_tilde = orth(Q_tilde_candidate) (N x L_actual_tilde)
             let q_tilde_n_by_l_actual = backend.qr_q_factor(&q_tilde_candidate)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_tilde in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                push_diag_fn(actual_collector, format!("PowerIter{}_Qtilde_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_candidate.dim()), Some(q_tilde_n_by_l_actual.dim()), None, Some(&q_tilde_n_by_l_actual.view()));
+            }
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
             push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Qtilde_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_candidate.dim()), Some(q_tilde_n_by_l_actual.dim()), None, Some(&q_tilde_n_by_l_actual.view()));
 
             if q_tilde_n_by_l_actual.ncols() == 0 {
@@ -2069,6 +2100,11 @@ impl EigenSNPCoreAlgorithm {
 
             // Q_basis_candidate = A * Q_tilde (M x N) * (N x L_actual_tilde) -> (M x L_actual_tilde)
             let q_basis_candidate_next = Self::dot_product_mixed_precision_f32_f64acc(matrix_features_by_samples, &q_tilde_n_by_l_actual.view())?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                push_diag_fn(actual_collector, format!("PowerIter{}_Ynext_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_n_by_l_actual.dim()), Some(q_basis_candidate_next.dim()), Some(&q_basis_candidate_next.view()), None);
+            }
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
             push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Ynext_PreQR", iter_idx+1), Some(iter_idx+1), Some(q_tilde_n_by_l_actual.dim()), Some(q_basis_candidate_next.dim()), Some(&q_basis_candidate_next.view()), None);
 
             if q_basis_candidate_next.ncols() == 0 {
@@ -2079,6 +2115,11 @@ impl EigenSNPCoreAlgorithm {
             // Q_basis = orth(Q_basis_candidate_next) (M x L_actual_final_iter)
             q_basis_m_by_l_actual = backend.qr_q_factor(&q_basis_candidate_next)
                 .map_err(|e_qr| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("QR for Q_basis in power iteration {} failed: {}", iter_idx + 1, e_qr))) as ThreadSafeStdError)?;
+            #[cfg(feature = "enable-eigensnp-diagnostics")]
+            if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                push_diag_fn(actual_collector, format!("PowerIter{}_Qnext_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_candidate_next.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
+            }
+            #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
             push_diag_fn(collector_for_push_fn, format!("PowerIter{}_Qnext_PostQR", iter_idx+1), Some(iter_idx+1), Some(q_basis_candidate_next.dim()), Some(q_basis_m_by_l_actual.dim()), None, Some(&q_basis_m_by_l_actual.view()));
         }
         
@@ -2092,6 +2133,11 @@ impl EigenSNPCoreAlgorithm {
         
         // B = Q_basis.T * A (L_actual x M) * (M x N) -> (L_actual x N)
         let projected_b_l_actual_by_n = Self::dot_product_at_b_mixed_precision(&q_basis_m_by_l_actual.view(), matrix_features_by_samples)?;
+        #[cfg(feature = "enable-eigensnp-diagnostics")]
+        if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+            push_diag_fn(actual_collector, "ProjectedB_PreSVD".to_string(), None, Some(q_basis_m_by_l_actual.dim()), Some(projected_b_l_actual_by_n.dim()), Some(&projected_b_l_actual_by_n.view()), None);
+        }
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         push_diag_fn(collector_for_push_fn, "ProjectedB_PreSVD".to_string(), None, Some(q_basis_m_by_l_actual.dim()), Some(projected_b_l_actual_by_n.dim()), Some(&projected_b_l_actual_by_n.view()), None);
         
         // SVD of B: B = U_B * S_B * V_B.T
@@ -2134,9 +2180,7 @@ impl EigenSNPCoreAlgorithm {
 
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         {
-            // collector_for_push_fn is Option<&mut Vec<RsvdStepDetail>>
-            // To get &mut Vec<RsvdStepDetail> from it:
-            if let Some(dc_vec) = collector_for_push_fn { 
+            if let Some(ref mut dc_vec) = diagnostics_collector_vec { // Changed to use diagnostics_collector_vec and ref mut
                 // dc_vec is now &mut Vec<RsvdStepDetail>
                 let mut detail_svd = RsvdStepDetail::default();
                 detail_svd.step_name = "SVD_of_B".to_string();
@@ -2198,7 +2242,12 @@ impl EigenSNPCoreAlgorithm {
                     // U_A = Q_basis * U_B (M x L_actual) * (L_actual x rank_b) -> M x rank_b
                     let u_a_approx_m_by_rank_b = q_basis_m_by_l_actual.dot(&u_b_l_actual_by_rank_b);
                     let u_a_final = u_a_approx_m_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
-                    push_diag_fn(collector_for_push_fn, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); // Ortho error for U_A
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                        push_diag_fn(actual_collector, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view()));
+                    }
+                    #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                    push_diag_fn(collector_for_push_fn, "Final_U_A".to_string(), None, Some(u_a_approx_m_by_rank_b.dim()), Some(u_a_final.dim()), Some(&u_a_final.view()), Some(&u_a_final.view())); 
                     u_a_approx_opt = Some(u_a_final);
                 } else {
                      u_a_approx_opt = Some(Array2::zeros((num_features_m, 0)));   
@@ -2214,7 +2263,12 @@ impl EigenSNPCoreAlgorithm {
                     // V_A = V_B. V_B is (N x rank_b). We have V_B.T (rank_b x N)
                     let v_a_approx_n_by_rank_b = v_b_t_rank_b_by_n.t().into_owned();
                     let v_a_final = v_a_approx_n_by_rank_b.slice_axis(Axis(1), ndarray::Slice::from(0..num_k_to_return)).to_owned();
-                    push_diag_fn(collector_for_push_fn, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); // Ortho error for V_A
+                    #[cfg(feature = "enable-eigensnp-diagnostics")]
+                    if let Some(ref mut actual_collector) = diagnostics_collector_vec {
+                        push_diag_fn(actual_collector, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view()));
+                    }
+                    #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                    push_diag_fn(collector_for_push_fn, "Final_V_A".to_string(), None, Some(v_a_approx_n_by_rank_b.dim()), Some(v_a_final.dim()), Some(&v_a_final.view()), Some(&v_a_final.view())); 
                     v_a_approx_opt = Some(v_a_final);
                 } else {
                     v_a_approx_opt = Some(Array2::zeros((num_samples_n, 0)));
