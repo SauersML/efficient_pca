@@ -1,5 +1,9 @@
 name: Rust CI
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
@@ -248,6 +252,7 @@ jobs:
 
       - name: List downloaded build flags
         run: |
+          mkdir -p /home/runner/work/_temp/build-failure-flags
           echo "Listing contents of /home/runner/work/_temp/build-failure-flags after download:"
           ls -R /home/runner/work/_temp/build-failure-flags
           echo "Looking for *.flag files specifically:"
