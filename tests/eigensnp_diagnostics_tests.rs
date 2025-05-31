@@ -4,13 +4,13 @@ use efficient_pca::eigensnp::{
     EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput,
     LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError,
 };
-use efficient_pca::diagnostics::{FullPcaRunDetailedDiagnostics, RsvdStepDetail, PerBlockLocalBasisDiagnostics}; // Added RsvdStepDetail etc.
+use efficient_pca::diagnostics::{FullPcaRunDetailedDiagnostics}; // Removed RsvdStepDetail, PerBlockLocalBasisDiagnostics
 
-use ndarray::{Array1, Array2, Axis}; // Axis might not be needed directly in tests
+use ndarray::{Array2}; // Removed Array1, Axis
 use rand::Rng; // For genotype data generation
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use std::fs::{File, self}; // Added fs for reading file
+use std::fs::{File}; // Removed self
 use std::io::{Write, BufReader}; // Added BufReader
 use std::path::Path;
 use serde_json; // For parsing JSON
@@ -146,7 +146,8 @@ fn run_diagnostic_test_with_params(
     };
 
     let algorithm = EigenSNPCoreAlgorithm::new(config.clone());
-    let pca_result_tuple = algorithm.compute_pca(&mock_data_accessor, &ld_block_specs)?;
+    let pca_result_tuple = algorithm.compute_pca(&mock_data_accessor, &ld_block_specs)
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
     
     let _pca_output: EigenSNPCoreOutput = pca_result_tuple.0; 
     let detailed_diagnostics: Option<FullPcaRunDetailedDiagnostics> = pca_result_tuple.1;
