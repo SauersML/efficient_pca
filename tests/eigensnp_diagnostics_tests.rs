@@ -21,7 +21,7 @@ use serde_json; // For parsing JSON
 // If `efficient_pca::eigensnp_tests` is not a public module, or these items are not public,
 // this will fail compilation and require adjustment in a later step.
 #[cfg(test)]
-use efficient_pca::eigensnp_tests::{TestResultRecord, TEST_RESULTS};
+use efficient_pca::eigensnp_tests::{TestResultRecord};
 
 
 // --- Mock Genotype Data Accessor ---
@@ -106,7 +106,7 @@ fn run_diagnostic_test_with_params(
                         user_defined_block_tag: format!("block_{}", i),
                         pca_snp_ids_in_block: (current_snp_idx..num_snps).map(PcaSnpId).collect(),
                     });
-                    current_snp_idx = num_snps; // all assigned
+                    #[allow(unused_assignments)] { current_snp_idx = num_snps; } // all assigned
                     break;
                  }
                  // else skip empty block if not the last one.
@@ -218,11 +218,10 @@ fn diag_li0_gi2() {
                 .expect("Failed to parse diagnostics JSON.");
 
             // Extract a key metric, e.g., condition number from a specific rSVD step
-            let mut key_metric_info = "Key metric not found".to_string();
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
                 if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
@@ -290,11 +289,10 @@ fn diag_li2_gi2() {
             let diagnostics: FullPcaRunDetailedDiagnostics = serde_json::from_reader(reader)
                 .expect("Failed to parse diagnostics JSON.");
 
-            let mut key_metric_info = "Key metric (ProjectedB_PreSVD CondNum) not found".to_string();
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
                 if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
@@ -354,11 +352,10 @@ fn diag_li4_gi2() {
             let diagnostics: FullPcaRunDetailedDiagnostics = serde_json::from_reader(reader)
                 .expect("Failed to parse diagnostics JSON.");
 
-            let mut key_metric_info = "Key metric (ProjectedB_PreSVD CondNum) not found".to_string();
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
                 if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
