@@ -1274,11 +1274,9 @@ impl EigenSNPCoreAlgorithm {
             let a_c_owned_for_svd = a_c.to_owned(); // For SVD
             
             debug!("Direct SVD Path: A_c (condensed matrix) dimensions: {:?}", a_c_owned_for_svd.dim());
-            // ... (existing SVD logic) ...
             let backend = LinAlgBackendProvider::<f32>::new();
             match backend.svd_into(a_c_owned_for_svd.clone(), false, true) { // Clone a_c_owned_for_svd for potential f64 SVD later
                 Ok(svd_output) => {
-                    // ... (existing score calculation) ...
                     if let Some(svd_output_vt) = svd_output.vt {
                          if svd_output_vt.is_empty() {
                              initial_scores = Array2::zeros((n_samples, 0));
