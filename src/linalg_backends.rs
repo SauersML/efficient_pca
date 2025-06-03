@@ -108,9 +108,35 @@ where
         compute_u: bool,
         compute_v: bool,
     ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
+        let original_rows = matrix.nrows();
+        let original_cols = matrix.ncols();
+
         // Use direct SVDInto call
-        let (u, s, vt) = matrix.svd_into(compute_u, compute_v).map_err(to_dyn_error)?;
-        Ok(SVDOutput { u, s, vt })
+        let (u_option, s, vt_option) = matrix.svd_into(compute_u, compute_v).map_err(to_dyn_error)?;
+
+        let k_effective = s.len();
+
+        let u_final = if let Some(mut u_mat) = u_option {
+            if u_mat.ncols() > k_effective {
+                assert_eq!(u_mat.nrows(), original_rows, "U matrix row count mismatch");
+                u_mat = u_mat.slice_move(s![.., 0..k_effective]);
+            }
+            Some(u_mat)
+        } else {
+            None
+        };
+
+        let vt_final = if let Some(mut vt_mat) = vt_option {
+            if vt_mat.nrows() > k_effective {
+                assert_eq!(vt_mat.ncols(), original_cols, "VT matrix column count mismatch");
+                vt_mat = vt_mat.slice_move(s![0..k_effective, ..]);
+            }
+            Some(vt_mat)
+        } else {
+            None
+        };
+
+        Ok(SVDOutput { u: u_final, s, vt: vt_final })
     }
 }
 
