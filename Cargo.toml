@@ -7,7 +7,6 @@ description = "Principal component computation using SVD and covariance matrix t
 license = "MIT"
 repository = "https://github.com/SauersML/efficient_pca"
 readme = "README.md"
-
 keywords = [
     "pca",
     "genomics",
@@ -15,7 +14,6 @@ keywords = [
     "bioinformatics",
     "machine-learning",
 ]
-
 categories = [
     "algorithms",
     "mathematics",
@@ -23,7 +21,6 @@ categories = [
     "science::bioinformatics",
     "science::bioinformatics::genomics",
 ]
-
 documentation = "https://github.com/SauersML/efficient_pca"
 
 [dependencies]
@@ -67,14 +64,13 @@ serde_json = "1.0"
 
 [features]
 default = ["backend_openblas"]
-jemalloc = ["jemalloc-ctl"]
 backend_openblas = ["ndarray-linalg/openblas-static"]
 backend_mkl = ["ndarray-linalg/intel-mkl-static"]
-backend_faer = ["faer_links_ndarray_static_openblas"]
-faer_links_ndarray_static_openblas = [
-    "dep:faer",
-    "ndarray-linalg/openblas-static"
-]
+backend_faer = ["dep:faer"]
+faer_links_ndarray_static_openblas = ["backend_faer", "ndarray-linalg/openblas-static"]
+
+# --- Utility Features ---
+jemalloc = ["dep:jemalloc-ctl"]
 enable-eigensnp-diagnostics = []
 
 [[bench]]
