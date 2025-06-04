@@ -606,8 +606,7 @@ impl EigenSNPCoreAlgorithm {
             return Ok((output, ())); // This line also remains correct
         }
 
-        // --- START DIAGNOSTIC MODIFICATION ---
-        let subset_sample_ids_selected: Vec<QcSampleId>; // Removed mut as it's assigned in each branch
+        let subset_sample_ids_selected: Vec<QcSampleId>;
         let is_diagnostic_target_test = 
             num_total_qc_samples == 200 && 
             (num_total_pca_snps >= 950 && num_total_pca_snps <= 1050); // Approximate SNP count
@@ -638,7 +637,6 @@ impl EigenSNPCoreAlgorithm {
                  subset_sample_ids_selected = Vec::new();
             }
         }
-        // --- END DIAGNOSTIC MODIFICATION ---
 
         let local_bases_learning_start_time = std::time::Instant::now();
         let all_block_local_bases = self.learn_all_ld_block_local_bases(
@@ -708,103 +706,103 @@ impl EigenSNPCoreAlgorithm {
         let mut final_sorted_eigenvalues: Array1<f64> = Array1::zeros(0);
 
 
-        // Refinement Loop
-        // The loop will run self.config.refine_pass_count times.
-        // Pass 1 uses initial_sample_pc_scores. Subsequent passes use scores from the previous iteration.
-        for pass_num in 1..=self.config.refine_pass_count.max(1) { // Ensure at least one pass
-            
-            #[cfg(feature = "enable-eigensnp-diagnostics")]
-            let mut current_sr_pass_detail_option: Option<SrPassDetail> = None;
-            #[cfg(feature = "enable-eigensnp-diagnostics")]
-            {
-                if self.config.collect_diagnostics && diagnostics_collector.is_some() {
-                    let mut detail = SrPassDetail::default();
-                    detail.pass_num = pass_num;
-                    current_sr_pass_detail_option = Some(detail);
-                }
-            }
 
-            debug!(
-                "Starting Refinement Pass {} with {} PCs from previous step.", 
-                pass_num, 
-                current_sample_scores.scores.ncols()
-            );
+     if self.config.refine_pass_count == 0 {
+         warn!(
+             "EigenSNP refine_pass_count is 0. Skipping refinement loop. Output will reflect PCA of derived local eigenSNP features only. SNP loadings and SNP-based eigenvalues will be empty/zero."
+         );
+         // `num_principal_components_computed_final` is already set from the initial condensed PCA.
+         // `final_sorted_snp_loadings` and `final_sorted_eigenvalues` remain their initial empty/zero states.
+         // `current_sample_scores` holds the scores from the condensed PCA, which will be used.
+     } else {
+         // Refinement Loop
+         // Pass 1 uses initial_sample_pc_scores. Subsequent passes use scores from the previous iteration.
+         for pass_num in 1..=self.config.refine_pass_count { // Allows zero.
+             
+             #[cfg(feature = "enable-eigensnp-diagnostics")]
+             let mut current_sr_pass_detail_option: Option<SrPassDetail> = None;
+             #[cfg(feature = "enable-eigensnp-diagnostics")]
+             {
+                 if self.config.collect_diagnostics && diagnostics_collector.is_some() {
+                     let mut detail = SrPassDetail::default();
+                     detail.pass_num = pass_num;
+                     current_sr_pass_detail_option = Some(detail);
+                 }
+             }
 
-            if current_sample_scores.scores.ncols() == 0 {
-                warn!("Refinement Pass {}: Input scores have 0 components. Cannot proceed with refinement.", pass_num);
-                // If this happens on pass 1, it means initial PCA failed to produce components.
-                // If on later passes, it means a previous refinement pass resulted in 0 components.
-                // In either case, we should return the current (empty or near-empty) state.
-                // If final_sorted_snp_loadings is still its initial empty state, populate with zeros.
-                if pass_num == 1 { // Ensure output shapes are consistent if initial scores are empty
-                     final_sorted_snp_loadings = Array2::zeros((num_total_pca_snps,0));
-                } // otherwise, final_sorted_snp_loadings holds results from previous valid pass
-                num_principal_components_computed_final = 0; // Update final count
-                break; // Exit refinement loop
-            }
+             debug!(
+                 "Starting Refinement Pass {} with {} PCs from previous step.", 
+                 pass_num, 
+                 current_sample_scores.scores.ncols()
+             );
 
-            let loadings_refinement_start_time = std::time::Instant::now();
-            let v_qr_snp_loadings = self.compute_refined_snp_loadings(
-                genotype_data,
-                &current_sample_scores, // Use scores from previous step (or initial if pass 1)
-                #[cfg(feature = "enable-eigensnp-diagnostics")]
-                current_sr_pass_detail_option.as_mut(),
-                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-                None,
-            )?;
-            info!("Pass {}: Computed QR-based SNP loadings (intermediate V_qr) in {:?}", pass_num, loadings_refinement_start_time.elapsed());
-            
-            if v_qr_snp_loadings.ncols() == 0 {
-                warn!("Pass {}: Intermediate QR-based SNP loadings (V_qr) resulted in 0 components. Ending refinement.", pass_num);
-                if pass_num == 1 { // If first pass fails to produce V_qr, ensure empty loadings
-                    final_sorted_snp_loadings = v_qr_snp_loadings; // This will be D x 0
-                } // otherwise, final_sorted_snp_loadings holds results from previous valid pass
-                num_principal_components_computed_final = 0;
-                break; // Exit refinement loop
-            }
+             if current_sample_scores.scores.ncols() == 0 {
+                 warn!("Refinement Pass {}: Input scores have 0 components. Cannot proceed with refinement.", pass_num);
+                 if pass_num == 1 { 
+                      final_sorted_snp_loadings = Array2::zeros((num_total_pca_snps,0));
+                 } 
+                 num_principal_components_computed_final = 0; 
+                 break; 
+             }
 
-            let final_outputs_computation_start_time = std::time::Instant::now();
-            let (
-                sorted_scores_this_pass,
-                sorted_eigenvalues_this_pass,
-                sorted_loadings_this_pass
-            ) = self.compute_rotated_final_outputs(
-                genotype_data,
-                &v_qr_snp_loadings.view(),
-                num_total_qc_samples,
-                #[cfg(feature = "enable-eigensnp-diagnostics")]
-                current_sr_pass_detail_option.as_mut(),
-                #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
-                None,
-            )?;
-            info!("Pass {}: Computed final rotated scores, eigenvalues, and loadings in {:?}", pass_num, final_outputs_computation_start_time.elapsed());
+             let loadings_refinement_start_time = std::time::Instant::now();
+             let v_qr_snp_loadings = self.compute_refined_snp_loadings(
+                 genotype_data,
+                 ¤t_sample_scores, 
+                 #[cfg(feature = "enable-eigensnp-diagnostics")]
+                 current_sr_pass_detail_option.as_mut(),
+                 #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                 None,
+             )?;
+             info!("Pass {}: Computed QR-based SNP loadings (intermediate V_qr) in {:?}", pass_num, loadings_refinement_start_time.elapsed());
+             
+             if v_qr_snp_loadings.ncols() == 0 {
+                 warn!("Pass {}: Intermediate QR-based SNP loadings (V_qr) resulted in 0 components. Ending refinement.", pass_num);
+                 if pass_num == 1 { 
+                     final_sorted_snp_loadings = v_qr_snp_loadings; 
+                 } 
+                 num_principal_components_computed_final = 0;
+                 break; 
+             }
 
-            // Update current_sample_scores for the next iteration (if any)
-            // The scores from compute_rotated_final_outputs are S_final = U_rot * S_prime,
-            // which is what we need as input (U_scores^*) for the next compute_refined_snp_loadings.
-            current_sample_scores = InitialSamplePcScores { scores: sorted_scores_this_pass.clone() }; // Clone, as sorted_scores_this_pass is moved to final output if last pass
-            
-            // Store the results of this pass as the current "final" results.
-            // If this is the last pass, these will be the ones returned.
-            final_sorted_snp_loadings = sorted_loadings_this_pass;
-            final_sorted_eigenvalues = sorted_eigenvalues_this_pass;
-            num_principal_components_computed_final = final_sorted_snp_loadings.ncols();
+             let final_outputs_computation_start_time = std::time::Instant::now();
+             let (
+                 sorted_scores_this_pass,
+                 sorted_eigenvalues_this_pass,
+                 sorted_loadings_this_pass
+             ) = self.compute_rotated_final_outputs(
+                 genotype_data,
+                 &v_qr_snp_loadings.view(),
+                 num_total_qc_samples,
+                 #[cfg(feature = "enable-eigensnp-diagnostics")]
+                 current_sr_pass_detail_option.as_mut(),
+                 #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
+                 None,
+             )?;
+             info!("Pass {}: Computed final rotated scores, eigenvalues, and loadings in {:?}", pass_num, final_outputs_computation_start_time.elapsed());
 
-            if num_principal_components_computed_final == 0 {
-                warn!("Pass {}: Refinement resulted in 0 final components. Ending refinement.", pass_num);
-                break; // Exit refinement loop
-            }
+             current_sample_scores = InitialSamplePcScores { scores: sorted_scores_this_pass.clone() }; 
+             
+             final_sorted_snp_loadings = sorted_loadings_this_pass;
+             final_sorted_eigenvalues = sorted_eigenvalues_this_pass;
+             num_principal_components_computed_final = final_sorted_snp_loadings.ncols();
 
-            #[cfg(feature = "enable-eigensnp-diagnostics")]
-            {
-                if let (Some(dc), Some(sr_detail)) = (diagnostics_collector.as_mut(), current_sr_pass_detail_option) {
-                    if self.config.collect_diagnostics {
-                        dc.sr_pass_details.push(sr_detail);
-                    }
-                }
-            }
-        }
-        // End of Refinement Loop
+             if num_principal_components_computed_final == 0 {
+                 warn!("Pass {}: Refinement resulted in 0 final components. Ending refinement.", pass_num);
+                 break; 
+             }
+
+             #[cfg(feature = "enable-eigensnp-diagnostics")]
+             {
+                 if let (Some(dc), Some(sr_detail)) = (diagnostics_collector.as_mut(), current_sr_pass_detail_option) {
+                     if self.config.collect_diagnostics {
+                         dc.sr_pass_details.push(sr_detail);
+                     }
+                 }
+             }
+         }
+         // End of Refinement Loop
+     }        
 
         // current_sample_scores now holds the sample scores from the last completed refinement pass.
         // final_sorted_snp_loadings and final_sorted_eigenvalues also hold results from the last completed pass.
@@ -850,7 +848,7 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
         subset_sample_ids: &[QcSampleId],
-        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>, // Added mut
+        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector: Option<&mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>>, // 
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_param: Option<()>, // Renamed to avoid conflict
     ) -> Result<Vec<LocalBasisWithDiagnostics>, ThreadSafeStdError> {
         info!(
@@ -959,13 +957,11 @@ impl EigenSNPCoreAlgorithm {
                             }
                         }
                         // Set basis_vectors_for_block to empty and let flow continue to the end of the closure.
-                        // The early return is removed.
                         Array2::<f32>::zeros((actual_num_snps_in_block, 0))
                     } else {
                         let local_seed = self.config.random_seed.wrapping_add(block_idx_val as u64);
 
                         // per_block_diag_entry_for_map is already initialized.
-                        // Diagnostics related to X_s_p were already added above.
 
                         let local_basis_vectors_f32 = Self::perform_randomized_svd_for_loadings( // Up_star
                             &genotype_block_for_subset_samples.view(),
@@ -1936,8 +1932,8 @@ impl EigenSNPCoreAlgorithm {
         request_u_components: bool, // True if U (left singular vectors) is needed
         request_s_components: bool, // True if S (singular values) is needed
         request_v_components: bool,  // True if V (right singular vectors) is needed
-        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, // Added mut back
-        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>, // Reverted name
+        #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector_vec: Option<&mut Vec<crate::diagnostics::RsvdStepDetail>>, 
+        #[cfg(not(feature = "enable-eigensnp-diagnostics"))] _diagnostics_collector_vec: Option<()>,
     ) -> Result<(Option<Array2<f32>>, Option<Array1<f32>>, Option<Array2<f32>>), ThreadSafeStdError> {
         
         #[cfg(feature = "enable-eigensnp-diagnostics")]
@@ -1961,7 +1957,6 @@ impl EigenSNPCoreAlgorithm {
                     }
                 }
                 dc_vec.push(detail);
-            // Removed if let Some(dc_vec) = dc_vec_opt wrapper
         };
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         let push_diag_fn = |_: Option<()>, _: String, _: Option<usize>, _: Option<(usize,usize)>, _: Option<(usize,usize)>, _: Option<&ArrayView2<f32>>, _: Option<&ArrayView2<f32>>| { // This signature is correct for non-diagnostic
@@ -1971,7 +1966,6 @@ impl EigenSNPCoreAlgorithm {
         let num_features_m = matrix_features_by_samples.nrows();
         let num_samples_n = matrix_features_by_samples.ncols();
 
-        // collector_for_push_fn for diagnostic path is removed.
         // Non-diagnostic collector_for_push_fn remains as is.
         #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
         let collector_for_push_fn = _diagnostics_collector_vec; 
