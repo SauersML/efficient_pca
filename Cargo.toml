@@ -7,6 +7,7 @@ description = "Principal component computation using SVD and covariance matrix t
 license = "MIT"
 repository = "https://github.com/SauersML/efficient_pca"
 readme = "README.md"
+
 keywords = [
     "pca",
     "genomics",
@@ -14,6 +15,7 @@ keywords = [
     "bioinformatics",
     "machine-learning",
 ]
+
 categories = [
     "algorithms",
     "mathematics",
@@ -21,6 +23,7 @@ categories = [
     "science::bioinformatics",
     "science::bioinformatics::genomics",
 ]
+
 documentation = "https://github.com/SauersML/efficient_pca"
 
 [dependencies]
