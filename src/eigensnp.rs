@@ -500,13 +500,13 @@ impl Default for EigenSNPCoreAlgorithmConfig {
     fn default() -> Self {
         EigenSNPCoreAlgorithmConfig {
             subset_factor_for_local_basis_learning: 0.1,
-            min_subset_size_for_local_basis_learning: 10_000,
-            max_subset_size_for_local_basis_learning: 40_000,
+            min_subset_size_for_local_basis_learning: 20_000,
+            max_subset_size_for_local_basis_learning: 60_000,
             components_per_ld_block: 7,
             target_num_global_pcs: 15,
             global_pca_sketch_oversampling: 10,
             global_pca_num_power_iterations: 2,
-            local_rsvd_sketch_oversampling: 10, 
+            local_rsvd_sketch_oversampling: 4, 
             local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
             snp_processing_strip_size: 2000, // Default based on previous hardcoded value
