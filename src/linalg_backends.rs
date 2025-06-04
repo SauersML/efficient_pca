@@ -212,7 +212,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let (nrows, ncols) = matrix_view.dim();
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -225,16 +225,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f64>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
             let eigenvalues_faer_colref = eig.S().column_vector();
@@ -253,7 +253,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f64>
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -266,16 +266,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f64>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
             let q_thin_faer_mat = qr_decomp.compute_thin_Q(); // This returns an owned Mat<T>
@@ -297,7 +297,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f64>
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -310,16 +310,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f64>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let faer_mat_ref = faer_mat_view.as_ref();
 
@@ -355,7 +355,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let (nrows, ncols) = matrix_view.dim();
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -368,16 +368,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f32>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let eig = faer_mat_view.as_ref().self_adjoint_eigen(faer::Side::Upper).map_err(|e| to_dyn_error_faer(format!("Faer self_adjoint_eigen failed: {:?}", e)))?;
             let eigenvalues_faer_colref = eig.S().column_vector();
@@ -396,7 +396,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f32>
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -409,16 +409,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f32>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let qr_decomp = faer_mat_view.as_ref().qr(); // This is faer::MatRef::qr() which returns faer::linalg::solvers::Qr
             let q_thin_faer_mat = qr_decomp.compute_thin_Q(); // This returns an owned Mat<T>
@@ -440,7 +440,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f32>
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
-            let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
+            let (faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
                 // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
@@ -453,16 +453,16 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 _maybe_owned = None::<faer::Mat<f32>>;          // nothing to free
             } else {
                 // not contiguous → make a *column-major* copy
-                let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::MatRef::from_column_major_slice(
-                    col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
+                let col_major_ndarray = matrix_view.to_owned().reversed_axes();     // now F-order
+                let temp_owned_faer_mat = faer::MatRef::from_column_major_slice(
+                    col_major_ndarray.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
                 ).to_owned();
-                faer_mat_view = owned.as_ref();
-                _maybe_owned = Some(owned);                 // lives till end of fn
+                _maybe_owned = Some(temp_owned_faer_mat);
+                faer_mat_view = _maybe_owned.as_ref().expect("Matrix was just created and put into _maybe_owned").as_ref();
             }
             let faer_mat_ref = faer_mat_view.as_ref();
 
