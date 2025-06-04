@@ -148,7 +148,6 @@ mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use faer::traits::ComplexField;
     use bytemuck::Pod;
     use std::error::Error;
-    use ndarray::ShapeBuilder;
     
     // Updated imports for SVD
     // use faer::Parallelism; // No longer needed
