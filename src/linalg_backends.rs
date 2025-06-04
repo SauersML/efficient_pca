@@ -175,7 +175,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
         let nrows = faer_mat.nrows();
         let ncols = faer_mat.ncols();
         if nrows == 0 || ncols == 0 {
-            return Array2::zeros((nrows, ncols).f());
+            return Array2::zeros(ndarray::ShapeBuilder::f((nrows, ncols)));
         }
         let mut data_vec = Vec::with_capacity(nrows * ncols);
         for j in 0..ncols {
@@ -184,7 +184,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                 data_vec.push(unsafe { read_unchecked(ptr) });
             }
         }
-        Array2::from_shape_vec((nrows, ncols).f(), data_vec)
+        Array2::from_shape_vec(ndarray::ShapeBuilder::f((nrows, ncols)), data_vec)
             .expect("Shape and data length mismatch creating ndarray from faer Mat")
     }
 
