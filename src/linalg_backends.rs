@@ -56,8 +56,6 @@ pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
 // Specific imports for ndarray-linalg backend
 use ndarray_linalg::{Lapack, Eigh, QR, SVDInto, UPLO};
-#[cfg(feature = "backend_faer")]
-use ndarray_linalg::Scalar;
 // use num_traits::AsPrimitive; // Removed as not directly used by trait impls
 
 // Define a concrete type for ndarray-linalg backend
@@ -93,7 +91,6 @@ where
         let k = nrows.min(ncols); // Re-introduce k
         // Use direct QR call
         let (q_full, _) = matrix.qr().map_err(to_dyn_error)?;
-        // Return q_full.slice_move(s![.., 0..k])
         Ok(q_full.slice_move(s![.., 0..k]))
     }
 }
@@ -145,12 +142,12 @@ where
 #[cfg(feature = "backend_faer")]
 mod faer_specific_code { // Encapsulate faer-specific code and its imports
     use super::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
-    use ndarray::{Array1, Array2, ShapeBuilder};
-    use faer::{Mat, MatRef}; // Keep MatRef, other specific imports will be added
+    use ndarray::{Array1, Array2};
+    use faer::MatRef; // Use faer::MatRef for Faer matrix views.
     use faer::traits::num_traits::Zero;     // Use Zero via faer's re-export
     use faer::traits::ComplexField;
     use bytemuck::Pod;
-    use std::error::Error; // Should already be there from original code
+    use std::error::Error;
     
     // Updated imports for SVD
     // use faer::Parallelism; // No longer needed
@@ -182,7 +179,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
         let mut data_vec = Vec::with_capacity(nrows * ncols);
         for j in 0..ncols {
             for i in 0..nrows {
-                let ptr = faer_mat.get_unchecked(i, j);
+                let ptr = unsafe { faer_mat.get_unchecked(i, j) };
                 data_vec.push(unsafe { read_unchecked(ptr) });
             }
         }
@@ -197,7 +194,7 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
         }
         let mut data_vec = Vec::with_capacity(nrows);
         for i in 0..nrows {
-            let ptr = faer_col.get_unchecked(i);
+            let ptr = unsafe { faer_col.get_unchecked(i) };
             data_vec.push(unsafe { read_unchecked(ptr) });
         }
         Array1::from_vec(data_vec)
@@ -211,13 +208,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             if matrix.is_empty() {
                 return Ok(EighOutput { eigenvalues: Array1::zeros(0), eigenvectors: Array2::zeros((0,0)) });
             }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f64>
             let (nrows, ncols) = matrix_view.dim();
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -229,13 +226,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -253,16 +250,12 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
         fn qr_q_factor(&self, matrix: &Array2<f64>) -> Result<Array2<f64>, Box<dyn Error + Send + Sync>> {
             let (nrows, ncols) = matrix.dim();
             if nrows == 0 { return Ok(Array2::zeros((0, 0))); }
-            let (nrows, ncols) = matrix.dim(); // Existing line, used for context
-            if nrows == 0 { return Ok(Array2::zeros((0, 0))); } // Existing line
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // Redundant if using matrix.dim()
-            // let ncols = matrix_view.ncols(); // Redundant if using matrix.dim()
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f64>
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -274,13 +267,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -301,16 +294,12 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                     vt: if compute_v { Some(Array2::zeros((k_dim, ncols))) } else { None },
                 });
             }
-            let matrix_view = matrix.view(); // matrix is Array2<F>
-            // Note: The redundant matrix.dim() and matrix.is_empty() checks that were here are removed.
-            // The matrix_view defined above is the one that will be used below.
-            // let nrows = matrix_view.nrows(); // This would be based on the matrix_view from *after* the first empty check
-            // let ncols = matrix_view.ncols(); // This would be based on the matrix_view from *after* the first empty check
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f64>
 
             // --- build a MatRef<'_, f64> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f64>, Option<faer::Mat<f64>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -322,13 +311,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -362,13 +351,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             if matrix.is_empty() {
                 return Ok(EighOutput { eigenvalues: Array1::zeros(0), eigenvectors: Array2::zeros((0,0)) });
             }
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f32>
             let (nrows, ncols) = matrix_view.dim();
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -380,13 +369,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -404,16 +393,12 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
         fn qr_q_factor(&self, matrix: &Array2<f32>) -> Result<Array2<f32>, Box<dyn Error + Send + Sync>> {
             let (nrows, ncols) = matrix.dim();
             if nrows == 0 { return Ok(Array2::zeros((0, 0))); }
-            let (nrows, ncols) = matrix.dim(); // Existing line
-            if nrows == 0 { return Ok(Array2::zeros((0, 0))); } // Existing line
-            let matrix_view = matrix.view(); // matrix is &Array2<F> or Array2<F>
-            // let nrows = matrix_view.nrows(); // Redundant
-            // let ncols = matrix_view.ncols(); // Redundant
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f32>
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -425,13 +410,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -452,16 +437,12 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
                     vt: if compute_v { Some(Array2::zeros((k_dim, ncols))) } else { None },
                 });
             }
-            let matrix_view = matrix.view(); // matrix is Array2<F>
-            // Note: The redundant matrix.dim() and matrix.is_empty() checks that were here are removed.
-            // The matrix_view defined above is the one that will be used below.
-            // let nrows = matrix_view.nrows(); // This would be based on the matrix_view from *after* the first empty check
-            // let ncols = matrix_view.ncols(); // This would be based on the matrix_view from *after* the first empty check
+            let matrix_view = matrix.view(); // matrix_view is ArrayView2<'_, f32>
 
             // --- build a MatRef<'_, f32> that stays alive for the rest of the function ----
             let (mut faer_mat_view, mut _maybe_owned): (faer::MatRef<'_, f32>, Option<faer::Mat<f32>>); // `_maybe_owned` keeps the buffer alive
             if let Some(slice) = matrix_view.as_slice_memory_order() {
-                // contiguous
+                // Path for contiguous ndarray slice
                 faer_mat_view = if matrix_view.is_standard_layout() {
                     // Standard layout means row-major for ndarray
                     faer::MatRef::from_row_major_slice(slice, nrows, ncols)
@@ -473,13 +454,13 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
             } else {
                 // not contiguous → make a *column-major* copy
                 let col_major = matrix_view.to_owned().reversed_axes();     // now F-order
-                let owned = faer::Mat::from_column_major_slice(
+                let owned = faer::MatRef::from_column_major_slice(
                     col_major.as_slice().ok_or_else(|| to_dyn_error_faer(
                         "Failed to get slice from owned column-major copy for Faer Mat".into()
                     ))?,
                     nrows,
                     ncols,
-                );
+                ).to_owned();
                 faer_mat_view = owned.as_ref();
                 _maybe_owned = Some(owned);                 // lives till end of fn
             }
@@ -518,12 +499,22 @@ unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
 
 // --- Implement BackendEigh for Provider ---
 #[cfg(feature = "backend_faer")]
-impl<F> BackendEigh<F> for LinAlgBackendProvider<F>
+impl BackendEigh<f32> for LinAlgBackendProvider<f32>
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
-    faer_specific_code::FaerLinAlgBackend: BackendEigh<F>,
+    faer_specific_code::FaerLinAlgBackend: BackendEigh<f32>,
 {
-    fn eigh_upper(&self, matrix: &Array2<F>) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
+    fn eigh_upper(&self, matrix: &Array2<f32>) -> Result<EighOutput<f32>, Box<dyn Error + Send + Sync>> {
+        // Assuming FaerLinAlgBackend is default constructible or has a new()
+        faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
+    }
+}
+
+#[cfg(feature = "backend_faer")]
+impl BackendEigh<f64> for LinAlgBackendProvider<f64>
+where
+    faer_specific_code::FaerLinAlgBackend: BackendEigh<f64>,
+{
+    fn eigh_upper(&self, matrix: &Array2<f64>) -> Result<EighOutput<f64>, Box<dyn Error + Send + Sync>> {
         faer_specific_code::FaerLinAlgBackend.eigh_upper(matrix)
     }
 }
@@ -541,12 +532,24 @@ where
 
 // --- Implement BackendQR for Provider ---
 #[cfg(feature = "backend_faer")]
-impl<F> BackendQR<F> for LinAlgBackendProvider<F>
+impl BackendQR<f32> for LinAlgBackendProvider<f32>
+// The where clause `faer_specific_code::FaerLinAlgBackend: BackendQR<f32>`
+// can be omitted as the call itself will enforce it, but keeping it is also fine.
+// For consistency with Eigh/SVD, let's keep it for now.
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
-    faer_specific_code::FaerLinAlgBackend: BackendQR<F>,
+    faer_specific_code::FaerLinAlgBackend: BackendQR<f32>,
 {
-    fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
+    fn qr_q_factor(&self, matrix: &Array2<f32>) -> Result<Array2<f32>, Box<dyn Error + Send + Sync>> {
+        faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
+    }
+}
+
+#[cfg(feature = "backend_faer")]
+impl BackendQR<f64> for LinAlgBackendProvider<f64>
+where
+    faer_specific_code::FaerLinAlgBackend: BackendQR<f64>,
+{
+    fn qr_q_factor(&self, matrix: &Array2<f64>) -> Result<Array2<f64>, Box<dyn Error + Send + Sync>> {
         faer_specific_code::FaerLinAlgBackend.qr_q_factor(matrix)
     }
 }
@@ -564,12 +567,21 @@ where
 
 // --- Implement BackendSVD for Provider ---
 #[cfg(feature = "backend_faer")]
-impl<F> BackendSVD<F> for LinAlgBackendProvider<F>
+impl BackendSVD<f32> for LinAlgBackendProvider<f32>
 where
-    F: Scalar + 'static + Copy + Send + Sync, // Changed Float to Scalar
-    faer_specific_code::FaerLinAlgBackend: BackendSVD<F>,
+    faer_specific_code::FaerLinAlgBackend: BackendSVD<f32>,
 {
-    fn svd_into(&self, matrix: Array2<F>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
+    fn svd_into(&self, matrix: Array2<f32>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<f32>, Box<dyn Error + Send + Sync>> {
+        faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+    }
+}
+
+#[cfg(feature = "backend_faer")]
+impl BackendSVD<f64> for LinAlgBackendProvider<f64>
+where
+    faer_specific_code::FaerLinAlgBackend: BackendSVD<f64>,
+{
+    fn svd_into(&self, matrix: Array2<f64>, compute_u: bool, compute_v: bool) -> Result<SVDOutput<f64>, Box<dyn Error + Send + Sync>> {
         faer_specific_code::FaerLinAlgBackend.svd_into(matrix, compute_u, compute_v)
     }
 }
