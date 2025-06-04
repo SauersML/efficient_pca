@@ -509,7 +509,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
             local_rsvd_sketch_oversampling: 4, 
             local_rsvd_num_power_iterations: 2, 
             random_seed: 2025,
-            snp_processing_strip_size: 2000, // Default based on previous hardcoded value
+            snp_processing_strip_size: 2000, // Default
             refine_pass_count: 1, // Default to 1 refinement pass
             collect_diagnostics: false,
             #[cfg(feature = "enable-eigensnp-diagnostics")]
