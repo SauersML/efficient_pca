@@ -499,7 +499,7 @@ impl Default for EigenSNPCoreAlgorithmConfig {
     /// Provides sensible default parameters for the EigenSNP PCA algorithm.
     fn default() -> Self {
         EigenSNPCoreAlgorithmConfig {
-            subset_factor_for_local_basis_learning: 0.075,
+            subset_factor_for_local_basis_learning: 0.1,
             min_subset_size_for_local_basis_learning: 10_000,
             max_subset_size_for_local_basis_learning: 40_000,
             components_per_ld_block: 7,
