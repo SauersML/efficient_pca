@@ -748,7 +748,7 @@ impl EigenSNPCoreAlgorithm {
              let loadings_refinement_start_time = std::time::Instant::now();
              let v_qr_snp_loadings = self.compute_refined_snp_loadings(
                  genotype_data,
-                 ¤t_sample_scores, 
+                 &current_sample_scores,
                  #[cfg(feature = "enable-eigensnp-diagnostics")]
                  current_sr_pass_detail_option.as_mut(),
                  #[cfg(not(feature = "enable-eigensnp-diagnostics"))]
