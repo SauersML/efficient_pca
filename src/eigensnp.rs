@@ -347,7 +347,7 @@ fn standardize_raw_condensed_features(
                     row_data_mut_slice[idx] *= inv_std_dev_val;
                 }
             } else {
-                let zero_simd = Simd::splat(0.0f32);
+                let zero_simd = Simd::<f32, LANES>::splat(0.0f32);
                 for chunk_idx in 0..num_simd_chunks {
                     let offset = chunk_idx * LANES;
                     zero_simd.copy_to_slice(&mut row_data_mut_slice[offset .. offset + LANES]);
