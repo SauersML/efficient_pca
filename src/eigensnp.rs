@@ -5,8 +5,7 @@ use crate::linalg_backends::{BackendQR, BackendSVD, LinAlgBackendProvider};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rayon::prelude::*;
-use std::simd::Simd;
-use std::simd::SimdFloat;
+use std::simd::prelude::*;
 use std::error::Error;
 use log::{info, debug, trace, warn};
 use rand::SeedableRng;
@@ -311,7 +310,7 @@ fn standardize_raw_condensed_features(
                 let offset = chunk_idx * LANES;
                 let mut data_chunk = Simd::<f32, LANES>::from_slice(&row_data_mut_slice[offset .. offset + LANES]);
                 data_chunk -= mean_simd;
-                data_chunk.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+                data_chunk.copy_to_slice(&mut row_data_mut_slice[offset .. offset + LANES]);
             }
             for idx in (num_simd_chunks * LANES)..num_elements_in_row {
                 row_data_mut_slice[idx] -= mean_val_f32;
@@ -342,7 +341,7 @@ fn standardize_raw_condensed_features(
                     let offset = chunk_idx * LANES;
                     let mut data_chunk = Simd::<f32, LANES>::from_slice(&row_data_mut_slice[offset .. offset + LANES]);
                     data_chunk *= inv_std_dev_simd;
-                    data_chunk.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+                    data_chunk.copy_to_slice(&mut row_data_mut_slice[offset .. offset + LANES]);
                 }
                 for idx in (num_simd_chunks * LANES)..num_elements_in_row {
                     row_data_mut_slice[idx] *= inv_std_dev_val;
@@ -351,7 +350,7 @@ fn standardize_raw_condensed_features(
                 let zero_simd = Simd::splat(0.0f32);
                 for chunk_idx in 0..num_simd_chunks {
                     let offset = chunk_idx * LANES;
-                    zero_simd.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+                    zero_simd.copy_to_slice(&mut row_data_mut_slice[offset .. offset + LANES]);
                 }
                 for idx in (num_simd_chunks * LANES)..num_elements_in_row {
                     row_data_mut_slice[idx] = 0.0f32;
