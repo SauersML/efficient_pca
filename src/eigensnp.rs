@@ -6,6 +6,7 @@ use crate::linalg_backends::{BackendQR, BackendSVD, LinAlgBackendProvider};
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rayon::prelude::*;
 use std::simd::Simd;
+use std::simd::SimdFloat;
 use std::error::Error;
 use log::{info, debug, trace, warn};
 use rand::SeedableRng;
@@ -281,7 +282,7 @@ fn standardize_raw_condensed_features(
             // Get initial slice for reading
             let row_data_slice: &[f32] = feature_row.as_slice().expect("Feature row must be contiguous for read-only operations");
             let num_elements_in_row = row_data_slice.len();
-
+            
             if num_elements_in_row == 0 { // Should not happen if num_samples > 0, but good practice
                 return;
             }
@@ -334,7 +335,7 @@ fn standardize_raw_condensed_features(
             let std_dev_f32 = std_dev_f64 as f32;
 
             // --- SIMD Scaling / Fill (operates on row_data_mut_slice) ---
-            if std_dev_f32.abs() > 1e-7 {
+            if std_dev_f32.abs() > 1e-7 { 
                 let inv_std_dev_val = 1.0 / std_dev_f32;
                 let inv_std_dev_simd = Simd::splat(inv_std_dev_val);
                 for chunk_idx in 0..num_simd_chunks {
@@ -1513,41 +1514,41 @@ impl EigenSNPCoreAlgorithm {
         let mut result_n_x_kqr_f32 = Array2::<f32>::zeros((n_samples, k_qr));
 
         result_n_x_kqr_f32
-            .axis_iter_mut(Axis(0))
+            .axis_iter_mut(Axis(0)) 
             .into_par_iter()
-            .enumerate()
+            .enumerate() 
             .for_each(|(i_sample_idx, mut output_row_f32_view)| {
                 let a_col_i_view = matrix_a_dstrip_x_n.column(i_sample_idx);
                 // Slices are no longer obtained here. Loading is done manually into arrays.
 
-                for k_comp_idx in 0..k_qr {
+                for k_comp_idx in 0..k_qr { 
                     let mut accumulator_f64: f64 = 0.0;
                     let b_col_k_view = matrix_b_dstrip_x_kqr.column(k_comp_idx);
                     // Slice for b_col_k_view is also removed.
-
+                    
                     let num_simd_chunks = d_strip / LANES;
                     let mut simd_f32_partial_sum = Simd::splat(0.0f32);
 
                     for chunk_idx in 0..num_simd_chunks {
                         let offset = chunk_idx * LANES;
-
+                        
                         let mut a_temp_array = [0.0f32; LANES];
                         for lane_idx in 0..LANES {
                             a_temp_array[lane_idx] = a_col_i_view[offset + lane_idx];
                         }
                         let a_simd = Simd::from_array(a_temp_array);
-
+                        
                         let mut b_temp_array = [0.0f32; LANES];
                         for lane_idx in 0..LANES {
                             b_temp_array[lane_idx] = b_col_k_view[offset + lane_idx];
                         }
                         let b_simd = Simd::from_array(b_temp_array);
-
+                        
                         simd_f32_partial_sum += a_simd * b_simd;
                     }
                     accumulator_f64 += simd_f32_partial_sum.reduce_sum() as f64;
 
-                    for d_snp_idx in (num_simd_chunks * LANES)..d_strip {
+                    for d_snp_idx in (num_simd_chunks * LANES)..d_strip { 
                         accumulator_f64 += (a_col_i_view[d_snp_idx] as f64) * (b_col_k_view[d_snp_idx] as f64);
                     }
                     output_row_f32_view[k_comp_idx] = accumulator_f64 as f32;
@@ -2405,13 +2406,13 @@ impl EigenSNPCoreAlgorithm {
                     for chunk_idx in 0..num_simd_chunks {
                         let offset = chunk_idx * LANES;
                         let a_simd = Simd::from_slice(&a_row_slice[offset..offset + LANES]);
-
+                        
                         let mut b_temp_array = [0.0f32; LANES];
                         for lane_idx in 0..LANES {
                             b_temp_array[lane_idx] = b_column_j[offset + lane_idx];
                         }
                         let b_simd = Simd::from_array(b_temp_array);
-
+                        
                         simd_f32_partial_sum += a_simd * b_simd;
                     }
                     accumulator_f64 += simd_f32_partial_sum.reduce_sum() as f64;

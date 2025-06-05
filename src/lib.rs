@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 #![doc = include_str!("../README.md")] // Crate-level documentation
 
 pub mod linalg_backends; // Consolidated module
