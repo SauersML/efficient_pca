@@ -5,6 +5,7 @@ use crate::linalg_backends::{BackendQR, BackendSVD, LinAlgBackendProvider};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rayon::prelude::*;
+use std::simd::Simd;
 use std::error::Error;
 use log::{info, debug, trace, warn};
 use rand::SeedableRng;
@@ -275,35 +276,85 @@ fn standardize_raw_condensed_features(
         .axis_iter_mut(Axis(0))
         .into_par_iter()
         .for_each(|mut feature_row| {
-            // Calculate mean
-            let mut sum_for_mean_f64: f64 = 0.0;
-            for val_ref in feature_row.iter() {
-                sum_for_mean_f64 += *val_ref as f64;
+            const LANES: usize = 8;
+
+            // Get initial slice for reading
+            let row_data_slice: &[f32] = feature_row.as_slice().expect("Feature row must be contiguous for read-only operations");
+            let num_elements_in_row = row_data_slice.len();
+
+            if num_elements_in_row == 0 { // Should not happen if num_samples > 0, but good practice
+                return;
             }
-            let mean_val_f64 = sum_for_mean_f64 / (num_samples as f64);
+            let num_simd_chunks = num_elements_in_row / LANES;
+
+            // --- SIMD Sum for Mean ---
+            let mut simd_sum_f32 = Simd::splat(0.0f32);
+            for chunk_idx in 0..num_simd_chunks {
+                let offset = chunk_idx * LANES;
+                let data_chunk = Simd::<f32, LANES>::from_slice(&row_data_slice[offset .. offset + LANES]);
+                simd_sum_f32 += data_chunk;
+            }
+            let mut total_sum_f32 = simd_sum_f32.reduce_sum();
+            for idx in (num_simd_chunks * LANES)..num_elements_in_row {
+                total_sum_f32 += row_data_slice[idx];
+            }
+            let mean_val_f64 = total_sum_f32 as f64 / (num_elements_in_row as f64); // num_elements_in_row is num_samples for this row
             let mean_val_f32 = mean_val_f64 as f32;
 
-            // Mean center the row
-            feature_row.mapv_inplace(|x_val| x_val - mean_val_f32);
+            // Get mutable slice for modifications
+            let row_data_mut_slice: &mut [f32] = feature_row.as_slice_mut().expect("Feature row must be contiguous for mutable operations");
 
-            // Calculate standard deviation of the mean-centered row
-            let mut sum_sq_deviations_f64: f64 = 0.0;
-            for val_centered_ref in feature_row.iter() {
-                sum_sq_deviations_f64 += (*val_centered_ref as f64).powi(2);
+            // --- SIMD Mean Centering ---
+            let mean_simd = Simd::splat(mean_val_f32);
+            for chunk_idx in 0..num_simd_chunks {
+                let offset = chunk_idx * LANES;
+                let mut data_chunk = Simd::<f32, LANES>::from_slice(&row_data_mut_slice[offset .. offset + LANES]);
+                data_chunk -= mean_simd;
+                data_chunk.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+            }
+            for idx in (num_simd_chunks * LANES)..num_elements_in_row {
+                row_data_mut_slice[idx] -= mean_val_f32;
+            }
+
+            // --- SIMD Sum of Squares (operates on the now mean-centered row_data_mut_slice) ---
+            let mut simd_sum_sq_f32 = Simd::splat(0.0f32);
+            for chunk_idx in 0..num_simd_chunks {
+                let offset = chunk_idx * LANES;
+                let centered_data_chunk = Simd::<f32, LANES>::from_slice(&row_data_mut_slice[offset .. offset + LANES]);
+                simd_sum_sq_f32 += centered_data_chunk * centered_data_chunk;
+            }
+            let mut total_sum_sq_f32 = simd_sum_sq_f32.reduce_sum();
+            for idx in (num_simd_chunks * LANES)..num_elements_in_row {
+                total_sum_sq_f32 += row_data_mut_slice[idx] * row_data_mut_slice[idx];
             }
             
-            // Use (N-1) for sample variance calculation
-            let variance_f64 = sum_sq_deviations_f64 / (num_samples as f64 - 1.0);
+            // Use (N-1) for sample variance calculation (N is num_elements_in_row here)
+            let variance_f64 = total_sum_sq_f32 as f64 / ((num_elements_in_row as f64 - 1.0).max(1.0)); // Avoid division by zero if num_elements_in_row is 1
             let std_dev_f64 = variance_f64.sqrt();
             let std_dev_f32 = std_dev_f64 as f32;
 
-            // Scale by standard deviation
-            if std_dev_f32.abs() > 1e-7 { // Check against a small epsilon to avoid division by zero
-                feature_row.mapv_inplace(|x_val| x_val / std_dev_f32);
+            // --- SIMD Scaling / Fill (operates on row_data_mut_slice) ---
+            if std_dev_f32.abs() > 1e-7 {
+                let inv_std_dev_val = 1.0 / std_dev_f32;
+                let inv_std_dev_simd = Simd::splat(inv_std_dev_val);
+                for chunk_idx in 0..num_simd_chunks {
+                    let offset = chunk_idx * LANES;
+                    let mut data_chunk = Simd::<f32, LANES>::from_slice(&row_data_mut_slice[offset .. offset + LANES]);
+                    data_chunk *= inv_std_dev_simd;
+                    data_chunk.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+                }
+                for idx in (num_simd_chunks * LANES)..num_elements_in_row {
+                    row_data_mut_slice[idx] *= inv_std_dev_val;
+                }
             } else {
-                // If standard deviation is effectively zero, the feature is constant.
-                // Set all values in this row to 0.0.
-                feature_row.fill(0.0f32);
+                let zero_simd = Simd::splat(0.0f32);
+                for chunk_idx in 0..num_simd_chunks {
+                    let offset = chunk_idx * LANES;
+                    zero_simd.write_to_slice_unaligned(&mut row_data_mut_slice[offset .. offset + LANES]);
+                }
+                for idx in (num_simd_chunks * LANES)..num_elements_in_row {
+                    row_data_mut_slice[idx] = 0.0f32;
+                }
             }
         });
     
@@ -1443,6 +1494,8 @@ impl EigenSNPCoreAlgorithm {
         let n_samples = matrix_a_dstrip_x_n.ncols();
         let k_qr = matrix_b_dstrip_x_kqr.ncols();
 
+        const LANES: usize = 8; // Define LANES constant
+
         if d_strip != matrix_b_dstrip_x_kqr.nrows() {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1454,26 +1507,48 @@ impl EigenSNPCoreAlgorithm {
         }
 
         if d_strip == 0 || n_samples == 0 || k_qr == 0 {
-            // Handle empty inputs gracefully. If d_strip is 0, all dot products will be 0.
-            // Result is N x K_qr
             return Ok(Array2::<f32>::zeros((n_samples, k_qr)));
         }
 
         let mut result_n_x_kqr_f32 = Array2::<f32>::zeros((n_samples, k_qr));
 
-        // Parallelize over the N rows of the output matrix (which correspond to samples)
         result_n_x_kqr_f32
-            .axis_iter_mut(Axis(0)) // Iterates over rows (N samples)
+            .axis_iter_mut(Axis(0))
             .into_par_iter()
-            .enumerate() // i_sample_idx
+            .enumerate()
             .for_each(|(i_sample_idx, mut output_row_f32_view)| {
-                // output_row_f32_view is a view of a single row of result_n_x_kqr_f32
-                // It has K_qr elements.
-                for k_comp_idx in 0..k_qr { // Iterate over columns of the output row
+                let a_col_i_view = matrix_a_dstrip_x_n.column(i_sample_idx);
+                // Slices are no longer obtained here. Loading is done manually into arrays.
+
+                for k_comp_idx in 0..k_qr {
                     let mut accumulator_f64: f64 = 0.0;
-                    for d_snp_idx in 0..d_strip { // Sum over D_strip
-                        accumulator_f64 += (matrix_a_dstrip_x_n[[d_snp_idx, i_sample_idx]] as f64) * 
-                                           (matrix_b_dstrip_x_kqr[[d_snp_idx, k_comp_idx]] as f64);
+                    let b_col_k_view = matrix_b_dstrip_x_kqr.column(k_comp_idx);
+                    // Slice for b_col_k_view is also removed.
+
+                    let num_simd_chunks = d_strip / LANES;
+                    let mut simd_f32_partial_sum = Simd::splat(0.0f32);
+
+                    for chunk_idx in 0..num_simd_chunks {
+                        let offset = chunk_idx * LANES;
+
+                        let mut a_temp_array = [0.0f32; LANES];
+                        for lane_idx in 0..LANES {
+                            a_temp_array[lane_idx] = a_col_i_view[offset + lane_idx];
+                        }
+                        let a_simd = Simd::from_array(a_temp_array);
+
+                        let mut b_temp_array = [0.0f32; LANES];
+                        for lane_idx in 0..LANES {
+                            b_temp_array[lane_idx] = b_col_k_view[offset + lane_idx];
+                        }
+                        let b_simd = Simd::from_array(b_temp_array);
+
+                        simd_f32_partial_sum += a_simd * b_simd;
+                    }
+                    accumulator_f64 += simd_f32_partial_sum.reduce_sum() as f64;
+
+                    for d_snp_idx in (num_simd_chunks * LANES)..d_strip {
+                        accumulator_f64 += (a_col_i_view[d_snp_idx] as f64) * (b_col_k_view[d_snp_idx] as f64);
                     }
                     output_row_f32_view[k_comp_idx] = accumulator_f64 as f32;
                 }
@@ -2293,6 +2368,8 @@ impl EigenSNPCoreAlgorithm {
         let p_common_dim_b = b_matrix_view.nrows();
         let k_dim = b_matrix_view.ncols();
 
+        const LANES: usize = 8; // Define LANES constant
+
         if p_common_dim_a != p_common_dim_b {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -2304,27 +2381,44 @@ impl EigenSNPCoreAlgorithm {
         }
 
         if m_dim == 0 || p_common_dim_a == 0 || k_dim == 0 {
-             // Handle empty inputs gracefully, return matrix of zeros with correct output shape.
-             // If p_common_dim_a is 0, all dot products will be 0.
             return Ok(Array2::<f32>::zeros((m_dim, k_dim)));
         }
         
         let mut result_matrix_f32 = Array2::<f32>::zeros((m_dim, k_dim));
 
-        // Parallelize over the rows of the output matrix A
         result_matrix_f32
             .axis_iter_mut(Axis(0))
             .into_par_iter()
             .enumerate()
             .for_each(|(i_row_idx, mut output_row_view)| {
-                let a_row_i = a_matrix_view.row(i_row_idx); // This is efficient for row-major A
+                let a_row_i = a_matrix_view.row(i_row_idx);
+                let a_row_slice = a_row_i.to_slice().expect("Failed to slice a_row_i, data might not be contiguous or in standard layout.");
+
                 for j_col_idx in 0..k_dim {
                     let mut accumulator_f64: f64 = 0.0;
-                    // To get b_col_j efficiently, it's better if B is column-major,
-                    // or we extract the column once. Ndarray views are flexible.
-                    // For now, direct indexing is okay but less cache-friendly for B.
-                    for p_idx in 0..p_common_dim_a {
-                        accumulator_f64 += (a_row_i[p_idx] as f64) * (b_matrix_view[[p_idx, j_col_idx]] as f64);
+                    let b_column_j = b_matrix_view.column(j_col_idx); // Obtain the column view for B
+                    // b_column_slice is removed.
+
+                    let num_simd_chunks = p_common_dim_a / LANES;
+                    let mut simd_f32_partial_sum = Simd::splat(0.0f32); // Ensure f32 type for splat
+
+                    for chunk_idx in 0..num_simd_chunks {
+                        let offset = chunk_idx * LANES;
+                        let a_simd = Simd::from_slice(&a_row_slice[offset..offset + LANES]);
+
+                        let mut b_temp_array = [0.0f32; LANES];
+                        for lane_idx in 0..LANES {
+                            b_temp_array[lane_idx] = b_column_j[offset + lane_idx];
+                        }
+                        let b_simd = Simd::from_array(b_temp_array);
+
+                        simd_f32_partial_sum += a_simd * b_simd;
+                    }
+                    accumulator_f64 += simd_f32_partial_sum.reduce_sum() as f64;
+
+                    for p_idx in (num_simd_chunks * LANES)..p_common_dim_a {
+                        // Use a_row_slice for A, and b_column_j (the view) for B
+                        accumulator_f64 += (a_row_slice[p_idx] as f64) * (b_column_j[p_idx] as f64);
                     }
                     output_row_view[j_col_idx] = accumulator_f64 as f32;
                 }
