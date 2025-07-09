@@ -1,19 +1,19 @@
 #![cfg(feature = "enable-eigensnp-diagnostics")]
 
+use efficient_pca::diagnostics::FullPcaRunDetailedDiagnostics;
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput,
-    LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError,
-};
-use efficient_pca::diagnostics::{FullPcaRunDetailedDiagnostics}; // Removed RsvdStepDetail, PerBlockLocalBasisDiagnostics
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput, LdBlockSpecification,
+    PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId, ThreadSafeStdError,
+}; // Removed RsvdStepDetail, PerBlockLocalBasisDiagnostics
 
-use ndarray::{Array2}; // Removed Array1, Axis
+use ndarray::Array2; // Removed Array1, Axis
 use rand::Rng; // For genotype data generation
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use std::fs::{File}; // Removed self
-use std::io::{Write, BufReader}; // Added BufReader
-use std::path::Path;
-use serde_json; // For parsing JSON
+use serde_json;
+use std::fs::File; // Removed self
+use std::io::{BufReader, Write}; // Added BufReader
+use std::path::Path; // For parsing JSON
 
 // Attempt to import TestResultRecord and TEST_RESULTS
 // This path might need adjustment if the actual module structure is different.
@@ -21,8 +21,7 @@ use serde_json; // For parsing JSON
 // If `efficient_pca::eigensnp_tests` is not a public module, or these items are not public,
 // this will fail compilation and require adjustment in a later step.
 #[cfg(test)]
-use efficient_pca::eigensnp_tests::{TestResultRecord};
-
+use efficient_pca::eigensnp_tests::TestResultRecord;
 
 // --- Mock Genotype Data Accessor ---
 #[derive(Clone)]
@@ -62,7 +61,7 @@ impl PcaReadyGenotypeAccessor for MockGenotypeData {
 }
 
 // --- Helper Function to Run Diagnostic Test ---
-#[allow(dead_code)] 
+#[allow(dead_code)]
 fn run_diagnostic_test_with_params(
     num_snps: usize,
     num_samples: usize,
@@ -72,13 +71,14 @@ fn run_diagnostic_test_with_params(
     local_rsvd_num_power_iterations: usize, // Added this to vary it
     global_pca_num_power_iterations: usize, // Added this for completeness
     refine_pass_count: usize,
-    diagnostic_block_list_id_to_trace: Option<usize>, 
+    diagnostic_block_list_id_to_trace: Option<usize>,
     output_filename_suffix: &str,
-) -> Result<String, Box<dyn std::error::Error>> { // Returns path to output file
-    let mut rng = ChaCha8Rng::seed_from_u64(42); 
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Returns path to output file
+    let mut rng = ChaCha8Rng::seed_from_u64(42);
     let genotypes = Array2::from_shape_fn((num_snps, num_samples), |_| rng.gen_range(0.0..=2.0));
     let mock_data_accessor = MockGenotypeData {
-        genotypes: genotypes.clone(), 
+        genotypes: genotypes.clone(),
         num_qc_samples: num_samples,
         num_pca_snps: num_snps,
     };
@@ -89,36 +89,41 @@ fn run_diagnostic_test_with_params(
         let mut current_snp_idx = 0;
         for i in 0..num_ld_blocks {
             let end_snp_idx = (current_snp_idx + snps_per_block).min(num_snps);
-            if current_snp_idx >= end_snp_idx && i < num_ld_blocks -1 { continue; } // Avoid empty blocks unless it's the last one potentially
-             if current_snp_idx >= num_snps { break; }
+            if current_snp_idx >= end_snp_idx && i < num_ld_blocks - 1 {
+                continue;
+            } // Avoid empty blocks unless it's the last one potentially
+            if current_snp_idx >= num_snps {
+                break;
+            }
 
+            let pca_snp_ids_in_block: Vec<PcaSnpId> =
+                (current_snp_idx..end_snp_idx).map(PcaSnpId).collect();
 
-            let pca_snp_ids_in_block: Vec<PcaSnpId> = (current_snp_idx..end_snp_idx)
-                .map(PcaSnpId)
-                .collect();
-            
             if pca_snp_ids_in_block.is_empty() && current_snp_idx < num_snps {
                 // If somehow an empty block is generated for non-last blocks, assign remaining to it if needed.
                 // This logic can be simplified if num_snps is always cleanly divisible or last block takes all.
                 // For now, just ensure non-empty if possible.
-                 if i == num_ld_blocks - 1 && current_snp_idx < num_snps {
+                if i == num_ld_blocks - 1 && current_snp_idx < num_snps {
                     ld_block_specs.push(LdBlockSpecification {
                         user_defined_block_tag: format!("block_{}", i),
                         pca_snp_ids_in_block: (current_snp_idx..num_snps).map(PcaSnpId).collect(),
                     });
-                    #[allow(unused_assignments)] { current_snp_idx = num_snps; } // all assigned
+                    #[allow(unused_assignments)]
+                    {
+                        current_snp_idx = num_snps;
+                    } // all assigned
                     break;
-                 }
-                 // else skip empty block if not the last one.
+                }
+                // else skip empty block if not the last one.
             } else if !pca_snp_ids_in_block.is_empty() {
-                 ld_block_specs.push(LdBlockSpecification {
+                ld_block_specs.push(LdBlockSpecification {
                     user_defined_block_tag: format!("block_{}", i),
                     pca_snp_ids_in_block,
                 });
             }
             current_snp_idx = end_snp_idx;
         }
-         // If after loop, not all SNPs assigned (e.g. num_ld_blocks = 0 but num_snps > 0), create one encompassing block
+        // If after loop, not all SNPs assigned (e.g. num_ld_blocks = 0 but num_snps > 0), create one encompassing block
         if num_snps > 0 && ld_block_specs.is_empty() {
             ld_block_specs.push(LdBlockSpecification {
                 user_defined_block_tag: "block_0_catch_all".to_string(),
@@ -127,29 +132,41 @@ fn run_diagnostic_test_with_params(
         }
     }
 
-
     let config = EigenSNPCoreAlgorithmConfig {
-        subset_factor_for_local_basis_learning: 0.5, 
-        min_subset_size_for_local_basis_learning: (num_samples / 2).max(10).min(num_samples), 
+        subset_factor_for_local_basis_learning: 0.5,
+        min_subset_size_for_local_basis_learning: (num_samples / 2).max(10).min(num_samples),
         max_subset_size_for_local_basis_learning: num_samples,
         components_per_ld_block,
         target_num_global_pcs,
-        global_pca_sketch_oversampling: 5.min(if target_num_global_pcs > 0 { target_num_global_pcs-1 } else {0}).max(1), // Ensure > 0 if k > 0
+        global_pca_sketch_oversampling: 5
+            .min(if target_num_global_pcs > 0 {
+                target_num_global_pcs - 1
+            } else {
+                0
+            })
+            .max(1), // Ensure > 0 if k > 0
         global_pca_num_power_iterations, // Use passed param
-        local_rsvd_sketch_oversampling: 5.min(if components_per_ld_block > 0 {components_per_ld_block-1} else {0}).max(1), // Ensure > 0 if cpb > 0
+        local_rsvd_sketch_oversampling: 5
+            .min(if components_per_ld_block > 0 {
+                components_per_ld_block - 1
+            } else {
+                0
+            })
+            .max(1), // Ensure > 0 if cpb > 0
         local_rsvd_num_power_iterations, // Use passed param
         random_seed: 123,
         snp_processing_strip_size: 500.min(num_snps).max(1),
         refine_pass_count,
-        collect_diagnostics: true, 
+        collect_diagnostics: true,
         diagnostic_block_list_id_to_trace,
     };
 
     let algorithm = EigenSNPCoreAlgorithm::new(config.clone());
-    let pca_result_tuple = algorithm.compute_pca(&mock_data_accessor, &ld_block_specs)
+    let pca_result_tuple = algorithm
+        .compute_pca(&mock_data_accessor, &ld_block_specs)
         .map_err(|e| e as Box<dyn std::error::Error>)?;
-    
-    let _pca_output: EigenSNPCoreOutput = pca_result_tuple.0; 
+
+    let _pca_output: EigenSNPCoreOutput = pca_result_tuple.0;
     let detailed_diagnostics: Option<FullPcaRunDetailedDiagnostics> = pca_result_tuple.1;
 
     let dir = Path::new("test_outputs");
@@ -158,12 +175,17 @@ fn run_diagnostic_test_with_params(
     }
     let filename = dir.join(format!(
         "diag_n{}_d{}_b{}_cpb{}_k{}_sr{}_locIter{}_globIter{}_{}.json",
-        num_samples, num_snps, ld_block_specs.len(), // Use actual number of blocks
-        components_per_ld_block, target_num_global_pcs, refine_pass_count,
-        local_rsvd_num_power_iterations, global_pca_num_power_iterations,
+        num_samples,
+        num_snps,
+        ld_block_specs.len(), // Use actual number of blocks
+        components_per_ld_block,
+        target_num_global_pcs,
+        refine_pass_count,
+        local_rsvd_num_power_iterations,
+        global_pca_num_power_iterations,
         output_filename_suffix
     ));
-    
+
     if let Some(diagnostics) = detailed_diagnostics {
         let mut file = File::create(&filename)?;
         let json_string = serde_json::to_string_pretty(&diagnostics)?;
@@ -188,7 +210,7 @@ fn diag_li0_gi2() {
     let local_rsvd_num_power_iterations = 0;
     let global_pca_num_power_iterations = 2; // Fixed for this series
     let refine_pass_count = 1; // Minimal passes
-    let diagnostic_block_id_to_trace = Some(0); 
+    let diagnostic_block_id_to_trace = Some(0);
     let suffix = "local0_global2";
 
     let mut record = TestResultRecord {
@@ -201,36 +223,51 @@ fn diag_li0_gi2() {
         success: false, // Default to false
         outcome_details: String::new(),
         notes: String::new(),
-        approx_peak_mem_mibs: None, // Not measured here
+        approx_peak_mem_mibs: None,  // Not measured here
         computation_time_secs: None, // Not measured here
     };
 
     match run_diagnostic_test_with_params(
-        num_snps, num_samples, num_ld_blocks, components_per_ld_block, target_num_global_pcs,
-        local_rsvd_num_power_iterations, global_pca_num_power_iterations, refine_pass_count,
-        diagnostic_block_id_to_trace, suffix
+        num_snps,
+        num_samples,
+        num_ld_blocks,
+        components_per_ld_block,
+        target_num_global_pcs,
+        local_rsvd_num_power_iterations,
+        global_pca_num_power_iterations,
+        refine_pass_count,
+        diagnostic_block_id_to_trace,
+        suffix,
     ) {
         Ok(filepath) => {
             record.notes = format!("Diagnostics JSON saved to: {}", filepath);
             let file = File::open(filepath).expect("Failed to open diagnostic file.");
             let reader = BufReader::new(file);
-            let diagnostics: FullPcaRunDetailedDiagnostics = serde_json::from_reader(reader)
-                .expect("Failed to parse diagnostics JSON.");
+            let diagnostics: FullPcaRunDetailedDiagnostics =
+                serde_json::from_reader(reader).expect("Failed to parse diagnostics JSON.");
 
             // Extract a key metric, e.g., condition number from a specific rSVD step
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
-                if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
+                if let Some(rsvd_step) = first_block_diag
+                    .rsvd_stages
+                    .iter()
+                    .find(|s| s.step_name == "ProjectedB_PreSVD")
+                {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info =
+                            format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
                 }
             }
-            
+
             record.success = true;
-            record.outcome_details = format!("Ran with local_power_iter={}", local_rsvd_num_power_iterations);
-        },
+            record.outcome_details = format!(
+                "Ran with local_power_iter={}",
+                local_rsvd_num_power_iterations
+            );
+        }
         Err(e) => {
             record.success = false;
             record.outcome_details = format!("Test failed: {:?}", e);
@@ -238,13 +275,13 @@ fn diag_li0_gi2() {
             panic!("Test {} failed: {:?}", test_name, e);
         }
     }
-    
+
     // Assuming TEST_RESULTS is a globally accessible, mutable static collection
     // This part is tricky and depends on how TEST_RESULTS is implemented (e.g., using ctor, lazy_static with Mutex)
     // For now, let's simulate adding to it if it were a simple static Vec (which isn't directly possible for mutation).
     // This will likely need to be adapted based on the actual implementation of TEST_RESULTS.
     // unsafe { TEST_RESULTS.push(record) }; // This is a placeholder for actual result recording
-     println!("Test Record for {}: {:?}", test_name, record); // Print for now
+    println!("Test Record for {}: {:?}", test_name, record); // Print for now
 }
 
 // Placeholder for other tests (diag_li2_gi2, diag_li4_gi2) - to be added in subsequent steps.
@@ -258,9 +295,9 @@ fn diag_li2_gi2() {
     let components_per_ld_block = 5;
     let target_num_global_pcs = 5;
     let local_rsvd_num_power_iterations = 2; // Varied parameter
-    let global_pca_num_power_iterations = 2; 
-    let refine_pass_count = 1; 
-    let diagnostic_block_id_to_trace = Some(0); 
+    let global_pca_num_power_iterations = 2;
+    let refine_pass_count = 1;
+    let diagnostic_block_id_to_trace = Some(0);
     let suffix = "local2_global2";
 
     let mut record = TestResultRecord {
@@ -273,35 +310,50 @@ fn diag_li2_gi2() {
         success: false,
         outcome_details: String::new(),
         notes: String::new(),
-        approx_peak_mem_mibs: None, 
-        computation_time_secs: None, 
+        approx_peak_mem_mibs: None,
+        computation_time_secs: None,
     };
 
     match run_diagnostic_test_with_params(
-        num_snps, num_samples, num_ld_blocks, components_per_ld_block, target_num_global_pcs,
-        local_rsvd_num_power_iterations, global_pca_num_power_iterations, refine_pass_count,
-        diagnostic_block_id_to_trace, suffix
+        num_snps,
+        num_samples,
+        num_ld_blocks,
+        components_per_ld_block,
+        target_num_global_pcs,
+        local_rsvd_num_power_iterations,
+        global_pca_num_power_iterations,
+        refine_pass_count,
+        diagnostic_block_id_to_trace,
+        suffix,
     ) {
         Ok(filepath) => {
             record.notes = format!("Diagnostics JSON saved to: {}", filepath);
             let file = File::open(filepath).expect("Failed to open diagnostic file.");
             let reader = BufReader::new(file);
-            let diagnostics: FullPcaRunDetailedDiagnostics = serde_json::from_reader(reader)
-                .expect("Failed to parse diagnostics JSON.");
+            let diagnostics: FullPcaRunDetailedDiagnostics =
+                serde_json::from_reader(reader).expect("Failed to parse diagnostics JSON.");
 
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
-                if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
+                if let Some(rsvd_step) = first_block_diag
+                    .rsvd_stages
+                    .iter()
+                    .find(|s| s.step_name == "ProjectedB_PreSVD")
+                {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info =
+                            format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
                 }
             }
-            
+
             record.success = true;
-            record.outcome_details = format!("Ran with local_power_iter={}", local_rsvd_num_power_iterations);
-        },
+            record.outcome_details = format!(
+                "Ran with local_power_iter={}",
+                local_rsvd_num_power_iterations
+            );
+        }
         Err(e) => {
             record.success = false;
             record.outcome_details = format!("Test failed: {:?}", e);
@@ -309,7 +361,7 @@ fn diag_li2_gi2() {
             panic!("Test {} failed: {:?}", test_name, e);
         }
     }
-     println!("Test Record for {}: {:?}", test_name, record);
+    println!("Test Record for {}: {:?}", test_name, record);
 }
 
 #[test]
@@ -341,29 +393,44 @@ fn diag_li4_gi2() {
     };
 
     match run_diagnostic_test_with_params(
-        num_snps, num_samples, num_ld_blocks, components_per_ld_block, target_num_global_pcs,
-        local_rsvd_num_power_iterations, global_pca_num_power_iterations, refine_pass_count,
-        diagnostic_block_id_to_trace, suffix
+        num_snps,
+        num_samples,
+        num_ld_blocks,
+        components_per_ld_block,
+        target_num_global_pcs,
+        local_rsvd_num_power_iterations,
+        global_pca_num_power_iterations,
+        refine_pass_count,
+        diagnostic_block_id_to_trace,
+        suffix,
     ) {
         Ok(filepath) => {
             record.notes = format!("Diagnostics JSON saved to: {}", filepath);
             let file = File::open(filepath).expect("Failed to open diagnostic file.");
             let reader = BufReader::new(file);
-            let diagnostics: FullPcaRunDetailedDiagnostics = serde_json::from_reader(reader)
-                .expect("Failed to parse diagnostics JSON.");
+            let diagnostics: FullPcaRunDetailedDiagnostics =
+                serde_json::from_reader(reader).expect("Failed to parse diagnostics JSON.");
 
             if let Some(first_block_diag) = diagnostics.per_block_diagnostics.get(0) {
-                if let Some(rsvd_step) = first_block_diag.rsvd_stages.iter().find(|s| s.step_name == "ProjectedB_PreSVD") {
+                if let Some(rsvd_step) = first_block_diag
+                    .rsvd_stages
+                    .iter()
+                    .find(|s| s.step_name == "ProjectedB_PreSVD")
+                {
                     if let Some(cond_num) = rsvd_step.condition_number {
-                        let key_metric_info = format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
+                        let key_metric_info =
+                            format!("ProjectedB_PreSVD CondNum: {:.4e}", cond_num);
                         println!("{}: {}", test_name, key_metric_info);
                         record.notes.push_str(&format!(" | {}", key_metric_info));
                     }
                 }
             }
             record.success = true;
-            record.outcome_details = format!("Ran with local_power_iter={}", local_rsvd_num_power_iterations);
-        },
+            record.outcome_details = format!(
+                "Ran with local_power_iter={}",
+                local_rsvd_num_power_iterations
+            );
+        }
         Err(e) => {
             record.success = false;
             record.outcome_details = format!("Test failed: {:?}", e);
@@ -373,7 +440,6 @@ fn diag_li4_gi2() {
     }
     println!("Test Record for {}: {:?}", test_name, record);
 }
-
 
 // Original placeholder, can be removed now or kept if other manual tests are needed.
 #[test]

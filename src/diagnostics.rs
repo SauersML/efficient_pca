@@ -1,10 +1,10 @@
 // src/diagnostics.rs
 #![cfg(feature = "enable-eigensnp-diagnostics")]
 
-use ndarray::{Array2, ArrayView1, ArrayView2};
-use crate::linalg_backends::LinAlgBackendProvider; // SVDOutput might not be needed directly
 use crate::linalg_backends::BackendSVD; // Added to bring the trait into scope
-use serde::{Serialize, Deserialize};
+use crate::linalg_backends::LinAlgBackendProvider; // SVDOutput might not be needed directly
+use ndarray::{Array2, ArrayView1, ArrayView2};
+use serde::{Deserialize, Serialize};
 use std::f64::INFINITY;
 // use std::fmt; // Not used currently
 
@@ -13,32 +13,32 @@ use std::f64::INFINITY;
 /// Detailed diagnostics for a single step within an rSVD computation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RsvdStepDetail {
-    pub step_name: String,                      // e.g., "Y_normalization", "Q_computation", "S_svd"
+    pub step_name: String, // e.g., "Y_normalization", "Q_computation", "S_svd"
     pub input_matrix_dims: Option<(usize, usize)>, // (rows, cols)
     pub output_matrix_dims: Option<(usize, usize)>, // (rows, cols)
-    
+
     // --- Generic Matrix Metrics (apply to input or output depending on step context) ---
-    pub fro_norm: Option<f64>,                  // Frobenius norm
-    pub condition_number: Option<f64>,          // Condition number (via SVD, f64 backend)
-    
+    pub fro_norm: Option<f64>,         // Frobenius norm
+    pub condition_number: Option<f64>, // Condition number (via SVD, f64 backend)
+
     // --- Orthogonality Metrics (primarily for Q factors) ---
-    pub orthogonality_error: Option<f64>,       // ||I - Q^T Q||_F
-    
+    pub orthogonality_error: Option<f64>, // ||I - Q^T Q||_F
+
     // --- SVD-Specific Metrics (for steps involving SVD) ---
     pub svd_reconstruction_error_abs: Option<f64>, // ||A - USV^T||_F (absolute error)
     pub svd_reconstruction_error_rel: Option<f64>, // ||A - USV^T||_F / ||A||_F (relative error)
-    pub num_singular_values: Option<usize>,     // Total singular values computed
-    pub singular_values_sample: Option<Vec<f64>>, // Sample of singular values
-    
-    pub notes: String,                          // Any additional context or free-form notes
+    pub num_singular_values: Option<usize>,        // Total singular values computed
+    pub singular_values_sample: Option<Vec<f64>>,  // Sample of singular values
+
+    pub notes: String, // Any additional context or free-form notes
 }
 
 /// Diagnostics for the local PCA basis computation within a single block.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerBlockLocalBasisDiagnostics {
-    pub block_id: String,                       // Identifier for the LD block or segment
-    pub rsvd_stages: Vec<RsvdStepDetail>,       // Diagnostics for each rSVD stage applied
-    
+    pub block_id: String,                 // Identifier for the LD block or segment
+    pub rsvd_stages: Vec<RsvdStepDetail>, // Diagnostics for each rSVD stage applied
+
     // --- Metrics for input X_s_p (genotype block for subset samples) to local rSVD ---
     pub input_x_s_p_dims: Option<(usize, usize)>,
     pub input_x_s_p_fro_norm: Option<f64>,
@@ -46,27 +46,27 @@ pub struct PerBlockLocalBasisDiagnostics {
 
     // --- Correlation with f64 Ground Truth (if available) ---
     // Absolute Pearson correlation coefficients for each column vector
-    pub u_correlation_vs_f64_truth: Option<Vec<f64>>, 
-    
+    pub u_correlation_vs_f64_truth: Option<Vec<f64>>,
+
     // --- Final Output Metrics for this Block's U_p (local basis) ---
     pub u_p_dims: Option<(usize, usize)>,
     pub u_p_fro_norm: Option<f64>,
     pub u_p_condition_number: Option<f64>,
     pub u_p_orthogonality_error: Option<f64>,
-    
+
     pub notes: String,
 }
 
 /// Diagnostics for the global PCA step (on the condensed, standardized matrix).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GlobalPcaDiagnostics {
-    pub stage_name: String,                     // e.g., "GlobalPCA"
-    pub rsvd_stages: Vec<RsvdStepDetail>,       // Diagnostics for rSVD stages
-    
+    pub stage_name: String,               // e.g., "GlobalPCA"
+    pub rsvd_stages: Vec<RsvdStepDetail>, // Diagnostics for rSVD stages
+
     // --- Correlation with Python's PCA output on initial scores (U_scores_star) ---
     // Used for validating the initial projection against a known Python implementation
     pub initial_scores_correlation_vs_py_truth: Option<Vec<f64>>,
-    
+
     pub notes: String,
 }
 
@@ -74,26 +74,26 @@ pub struct GlobalPcaDiagnostics {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SrPassDetail {
     pub pass_num: usize,
-    
+
     // Metrics for V_hat (eigenvectors of S^T S) from the previous pass or initial global PCA
     pub v_hat_dims: Option<(usize, usize)>,
     pub v_hat_orthogonality_error: Option<f64>, // Error for V_hat from (S^T S) V_hat = V_hat Lambda
-                                                // or Q in V_hat = QR decomposition if applicable
-                                                
+    // or Q in V_hat = QR decomposition if applicable
+
     // Metrics for the intermediate matrix S_intermediate = C_std @ V_hat
     pub s_intermediate_dims: Option<(usize, usize)>,
     pub s_intermediate_fro_norm: Option<f64>,
     pub s_intermediate_condition_number: Option<f64>,
-    
+
     // SVD of S_intermediate: S_intermediate = U_s S_s V_s^T
     pub s_intermediate_svd_reconstruction_error_abs: Option<f64>,
     pub s_intermediate_svd_reconstruction_error_rel: Option<f64>,
     pub s_intermediate_num_singular_values: Option<usize>,
     pub s_intermediate_singular_values_sample: Option<Vec<f64>>,
-    
+
     // Orthogonality of U_s from SVD of S_intermediate
     pub u_s_orthogonality_error: Option<f64>,
-    
+
     pub notes: String,
 }
 
@@ -102,30 +102,28 @@ pub struct SrPassDetail {
 pub struct FullPcaRunDetailedDiagnostics {
     // --- Local Basis Computation ---
     pub per_block_diagnostics: Vec<PerBlockLocalBasisDiagnostics>, // One for each LD block
-    
+
     // --- Condensed Matrix C (after concatenating U_p^T X_p) ---
     pub c_matrix_dims: Option<(usize, usize)>,
-    pub c_matrix_fro_norm: Option<f64>,         // Norm of C
-    
+    pub c_matrix_fro_norm: Option<f64>, // Norm of C
+
     // --- Standardized Condensed Matrix C_std ---
     pub c_std_matrix_dims: Option<(usize, usize)>,
-    pub c_std_matrix_fro_norm: Option<f64>,     // Norm of C_std
+    pub c_std_matrix_fro_norm: Option<f64>, // Norm of C_std
     pub c_std_col_means_sample: Option<Vec<f64>>, // Sample of column means
     pub c_std_col_std_devs_sample: Option<Vec<f64>>, // Sample of column standard deviations
-    
+
     // --- Global PCA Diagnostics (on C_std) ---
     pub global_pca_diag: Option<Box<GlobalPcaDiagnostics>>, // Boxed to manage size
-    
+
     // --- Subspace Refinement (SR) Passes ---
-    pub sr_pass_details: Vec<SrPassDetail>,     // One for each SR pass
-    
+    pub sr_pass_details: Vec<SrPassDetail>, // One for each SR pass
+
     // --- Final Output Metrics (e.g., final PCs, final Loadings if computed) ---
     // These might be added later or be part of a separate struct if too detailed
-    
-    pub total_runtime_seconds: Option<f64>,     // Overall runtime for the PCA process
-    pub notes: String,                          // High-level notes for the entire run
+    pub total_runtime_seconds: Option<f64>, // Overall runtime for the PCA process
+    pub notes: String,                      // High-level notes for the entire run
 }
-
 
 // --- Utility Functions for Metrics ---
 
@@ -163,7 +161,7 @@ pub fn compute_condition_number_via_svd_f64(matrix: &ArrayView2<f64>) -> Option<
 
     let backend_f64 = LinAlgBackendProvider::<f64>::new();
     let svd_result = backend_f64.svd_into(matrix.to_owned(), false, false);
-    
+
     let singular_values = match svd_result {
         Ok(output) => output.s,
         Err(_) => return None, // SVD failed
@@ -173,16 +171,24 @@ pub fn compute_condition_number_via_svd_f64(matrix: &ArrayView2<f64>) -> Option<
         return Some(0.0); // Or None if preferred for no singular values
     }
 
-    let sigma_max = singular_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let sigma_min_non_zero = singular_values.iter().cloned().filter(|&s| s > 1e-12).fold(f64::INFINITY, f64::min);
+    let sigma_max = singular_values
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let sigma_min_non_zero = singular_values
+        .iter()
+        .cloned()
+        .filter(|&s| s > 1e-12)
+        .fold(f64::INFINITY, f64::min);
 
     if sigma_min_non_zero == f64::INFINITY || sigma_min_non_zero <= 1e-12 {
         return Some(INFINITY); // Effectively zero or no non-zero sigma_min
     }
-    if sigma_max == f64::NEG_INFINITY { // Should not happen if singular_values not empty
-        return Some(0.0); 
+    if sigma_max == f64::NEG_INFINITY {
+        // Should not happen if singular_values not empty
+        return Some(0.0);
     }
-    
+
     Some(sigma_max / sigma_min_non_zero)
 }
 
@@ -211,7 +217,7 @@ pub fn compute_orthogonality_error_f64(q_matrix: &ArrayView2<f64>) -> Option<f64
     let qtq = q_matrix.t().dot(q_matrix);
     let identity = Array2::<f64>::eye(qtq.nrows());
     let diff = identity - qtq;
-    
+
     Some(compute_frob_norm_f64(&diff.view()))
 }
 
@@ -223,7 +229,9 @@ pub fn compute_svd_reconstruction_error_f32(
     s_vec: &ArrayView1<f32>,
     vt: &ArrayView2<f32>,
 ) -> Option<f64> {
-    if original_matrix.is_empty() { return None; }
+    if original_matrix.is_empty() {
+        return None;
+    }
 
     let original_f64 = original_matrix.mapv(|x| x as f64);
     let u_f64 = u.mapv(|x| x as f64);
@@ -245,9 +253,15 @@ pub fn compute_svd_reconstruction_error_f64(
     s_vec: &ArrayView1<f64>,
     vt: &ArrayView2<f64>,
 ) -> Option<f64> {
-    if original_matrix.is_empty() { return None; }
-    if u.ncols() != s_vec.len() || s_vec.len() != vt.nrows() { return None; } // Dim mismatch
-    if u.nrows() != original_matrix.nrows() || vt.ncols() != original_matrix.ncols() { return None; } // Dim mismatch
+    if original_matrix.is_empty() {
+        return None;
+    }
+    if u.ncols() != s_vec.len() || s_vec.len() != vt.nrows() {
+        return None;
+    } // Dim mismatch
+    if u.nrows() != original_matrix.nrows() || vt.ncols() != original_matrix.ncols() {
+        return None;
+    } // Dim mismatch
 
     let s_diag = Array2::from_diag(s_vec);
     let reconstructed_matrix = u.dot(&s_diag).dot(vt);
@@ -256,8 +270,10 @@ pub fn compute_svd_reconstruction_error_f64(
     let norm_diff = compute_frob_norm_f64(&diff.view());
     let norm_original = compute_frob_norm_f64(&original_matrix.view());
 
-    if norm_original < 1e-12 { // Original matrix is close to zero
-        if norm_diff < 1e-12 { // Diff is also close to zero
+    if norm_original < 1e-12 {
+        // Original matrix is close to zero
+        if norm_diff < 1e-12 {
+            // Diff is also close to zero
             Some(0.0) // Perfect reconstruction of a zero matrix
         } else {
             Some(INFINITY) // Non-zero difference from a zero matrix
@@ -291,13 +307,18 @@ fn pearson_correlation_f64_single(vec_a: &ArrayView1<f64>, vec_b: &ArrayView1<f6
 
     if var_a < 1e-12 || var_b < 1e-12 {
         // If one vector is constant (variance is ~0)
-        if var_a < 1e-12 && var_b < 1e-12 { // Both constant
+        if var_a < 1e-12 && var_b < 1e-12 {
+            // Both constant
             // Check if they are the "same" constant. If means are very close.
-             if (mean_a - mean_b).abs() < 1e-9 { return Some(1.0); } else { return Some(0.0); } // Or handle as undefined (None)
+            if (mean_a - mean_b).abs() < 1e-9 {
+                return Some(1.0);
+            } else {
+                return Some(0.0);
+            } // Or handle as undefined (None)
         }
         return Some(0.0); // One constant, other varies - no linear correlation
     }
-    
+
     let r = cov_ab / (var_a.sqrt() * var_b.sqrt());
     Some(r.clamp(-1.0, 1.0))
 }
@@ -307,9 +328,15 @@ pub fn compute_matrix_column_correlations_abs(
     m1: &ArrayView2<f32>,
     m2_f64: &ArrayView2<f64>,
 ) -> Option<Vec<f64>> {
-    if m1.dim() != m2_f64.dim() { return None; }
-    if m1.ncols() == 0 { return Some(Vec::new()); }
-    if m1.nrows() < 2 { return None; } // Need at least 2 samples for correlation
+    if m1.dim() != m2_f64.dim() {
+        return None;
+    }
+    if m1.ncols() == 0 {
+        return Some(Vec::new());
+    }
+    if m1.nrows() < 2 {
+        return None;
+    } // Need at least 2 samples for correlation
 
     let num_cols = m1.ncols();
     let mut correlations = Vec::with_capacity(num_cols);
@@ -337,10 +364,12 @@ pub fn sample_singular_values(s_values: &ArrayView1<f32>, count: usize) -> Optio
 
     let mut sampled = Vec::with_capacity(count);
     let len = s_values.len();
-    
+
     // Add the first element
     sampled.push(s_values[0]);
-    if count == 1 { return Some(sampled); }
+    if count == 1 {
+        return Some(sampled);
+    }
 
     // Calculate step for intermediate points
     // We need to pick `count - 2` more points from `len - 2` available intermediate points.
@@ -358,14 +387,13 @@ pub fn sample_singular_values(s_values: &ArrayView1<f32>, count: usize) -> Optio
         let pick_idx_float = i as f64 * (len - 1) as f64 / (count - 1) as f64;
         sampled.push(s_values[pick_idx_float.round() as usize]);
     }
-    
+
     // Add the last element
     sampled.push(s_values[len - 1]);
     sampled.dedup_by(|a, b| (*a - *b).abs() < 1e-7); // Adjusted epsilon for f32
-    
+
     Some(sampled)
 }
-
 
 /// Samples singular values (f64 version), taking `count` values evenly spaced. Includes first and last.
 pub fn sample_singular_values_f64(s_values: &ArrayView1<f64>, count: usize) -> Option<Vec<f64>> {
@@ -381,40 +409,55 @@ pub fn sample_singular_values_f64(s_values: &ArrayView1<f64>, count: usize) -> O
 
     // Always include the first singular value
     sampled.push(s_values[0]);
-    if count == 1 { return Some(sampled); }
+    if count == 1 {
+        return Some(sampled);
+    }
 
     // Determine indices for the remaining `count - 1` values
     // These should be spread across the remaining `len - 1` values
     // Example: len=10, count=4. Values from s_values[0], s_values[3], s_values[6], s_values[9]
     // Step for picking: (len - 1) / (count - 1)
     // For i from 1 to count-1: index = round(i * step)
-    
+
     let step = (len - 1) as f64 / (count - 1) as f64;
     for i in 1..count {
         let pick_idx = (i as f64 * step).round() as usize;
         // Ensure pick_idx is within bounds and we don't re-add if rounding is weird for the last element
         // For the last iteration (i = count - 1), pick_idx should be len - 1
         if i == count - 1 {
-            if sampled.last() != Some(&s_values[len-1]) { // Avoid duplicate if count=len
-                 sampled.push(s_values[len - 1]);
-            } else if sampled.len() < count && pick_idx == len -1 && s_values[len-1] != sampled.last().cloned().unwrap_or(f64::NAN) {
-                 sampled.push(s_values[len - 1]);
+            if sampled.last() != Some(&s_values[len - 1]) {
+                // Avoid duplicate if count=len
+                sampled.push(s_values[len - 1]);
+            } else if sampled.len() < count
+                && pick_idx == len - 1
+                && s_values[len - 1] != sampled.last().cloned().unwrap_or(f64::NAN)
+            {
+                sampled.push(s_values[len - 1]);
             }
-
         } else {
-             // Check if this element is different from the last one added to avoid duplicates from rounding
-            if pick_idx < len -1 && (sampled.len() == 0 || s_values[pick_idx] != sampled.last().cloned().unwrap_or(f64::NAN) ) {
-                 sampled.push(s_values[pick_idx]);
-            } else if pick_idx < len -1 && sampled.len() < count { // If same, try to take next if not already taken
-                 if pick_idx + 1 < len -1 && s_values[pick_idx+1] != sampled.last().cloned().unwrap_or(f64::NAN) {
-                    sampled.push(s_values[pick_idx+1]);
-                 }
+            // Check if this element is different from the last one added to avoid duplicates from rounding
+            if pick_idx < len - 1
+                && (sampled.len() == 0
+                    || s_values[pick_idx] != sampled.last().cloned().unwrap_or(f64::NAN))
+            {
+                sampled.push(s_values[pick_idx]);
+            } else if pick_idx < len - 1 && sampled.len() < count {
+                // If same, try to take next if not already taken
+                if pick_idx + 1 < len - 1
+                    && s_values[pick_idx + 1] != sampled.last().cloned().unwrap_or(f64::NAN)
+                {
+                    sampled.push(s_values[pick_idx + 1]);
+                }
             }
         }
     }
     let len = s_values.len(); // Original length
-    if count == 0 || len == 0 { return Some(Vec::new());}
-    if count >= len { return Some(s_values.to_vec()); } // If asking for more or equal to available, return all
+    if count == 0 || len == 0 {
+        return Some(Vec::new());
+    }
+    if count >= len {
+        return Some(s_values.to_vec());
+    } // If asking for more or equal to available, return all
 
     let mut final_sampled = Vec::with_capacity(count);
     final_sampled.push(s_values[0]); // First value
@@ -431,7 +474,7 @@ pub fn sample_singular_values_f64(s_values: &ArrayView1<f64>, count: usize) -> O
         }
         final_sampled.push(s_values[len - 1]); // Last value
     }
-    
+
     final_sampled.dedup_by(|a, b| (*a - *b).abs() < 1e-9); // Keep unique values, f64 comparison
 
     // If dedup resulted in fewer than count, it means some values were very close.

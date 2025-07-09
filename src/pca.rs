@@ -2,7 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 
-use ndarray::{s, Array1, Array2, Axis, ArrayView1};
+use ndarray::{s, Array1, Array2, ArrayView1, Axis};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.
@@ -137,16 +137,22 @@ impl PCA {
         let d_features_raw_std = raw_standard_deviations.len();
 
         if !(d_features_rotation == d_features_mean && d_features_mean == d_features_raw_std) {
-            if !(d_features_rotation == 0 && k_components == 0 && d_features_mean == 0 && d_features_raw_std == 0) {
-                 return Err(format!(
+            if !(d_features_rotation == 0
+                && k_components == 0
+                && d_features_mean == 0
+                && d_features_raw_std == 0)
+            {
+                return Err(format!(
                     "PCA::with_model: Feature dimensions of rotation ({}), mean ({}), and raw_standard_deviations ({}) must match.",
                     d_features_rotation, d_features_mean, d_features_raw_std
                 ).into());
             }
         }
-        
+
         if d_features_rotation == 0 && k_components > 0 {
-             return Err("PCA::with_model: Rotation matrix has 0 features but expects components.".into());
+            return Err(
+                "PCA::with_model: Rotation matrix has 0 features but expects components.".into(),
+            );
         }
 
         if raw_standard_deviations.iter().any(|&val| !val.is_finite()) {
@@ -158,8 +164,13 @@ impl PCA {
         // All scale factors are positive. Values that are not strictly positive (<= SCALE_SANITIZATION_THRESHOLD),
         // or were non-finite (though checked above), are replaced with 1.0.
         // This aligns `with_model`'s scale handling with `fit`/`rfit` and means `self.scale` is always positive.
-        let sanitized_scale_vector = raw_standard_deviations
-            .mapv(|val| if val.is_finite() && val > SCALE_SANITIZATION_THRESHOLD { val } else { 1.0 });
+        let sanitized_scale_vector = raw_standard_deviations.mapv(|val| {
+            if val.is_finite() && val > SCALE_SANITIZATION_THRESHOLD {
+                val
+            } else {
+                1.0
+            }
+        });
 
         Ok(Self {
             rotation: Some(rotation),
@@ -222,7 +233,7 @@ impl PCA {
     /// matrix operations (like eigen-decomposition) fail.
     pub fn fit(
         &mut self,
-        mut data_matrix: Array2<f64>, 
+        mut data_matrix: Array2<f64>,
         tolerance: Option<f64>,
     ) -> Result<(), Box<dyn Error>> {
         let n_samples = data_matrix.nrows();
@@ -242,8 +253,13 @@ impl PCA {
         data_matrix -= &mean_vector;
 
         let original_std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
-        let sanitized_scale_vector = original_std_dev_vector
-            .mapv(|val| if val.abs() < NEAR_ZERO_THRESHOLD { 1.0 } else { val });
+        let sanitized_scale_vector = original_std_dev_vector.mapv(|val| {
+            if val.abs() < NEAR_ZERO_THRESHOLD {
+                1.0
+            } else {
+                val
+            }
+        });
         self.scale = Some(sanitized_scale_vector.clone());
 
         let mut scaled_data_matrix = data_matrix;
@@ -267,12 +283,19 @@ impl PCA {
                 .collect();
 
             indexed_eigenvalues.sort_unstable_by(|(_, a_val), (_, b_val)| {
-                b_val.partial_cmp(a_val).unwrap_or(std::cmp::Ordering::Equal)
+                b_val
+                    .partial_cmp(a_val)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
-            
-            let sorted_eigenvalues_for_tol: Vec<f64> = indexed_eigenvalues.iter().map(|(_, val)| *val).collect();
-            let rank_limit = calculate_rank_by_tolerance(&sorted_eigenvalues_for_tol, tolerance, NEAR_ZERO_THRESHOLD);
-            
+
+            let sorted_eigenvalues_for_tol: Vec<f64> =
+                indexed_eigenvalues.iter().map(|(_, val)| *val).collect();
+            let rank_limit = calculate_rank_by_tolerance(
+                &sorted_eigenvalues_for_tol,
+                tolerance,
+                NEAR_ZERO_THRESHOLD,
+            );
+
             let final_rank = std::cmp::min(rank_limit, n_features);
 
             if final_rank == 0 {
@@ -280,7 +303,9 @@ impl PCA {
                 self.explained_variance = Some(Array1::zeros(0));
             } else {
                 let final_explained_variance = Array1::from_iter(
-                    indexed_eigenvalues[..final_rank].iter().map(|(_, val)| val.max(EIGENVALUE_CLAMP_MIN))
+                    indexed_eigenvalues[..final_rank]
+                        .iter()
+                        .map(|(_, val)| val.max(EIGENVALUE_CLAMP_MIN)),
                 );
                 self.explained_variance = Some(final_explained_variance);
 
@@ -289,7 +314,9 @@ impl PCA {
                 let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
                 for i in 0..final_rank {
                     let original_vec_idx = indexed_eigenvalues[i].0; // Get the original index of the eigenvector
-                    rotation_matrix.column_mut(i).assign(&original_eigenvectors.column(original_vec_idx));
+                    rotation_matrix
+                        .column_mut(i)
+                        .assign(&original_eigenvectors.column(original_vec_idx));
                 }
                 self.rotation = Some(rotation_matrix);
             }
@@ -304,12 +331,15 @@ impl PCA {
             let original_gram_eigenvectors_u = eigh_result_gram.eigenvectors; // Array2<f64> (these are U from U S V^T of Gram)
 
             let mut indexed_gram_eigenvalues: Vec<(usize, f64)> = original_gram_eigenvalues
-                .iter().map(|&v|v) // Use iter() to borrow original_gram_eigenvalues
+                .iter()
+                .map(|&v| v) // Use iter() to borrow original_gram_eigenvalues
                 .enumerate()
                 .collect();
 
             indexed_gram_eigenvalues.sort_unstable_by(|(_, a_val), (_, b_val)| {
-                b_val.partial_cmp(a_val).unwrap_or(std::cmp::Ordering::Equal)
+                b_val
+                    .partial_cmp(a_val)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
 
             // Build (eigenvalue, eigenvector-column) pairs in the same order.
@@ -319,8 +349,15 @@ impl PCA {
                 .map(|(idx, val)| (*val, original_gram_eigenvectors_u.column(*idx).to_owned()))
                 .collect();
 
-            let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues.iter().map(|(_, val)| *val).collect();
-            let rank_limit = calculate_rank_by_tolerance(&sorted_gram_eigenvalues_for_tol, tolerance, NEAR_ZERO_THRESHOLD);
+            let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues
+                .iter()
+                .map(|(_, val)| *val)
+                .collect();
+            let rank_limit = calculate_rank_by_tolerance(
+                &sorted_gram_eigenvalues_for_tol,
+                tolerance,
+                NEAR_ZERO_THRESHOLD,
+            );
 
             let final_rank = std::cmp::min(rank_limit, n_samples); // Rank is capped by n_samples here
 
@@ -329,7 +366,9 @@ impl PCA {
                 self.explained_variance = Some(Array1::zeros(0));
             } else {
                 let sorted_eigenvalues_gram_arr = Array1::from_iter(
-                    eig_pairs[..final_rank].iter().map(|(val, _)| val.max(EIGENVALUE_CLAMP_MIN))
+                    eig_pairs[..final_rank]
+                        .iter()
+                        .map(|(val, _)| val.max(EIGENVALUE_CLAMP_MIN)),
                 );
 
                 // Build U_subset using ndarray::stack
@@ -338,27 +377,30 @@ impl PCA {
                     .map(|(_, v_col)| v_col.view()) // v_col is Array1<f64>, get its view
                     .collect();
 
-                let u_subset = ndarray::stack(Axis(1), &u_block_views)
-                    .map_err(|e| format!("PCA::fit (Gram trick): Failed to stack eigenvectors into U_subset: {}", e))?;
+                let u_subset = ndarray::stack(Axis(1), &u_block_views).map_err(|e| {
+                    format!(
+                        "PCA::fit (Gram trick): Failed to stack eigenvectors into U_subset: {}",
+                        e
+                    )
+                })?;
                 // u_subset is now an owned Array2<f64> of shape (n_samples, final_rank)
-                
+
                 let mut rotation_matrix = scaled_data_matrix.t().dot(&u_subset); // (D x N) @ (N x final_rank) -> D x final_rank
-                
+
                 // sorted_eigenvalues_gram_arr is the Array1<f64> of Gram eigenvalues (length final_rank)
                 // n_samples is available in this scope.
                 // NEAR_ZERO_THRESHOLD is a const.
-                let scale_factors = Array1::from_iter(
-                    sorted_eigenvalues_gram_arr.iter().map(|&lambda_gram| {
+                let scale_factors =
+                    Array1::from_iter(sorted_eigenvalues_gram_arr.iter().map(|&lambda_gram| {
                         // lambda_gram is already >= 0 due to .max(EIGENVALUE_CLAMP_MIN)
                         let denom_squared = (n_samples - 1) as f64 * lambda_gram;
                         // Compare squares to avoid sqrt(small_num) then check, and use a slightly more robust threshold
-                        if denom_squared > NEAR_ZERO_THRESHOLD * NEAR_ZERO_THRESHOLD { 
+                        if denom_squared > NEAR_ZERO_THRESHOLD * NEAR_ZERO_THRESHOLD {
                             1.0 / denom_squared.sqrt()
                         } else {
                             0.0 // If eigenvalue is effectively zero, corresponding component's scale is zero
                         }
-                    })
-                );
+                    }));
 
                 // Broadcast multiply: (D × final_rank) .* (1 × final_rank)
                 // Scales each column of rotation_matrix by the corresponding scale_factor.
@@ -491,8 +533,13 @@ impl PCA {
         // Non-finite values (checked in `with_model`, but good practice for direct fit too if data could be raw)
         // are also mapped to 1.0. `std` should produce finite values from finite input.
         // SCALE_SANITIZATION_THRESHOLD is now a global const defined above
-        let sanitized_scale_vector = std_dev_vector_original
-            .mapv(|val| if val.is_finite() && val.abs() > SCALE_SANITIZATION_THRESHOLD { val } else { 1.0 });
+        let sanitized_scale_vector = std_dev_vector_original.mapv(|val| {
+            if val.is_finite() && val.abs() > SCALE_SANITIZATION_THRESHOLD {
+                val
+            } else {
+                1.0
+            }
+        });
         self.scale = Some(sanitized_scale_vector.clone());
         x_input_data /= &sanitized_scale_vector; // Scale data
 
@@ -501,37 +548,41 @@ impl PCA {
         // --- 3. Determine Target Components and Sketch Size (l = k + p) ---
         let max_possible_rank = std::cmp::min(n_samples, n_features);
 
-        if max_possible_rank == 0 { // Should not happen if n_samples/n_features > 0, but defensive.
+        if max_possible_rank == 0 {
+            // Should not happen if n_samples/n_features > 0, but defensive.
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
             return Ok(Array2::zeros((n_samples, 0)));
         }
-        
+
         // Determine 'p' (oversampling amount) based on user input and robust defaults
         // Constants for adaptive oversampling heuristic based on Halko et al. recommendations
-        const RFIT_ADAPTIVE_P_LOWER_BOUND: usize = 5;  // Minimum adaptive oversampling
+        const RFIT_ADAPTIVE_P_LOWER_BOUND: usize = 5; // Minimum adaptive oversampling
         const RFIT_ADAPTIVE_P_UPPER_BOUND: usize = 20; // Maximum adaptive oversampling
-        const RFIT_MINIMUM_ROBUST_P_FLOOR: usize = 4;  // Absolute minimum oversampling for theory
+        const RFIT_MINIMUM_ROBUST_P_FLOOR: usize = 4; // Absolute minimum oversampling for theory
 
-        let p_to_use: usize = if n_oversamples == 0 { // Sentinel for "use adaptive default"
+        let p_to_use: usize = if n_oversamples == 0 {
+            // Sentinel for "use adaptive default"
             // Adaptive 'p' is ~10% of k, clamped.
             let p_adaptive_raw = (n_components_requested as f64 * 0.1).ceil() as usize;
             p_adaptive_raw.clamp(RFIT_ADAPTIVE_P_LOWER_BOUND, RFIT_ADAPTIVE_P_UPPER_BOUND)
-        } else { // User provided a specific n_oversamples value
+        } else {
+            // User provided a specific n_oversamples value
             n_oversamples.max(RFIT_MINIMUM_ROBUST_P_FLOOR) // So it's not critically low
         };
 
         let l_sketch_components_ideal = n_components_requested + p_to_use;
-        
+
         // Clamp sketch components: cannot exceed dimensions of matrix, must be at least 1,
         // and should be at least n_components_requested (if possible within matrix dimensions).
         let mut l_sketch_components = l_sketch_components_ideal.min(max_possible_rank);
         l_sketch_components = l_sketch_components.max(1); // So at least 1 sketch component
-        // So sketch is large enough to find requested components, if data rank allows.
-        l_sketch_components = l_sketch_components.max(n_components_requested.min(max_possible_rank));
-        
+                                                          // So sketch is large enough to find requested components, if data rank allows.
+        l_sketch_components =
+            l_sketch_components.max(n_components_requested.min(max_possible_rank));
+
         // If, after all clamping, sketch size is 0 (e.g. max_possible_rank was 0, though checked), handle gracefully.
-        if l_sketch_components == 0 { 
+        if l_sketch_components == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
             return Ok(Array2::zeros((n_samples, 0)));
@@ -561,57 +612,75 @@ impl PCA {
             // Project: B_prime_projected = Q_prime_basis.T @ A (L x D)
             // SVD of B_prime_projected: U_B_prime @ S_B_prime @ VT_B_prime
             // Rotation sketch = VT_B_prime.T (D x L_eff)
-            
+
             let omega_prime_shape = (n_features, l_sketch_components); // D x L
-            let omega_prime_random_matrix =
-                Array2::from_shape_fn(omega_prime_shape, |_| {
-                    rng.sample(Normal::new(0.0, 1.0).expect("Failed to create Normal distribution"))
-                });
+            let omega_prime_random_matrix = Array2::from_shape_fn(omega_prime_shape, |_| {
+                rng.sample(Normal::new(0.0, 1.0).expect("Failed to create Normal distribution"))
+            });
 
             // Initial sketch: Y = A @ Omega_prime
             let q_prime_basis_candidate = centered_scaled_data_a.dot(&omega_prime_random_matrix); // (N x D) @ (D x L) -> N x L
-            if q_prime_basis_candidate.ncols() == 0 { // Should only happen if l_sketch_components was 0
-                 return Err("PCA::rfit (D <= N path): Sketch Q'_basis_candidate (from A) has zero columns before QR. This indicates l_sketch_components became 0.".into());
+            if q_prime_basis_candidate.ncols() == 0 {
+                // Should only happen if l_sketch_components was 0
+                return Err("PCA::rfit (D <= N path): Sketch Q'_basis_candidate (from A) has zero columns before QR. This indicates l_sketch_components became 0.".into());
             }
             let mut q_prime_basis = backend.qr_q_factor(&q_prime_basis_candidate)
                 .map_err(|e| format!("PCA::rfit (D <= N path): QR decomposition of Q' (initial sketch of A) failed: {}", e))?; // Q factor (N x L_actual)
-            
+
             // Power iterations to refine Q_prime_basis
             for i in 0..N_POWER_ITERATIONS {
-                if q_prime_basis.ncols() == 0 { break; } // Orthonormal basis might have reduced rank
-                // W_prime_intermediate = A.T @ Q_prime_basis  (D x N) @ (N x L) -> D x L
+                if q_prime_basis.ncols() == 0 {
+                    break;
+                } // Orthonormal basis might have reduced rank
+                  // W_prime_intermediate = A.T @ Q_prime_basis  (D x N) @ (N x L) -> D x L
                 let w_prime_intermediate_candidate = centered_scaled_data_a.t().dot(&q_prime_basis);
-                if w_prime_intermediate_candidate.ncols() == 0 { break; }
+                if w_prime_intermediate_candidate.ncols() == 0 {
+                    break;
+                }
                 let w_prime_ortho_basis = backend.qr_q_factor(&w_prime_intermediate_candidate)
                     .map_err(|e| format!("PCA::rfit (D <= N path): QR decomposition of W' (power iteration {}) failed: {}", i, e))?; // D x L_actual
-                
-                if w_prime_ortho_basis.ncols() == 0 { break; }
+
+                if w_prime_ortho_basis.ncols() == 0 {
+                    break;
+                }
                 // Z_prime_intermediate = A @ W_prime_ortho_basis (N x D) @ (D x L) -> N x L
-                let z_prime_intermediate_candidate = centered_scaled_data_a.dot(&w_prime_ortho_basis);
-                if z_prime_intermediate_candidate.ncols() == 0 { break; }
+                let z_prime_intermediate_candidate =
+                    centered_scaled_data_a.dot(&w_prime_ortho_basis);
+                if z_prime_intermediate_candidate.ncols() == 0 {
+                    break;
+                }
                 q_prime_basis = backend.qr_q_factor(&z_prime_intermediate_candidate)
-                    .map_err(|e| format!("PCA::rfit (D <= N path): QR decomposition of Z' (power iteration {}) failed: {}", i, e))?; // N x L_actual
+                    .map_err(|e| format!("PCA::rfit (D <= N path): QR decomposition of Z' (power iteration {}) failed: {}", i, e))?;
+                // N x L_actual
             }
 
             if q_prime_basis.ncols() == 0 {
-                 return Err("PCA::rfit (D <= N path): Refined sketch Q'_basis (from A) has zero columns after power iterations.".into());
+                return Err("PCA::rfit (D <= N path): Refined sketch Q'_basis (from A) has zero columns after power iterations.".into());
             }
 
             // Project A onto the refined basis: B_prime_projected = Q_prime_basis.T @ A
             let b_prime_projected = q_prime_basis.t().dot(&centered_scaled_data_a); // (L x N) @ (N x D) -> L x D
-            
+
             // SVD of the small projected matrix B_prime_projected
             // We need V^T from B_prime = U S V^T.
             // The columns of V (rows of V^T) are the principal components in feature space.
-            let svd_output_b_prime = backend.svd_into(b_prime_projected, false, true) // compute_u=false, compute_v=true
-                .map_err(|e| format!("PCA::rfit (D <= N path): SVD of B' (projected sketch of A) failed: {}", e))?;
-            
-            singular_values_from_projected_b = svd_output_b_prime.s; // s_values
-            let vt_b_prime_matrix = svd_output_b_prime.vt // V^T matrix
-                .ok_or("PCA::rfit (D <= N path): SVD V_B_prime^T not computed from B' (A sketch)")?; // L_eff x D or L_actual x D
-            
-            final_rotation_sketch = vt_b_prime_matrix.t().into_owned(); // D x L_eff (Principal axes)
+            let svd_output_b_prime = backend
+                .svd_into(b_prime_projected, false, true) // compute_u=false, compute_v=true
+                .map_err(|e| {
+                    format!(
+                        "PCA::rfit (D <= N path): SVD of B' (projected sketch of A) failed: {}",
+                        e
+                    )
+                })?;
 
+            singular_values_from_projected_b = svd_output_b_prime.s; // s_values
+            let vt_b_prime_matrix = svd_output_b_prime
+                .vt // V^T matrix
+                .ok_or(
+                    "PCA::rfit (D <= N path): SVD V_B_prime^T not computed from B' (A sketch)",
+                )?; // L_eff x D or L_actual x D
+
+            final_rotation_sketch = vt_b_prime_matrix.t().into_owned(); // D x L_eff (Principal axes)
         } else {
             // --- Strategy 2: D > N (Wide Matrix: More features than samples) ---
             // Sketch A.T: Y = A.T @ Omega (D x L)
@@ -621,10 +690,9 @@ impl PCA {
             // Rotation sketch = Q_basis @ U_B (D x L_eff)
 
             let omega_shape = (n_samples, l_sketch_components); // N x L
-            let omega_random_matrix =
-                Array2::from_shape_fn(omega_shape, |_| {
-                    rng.sample(Normal::new(0.0, 1.0).expect("Failed to create Normal distribution"))
-                });
+            let omega_random_matrix = Array2::from_shape_fn(omega_shape, |_| {
+                rng.sample(Normal::new(0.0, 1.0).expect("Failed to create Normal distribution"))
+            });
 
             // Initial sketch: Y_aat_candidate = A.T @ Omega
             let q_basis_candidate = centered_scaled_data_a.t().dot(&omega_random_matrix); // (D x N) @ (N x L) -> D x L
@@ -636,25 +704,34 @@ impl PCA {
 
             // Power iterations to refine Q_basis
             for i in 0..N_POWER_ITERATIONS {
-                if q_basis.ncols() == 0 { break; }
+                if q_basis.ncols() == 0 {
+                    break;
+                }
                 // W_intermediate_candidate = A @ Q_basis (N x D) @ (D x L) -> N x L
                 let w_intermediate_candidate = centered_scaled_data_a.dot(&q_basis);
-                if w_intermediate_candidate.ncols() == 0 { break; }
+                if w_intermediate_candidate.ncols() == 0 {
+                    break;
+                }
                 let w_ortho_basis = backend.qr_q_factor(&w_intermediate_candidate)
                     .map_err(|e| format!("PCA::rfit (D > N path): QR decomposition of W (power iteration {}) failed: {}", i, e))?; // N x L_actual
 
-                if w_ortho_basis.ncols() == 0 { break; }
+                if w_ortho_basis.ncols() == 0 {
+                    break;
+                }
                 // Z_intermediate_candidate = A.T @ W_ortho_basis (D x N) @ (N x L) -> D x L
                 let z_intermediate_candidate = centered_scaled_data_a.t().dot(&w_ortho_basis);
-                if z_intermediate_candidate.ncols() == 0 { break; }
+                if z_intermediate_candidate.ncols() == 0 {
+                    break;
+                }
                 q_basis = backend.qr_q_factor(&z_intermediate_candidate)
-                    .map_err(|e| format!("PCA::rfit (D > N path): QR decomposition of Z (power iteration {}) failed: {}", i, e))?; // D x L_actual
+                    .map_err(|e| format!("PCA::rfit (D > N path): QR decomposition of Z (power iteration {}) failed: {}", i, e))?;
+                // D x L_actual
             }
-            
+
             if q_basis.ncols() == 0 {
                 return Err("PCA::rfit (D > N path): Refined sketch Q_basis (from A.T) has zero columns after power iterations.".into());
             }
-            
+
             // Project A.T onto the refined basis Q_basis: B_projected = Q_basis.T @ A.T = (A @ Q_basis).T
             // So, B_projected_transpose = A @ Q_basis
             let b_projected_transpose = centered_scaled_data_a.dot(&q_basis); // (N x D) @ (D x L) -> N x L
@@ -663,20 +740,29 @@ impl PCA {
             // SVD of the small projected matrix B_projected
             // We need U_B from B_projected = U_B S_B VT_B.
             // Rotation sketch = Q_basis @ U_B
-            let svd_output_b = backend.svd_into(b_projected, true, false) // compute_u=true, compute_v=false
-                .map_err(|e| format!("PCA::rfit (D > N path): SVD of B_projected (from A.T sketch) failed: {}", e))?;
-            
+            let svd_output_b = backend
+                .svd_into(b_projected, true, false) // compute_u=true, compute_v=false
+                .map_err(|e| {
+                    format!(
+                        "PCA::rfit (D > N path): SVD of B_projected (from A.T sketch) failed: {}",
+                        e
+                    )
+                })?;
+
             singular_values_from_projected_b = svd_output_b.s; // s_values
-            let u_b_matrix = svd_output_b.u // U_B matrix
-                .ok_or("PCA::rfit (D > N path): SVD U_B not computed from B_projected (A.T sketch)")?; // L x L_eff or L_actual x L_eff
-            
+            let u_b_matrix = svd_output_b
+                .u // U_B matrix
+                .ok_or(
+                    "PCA::rfit (D > N path): SVD U_B not computed from B_projected (A.T sketch)",
+                )?; // L x L_eff or L_actual x L_eff
+
             final_rotation_sketch = q_basis.dot(&u_b_matrix); // (D x L_actual) @ (L_actual x L_eff) -> D x L_eff (Principal axes)
         }
 
         // --- 6. Post-Sketching: Select Components, Normalize, and Update Model ---
-        
+
         // Number of components effectively found by the SVD of the sketch (can be <= l_sketch_components)
-        let k_eff_from_sketch_svd = final_rotation_sketch.ncols(); 
+        let k_eff_from_sketch_svd = final_rotation_sketch.ncols();
         if k_eff_from_sketch_svd == 0 {
             self.rotation = Some(Array2::zeros((n_features, 0)));
             self.explained_variance = Some(Array1::zeros(0));
@@ -690,13 +776,15 @@ impl PCA {
             // Apply tolerance filtering only if valid and data allows
             if !singular_values_from_projected_b.is_empty()
                 && tolerance_value > 0.0 // Tolerance must be positive
-                && tolerance_value < 1.0 // Tolerance strictly less than 1 makes sense for ratio filtering
-                                         // Using <= 1.0 as in original code was too permissive, 
-                                         // as tol=1.0 would keep only components equal to the largest.
+                && tolerance_value < 1.0
+            // Tolerance strictly less than 1 makes sense for ratio filtering
+            // Using <= 1.0 as in original code was too permissive,
+            // as tol=1.0 would keep only components equal to the largest.
             {
                 // SVD singular values are sorted in descending order.
-                let largest_singular_value = singular_values_from_projected_b[0]; 
-                if largest_singular_value > NEAR_ZERO_THRESHOLD { // Avoid issues if all singular values are effectively zero
+                let largest_singular_value = singular_values_from_projected_b[0];
+                if largest_singular_value > NEAR_ZERO_THRESHOLD {
+                    // Avoid issues if all singular values are effectively zero
                     let singular_value_threshold = tolerance_value * largest_singular_value; // tolerance_value is a fraction, should be > 0
                     let rank_by_tolerance = singular_values_from_projected_b
                         .iter()
@@ -742,28 +830,25 @@ impl PCA {
                 let selected_singular_values =
                     singular_values_from_projected_b.slice(s![..n_components_to_keep]);
                 // Variance = (singular_value_of_sketch)^2 / (n_samples - 1)
-                let variances = selected_singular_values
-                    .mapv(|s_val| s_val.powi(2) / ((n_samples - 1) as f64));
+                let variances =
+                    selected_singular_values.mapv(|s_val| s_val.powi(2) / ((n_samples - 1) as f64));
                 self.explained_variance = Some(variances);
             } else {
                 // Variance is undefined for a single sample.
-                self.explained_variance =
-                    Some(Array1::from_elem(n_components_to_keep, f64::NAN));
+                self.explained_variance = Some(Array1::from_elem(n_components_to_keep, f64::NAN));
             }
         }
 
         // --- 7. Calculate and Return Principal Component Scores for the Input Data ---
         // Scores = Centered_Scaled_Data_A @ Final_Rotation_Matrix
         // Need to access the potentially just-set self.rotation.
-        let rotation_for_transform = self
-            .rotation
-            .as_ref()
-            .ok_or_else(|| "PCA::rfit: Internal error: Rotation matrix not set after rfit processing.")?;
-        
+        let rotation_for_transform = self.rotation.as_ref().ok_or_else(|| {
+            "PCA::rfit: Internal error: Rotation matrix not set after rfit processing."
+        })?;
+
         // centered_scaled_data_a is (N x D)
         // rotation_for_transform is (D x k_kept)
-        let transformed_principal_components =
-            centered_scaled_data_a.dot(rotation_for_transform); // -> N x k_kept
+        let transformed_principal_components = centered_scaled_data_a.dot(rotation_for_transform); // -> N x k_kept
 
         Ok(transformed_principal_components)
     }
@@ -784,13 +869,16 @@ impl PCA {
     /// does not match the model's feature dimension.
     pub fn transform(&self, mut x: Array2<f64>) -> Result<Array2<f64>, Box<dyn Error>> {
         // Retrieve model components, so they exist.
-        let rotation_matrix = self.rotation.as_ref()
-            .ok_or_else(|| "PCA::transform: PCA model: Rotation matrix not set. Fit or load a model first.")?;
-        let mean_vector = self.mean.as_ref()
-            .ok_or_else(|| "PCA::transform: PCA model: Mean vector not set. Fit or load a model first.")?;
+        let rotation_matrix = self.rotation.as_ref().ok_or_else(|| {
+            "PCA::transform: PCA model: Rotation matrix not set. Fit or load a model first."
+        })?;
+        let mean_vector = self.mean.as_ref().ok_or_else(|| {
+            "PCA::transform: PCA model: Mean vector not set. Fit or load a model first."
+        })?;
         // self.scale is guaranteed to contain positive, finite values by model construction/loading.
-        let scale_vector = self.scale.as_ref()
-            .ok_or_else(|| "PCA::transform: PCA model: Scale vector not set. Fit or load a model first.")?;
+        let scale_vector = self.scale.as_ref().ok_or_else(|| {
+            "PCA::transform: PCA model: Scale vector not set. Fit or load a model first."
+        })?;
 
         let n_input_samples = x.nrows();
         let n_input_features = x.ncols();
@@ -806,18 +894,18 @@ impl PCA {
         // Additional internal consistency checks (should hold if model was properly constructed/loaded)
         // These checks are defensive programming.
         if rotation_matrix.nrows() != n_model_features {
-             return Err(format!(
+            return Err(format!(
                 "PCA::transform: Model inconsistency: Rotation matrix feature dimension ({}) does not match model's feature dimension ({}).",
                 rotation_matrix.nrows(), n_model_features
             ).into());
         }
-         if scale_vector.len() != n_model_features {
+        if scale_vector.len() != n_model_features {
             return Err(format!(
                 "PCA::transform: Model inconsistency: Scale vector dimension ({}) does not match model's feature dimension ({}).",
                 scale_vector.len(), n_model_features
             ).into());
         }
-        
+
         // Handle empty input data (0 samples)
         if n_input_samples == 0 {
             let k_components = rotation_matrix.ncols();
@@ -832,8 +920,8 @@ impl PCA {
             // `row.view_mut()` provides the necessary IntoNdProducer.
             // `mean_vector.view()` and `scale_vector.view()` also provide IntoNdProducer.
             ndarray::Zip::from(row.view_mut())
-                .and(mean_vector.view()) 
-                .and(scale_vector.view())  
+                .and(mean_vector.view())
+                .and(scale_vector.view())
                 .for_each(|val_ref, &m_val, &s_val| {
                     // s_val is from self.scale, which is guaranteed to be positive and finite.
                     *val_ref = (*val_ref - m_val) / s_val;
@@ -863,10 +951,15 @@ impl PCA {
         // explained_variance being None is acceptable, for example, if the model was created
         // using `with_model` and eigenvalues were not provided or computed.
         // `load_model` contains further validation for consistency if explained_variance is Some.
-        let file = File::create(path.as_ref())
-            .map_err(|e| format!("PCA::save_model: Failed to create file at {:?}: {}", path.as_ref(), e))?;
-        let mut writer = BufWriter::new(file); 
-        
+        let file = File::create(path.as_ref()).map_err(|e| {
+            format!(
+                "PCA::save_model: Failed to create file at {:?}: {}",
+                path.as_ref(),
+                e
+            )
+        })?;
+        let mut writer = BufWriter::new(file);
+
         bincode::serde::encode_into_std_write(self, &mut writer, bincode::config::standard())
             .map_err(|e| format!("PCA::save_model: Failed to serialize PCA model: {}", e))?;
         Ok(())
@@ -881,23 +974,42 @@ impl PCA {
     /// loaded model is found to be incomplete, internally inconsistent (e.g., mismatched dimensions),
     /// or contains non-positive scale factors.
     pub fn load_model<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
-        let file = File::open(path.as_ref())
-            .map_err(|e| format!("PCA::load_model: Failed to open file at {:?}: {}", path.as_ref(), e))?;
-        let mut reader = BufReader::new(file); 
-        
-        let pca_model: PCA = bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
-            .map_err(|e| format!("PCA::load_model: Failed to deserialize PCA model: {}", e))?;
+        let file = File::open(path.as_ref()).map_err(|e| {
+            format!(
+                "PCA::load_model: Failed to open file at {:?}: {}",
+                path.as_ref(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
 
-        let rotation = pca_model.rotation.as_ref().ok_or("PCA::load_model: Loaded PCA model is missing rotation matrix.")?;
-        let mean = pca_model.mean.as_ref().ok_or("PCA::load_model: Loaded PCA model is missing mean vector.")?;
-        let scale = pca_model.scale.as_ref().ok_or("PCA::load_model: Loaded PCA model is missing scale vector.")?;
-        
+        let pca_model: PCA =
+            bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
+                .map_err(|e| format!("PCA::load_model: Failed to deserialize PCA model: {}", e))?;
+
+        let rotation = pca_model
+            .rotation
+            .as_ref()
+            .ok_or("PCA::load_model: Loaded PCA model is missing rotation matrix.")?;
+        let mean = pca_model
+            .mean
+            .as_ref()
+            .ok_or("PCA::load_model: Loaded PCA model is missing mean vector.")?;
+        let scale = pca_model
+            .scale
+            .as_ref()
+            .ok_or("PCA::load_model: Loaded PCA model is missing scale vector.")?;
+
         let d_rot_features = rotation.nrows();
         let d_mean_features = mean.len();
         let d_scale_features = scale.len();
 
         if !(d_rot_features == d_mean_features && d_mean_features == d_scale_features) {
-            if !(d_rot_features == 0 && rotation.ncols() == 0 && d_mean_features == 0 && d_scale_features == 0) {
+            if !(d_rot_features == 0
+                && rotation.ncols() == 0
+                && d_mean_features == 0
+                && d_scale_features == 0)
+            {
                 return Err(format!(
                     "PCA::load_model: Loaded PCA model has inconsistent feature dimensions: rotation_features={}, mean_features={}, scale_features={}",
                     d_rot_features, d_mean_features, d_scale_features
@@ -907,7 +1019,10 @@ impl PCA {
         // Validate that loaded scale factors are positive, aligning with the contract for self.scale.
         // self.scale is expected to store sanitized, positive values (1.0 for original std devs <= SCALE_SANITIZATION_THRESHOLD, else the std dev itself).
         // Scale values must be strictly positive. EIGENVALUE_CLAMP_MIN is 0.0.
-        if scale.iter().any(|&val| !val.is_finite() || val <= EIGENVALUE_CLAMP_MIN) { 
+        if scale
+            .iter()
+            .any(|&val| !val.is_finite() || val <= EIGENVALUE_CLAMP_MIN)
+        {
             return Err("PCA::load_model: Loaded PCA model's scale vector contains invalid (non-finite, zero, or negative) values. Scale values must be strictly positive.".into());
         }
 
@@ -920,10 +1035,15 @@ impl PCA {
                         ev.len(), rot.ncols()
                     ).into());
                 }
-            } else { // Should not happen if rotation is required for a valid model
-                 return Err("PCA::load_model: Loaded PCA model has explained_variance but no rotation matrix.".into());
+            } else {
+                // Should not happen if rotation is required for a valid model
+                return Err("PCA::load_model: Loaded PCA model has explained_variance but no rotation matrix.".into());
             }
-            if ev.iter().any(|&val| !val.is_finite() || val < EIGENVALUE_CLAMP_MIN) { // Variances cannot be negative
+            if ev
+                .iter()
+                .any(|&val| !val.is_finite() || val < EIGENVALUE_CLAMP_MIN)
+            {
+                // Variances cannot be negative
                 return Err("PCA::load_model: Loaded PCA model's explained_variance vector contains invalid (non-finite or negative) values.".into());
             }
         }
