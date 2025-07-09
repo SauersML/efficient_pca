@@ -3,9 +3,9 @@
 // This module is conditionally compiled via src/lib.rs
 // #[cfg(feature = "enable-eigensnp-diagnostics")]
 
-use serde::{Serialize, Deserialize}; // For TestResultRecord if it needs to be serialized later
-use std::sync::Mutex;
-use once_cell::sync::Lazy; // Using once_cell for static initialization
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize}; // For TestResultRecord if it needs to be serialized later
+use std::sync::Mutex; // Using once_cell for static initialization
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResultRecord {
