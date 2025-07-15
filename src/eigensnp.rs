@@ -11,6 +11,17 @@ use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use std::error::Error;
 use std::simd::prelude::*;
+use std::sync::Arc;
+
+/// Holds the essential metadata for a single SNP used in the PCA.
+/// The order of these structs in a Vec should correspond to the `PcaSnpId`.
+#[derive(Debug, Clone)]
+pub struct PcaSnpMetadata {
+    pub id: Arc<String>,
+    pub chr: Arc<String>,
+    pub pos: u64,
+}
+
 // Updated diagnostics struct names
 #[cfg(feature = "enable-eigensnp-diagnostics")]
 use crate::diagnostics::{
@@ -626,7 +637,17 @@ impl EigenSNPCoreAlgorithm {
         &self,
         genotype_data: &G,
         ld_block_specifications: &[LdBlockSpecification],
+        snp_metadata: &[PcaSnpMetadata],
     ) -> Result<PcaOutputWithDiagnostics, ThreadSafeStdError> {
+        // --- ADD THIS VALIDATION CHECK ---
+        assert_eq!(
+            snp_metadata.len(),
+            genotype_data.num_pca_snps(),
+            "The number of entries in snp_metadata ({}) must exactly match the number of PCA SNPs in the genotype_accessor ({}).",
+            snp_metadata.len(),
+            genotype_data.num_pca_snps()
+        );
+        // --- END OF VALIDATION CHECK ---
         #[cfg(feature = "enable-eigensnp-diagnostics")]
         let mut diagnostics_collector: Option<FullPcaRunDetailedDiagnostics> = None;
 
@@ -788,8 +809,9 @@ impl EigenSNPCoreAlgorithm {
                 genotype_data,
                 ld_block_specifications,
                 &subset_sample_ids_selected,
+                snp_metadata,
                 // This closure captures the `output_dir` and performs the file I/O.
-                |local_pcs, block_list_id| {
+                |local_pcs, block_snp_metadata, block_list_id| {
                     if local_pcs.is_empty() {
                         return Ok(());
                     }
@@ -811,16 +833,26 @@ impl EigenSNPCoreAlgorithm {
                     let mut writer = std::io::BufWriter::new(file);
                     use std::io::Write; // Import the Write trait for writeln!
 
-                    // Use a standard `for` loop for robust, fallible I/O operations.
-                    for row in local_pcs.rows() {
-                        let row_str = row
-                            .iter()
-                            .map(|&val| val.to_string())
-                            .collect::<Vec<String>>()
-                            .join("\t");
-                        // The `?` operator will correctly propagate any I/O error,
-                        // causing the closure to return an `Err` immediately.
-                        writeln!(writer, "{}", row_str)?;
+                    // Write a header
+                    write!(writer, "chr\tpos\tid")?;
+                    for i in 1..=local_pcs.ncols() {
+                        write!(writer, "\tlocal_pc_{}", i)?;
+                    }
+                    writeln!(writer)?;
+
+                    // Zip the metadata with the rows of the loadings matrix
+                    for (snp_info, loadings_row) in
+                        block_snp_metadata.iter().zip(local_pcs.rows())
+                    {
+                        write!(
+                            writer,
+                            "{}\t{}\t{}",
+                            snp_info.chr, snp_info.pos, snp_info.id
+                        )?;
+                        for &val in loadings_row.iter() {
+                            write!(writer, "\t{}", val)?;
+                        }
+                        writeln!(writer)?;
                     }
                     Ok(())
                 },
@@ -837,8 +869,9 @@ impl EigenSNPCoreAlgorithm {
                 genotype_data,
                 ld_block_specifications,
                 &subset_sample_ids_selected,
+                snp_metadata,
                 // This closure does nothing and will be completely optimized away by the compiler.
-                |_, _| Ok(()),
+                |_, _, _| Ok(()),
                 #[cfg(feature = "enable-eigensnp-diagnostics")]
                 diagnostics_collector
                     .as_mut()
@@ -1076,6 +1109,7 @@ impl EigenSNPCoreAlgorithm {
         genotype_data: &G,
         ld_block_specs: &[LdBlockSpecification],
         subset_sample_ids: &[QcSampleId],
+        snp_metadata: &[PcaSnpMetadata],
         on_local_pcs_generated: F,
         #[cfg(feature = "enable-eigensnp-diagnostics")] mut diagnostics_collector: Option<
             &mut Vec<crate::diagnostics::PerBlockLocalBasisDiagnostics>,
@@ -1086,7 +1120,9 @@ impl EigenSNPCoreAlgorithm {
     ) -> Result<Vec<LocalBasisWithDiagnostics>, ThreadSafeStdError>
     where
         G: PcaReadyGenotypeAccessor,
-        F: Fn(&ArrayView2<f32>, LdBlockListId) -> Result<(), ThreadSafeStdError> + Send + Sync,
+        F: Fn(&ArrayView2<f32>, &[PcaSnpMetadata], LdBlockListId) -> Result<(), ThreadSafeStdError>
+            + Send
+            + Sync,
     {
         info!(
             "Learning local eigenSNP bases for {} LD blocks using N_subset = {} samples.",
@@ -1260,10 +1296,23 @@ impl EigenSNPCoreAlgorithm {
                     basis_vectors: basis_vectors_for_block,
                 };
 
+                // --- NEW CODE START ---
+                // Get the metadata for just the SNPs in this specific block
+                let block_specific_metadata: Vec<PcaSnpMetadata> = block_spec
+                    .pca_snp_ids_in_block
+                    .iter()
+                    .map(|pca_id| snp_metadata[pca_id.0].clone()) // Look up and clone
+                    .collect();
+                // --- NEW CODE END ---
+
                 // Invoke the provided closure to consume the generated local PCs.
                 // This call is monomorphized by the compiler to be either a file-writing
                 // operation or a true no-op, achieving a zero-cost abstraction.
-                on_local_pcs_generated(&basis_result.basis_vectors.view(), block_list_id)?;
+                on_local_pcs_generated(
+                    &basis_result.basis_vectors.view(),
+                    &block_specific_metadata,
+                    block_list_id,
+                )?;
 
                 // Now, per_block_diag_entry_for_map is guaranteed to be in scope.
                 #[cfg(feature = "enable-eigensnp-diagnostics")]
