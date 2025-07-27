@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [openblas, openblas-system, mkl, mkl-system, faer]
+        backend: [openblas, openblas-system, mkl, faer]
         include:
           - backend: openblas
             feature: backend_openblas
@@ -35,9 +35,6 @@ jobs:
             rustflags: ""
           - backend: mkl
             feature: backend_mkl
-            rustflags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
-          - backend: mkl-system
-            feature: backend_mkl_system
             rustflags: "-L/opt/intel/oneapi/mkl/latest/lib/intel64"
           - backend: faer # This name is just a label for the matrix row
             feature: "faer_links_ndarray_static_openblas"
@@ -101,7 +98,7 @@ jobs:
       - name: Cache MKL apt packages
         uses: actions/cache@v4
         id: cache-mkl-apt
-        if: matrix.backend == 'mkl' || matrix.backend == 'mkl-system'
+        if: matrix.backend == 'mkl'
         with:
           path: |
             /var/cache/apt/archives
@@ -111,7 +108,7 @@ jobs:
             ${{ runner.os }}-apt-mkl-key-v2-
 
       - name: Setup Intel MKL Repository
-        if: matrix.backend == 'mkl' || matrix.backend == 'mkl-system'
+        if: matrix.backend == 'mkl'
         run: |
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | 
             sudo gpg --dearmor --output /usr/share/keyrings/intel-archive-keyring.gpg
@@ -119,7 +116,7 @@ jobs:
             sudo tee /etc/apt/sources.list.d/oneAPI.list
 
       - name: Install Intel MKL
-        if: matrix.backend == 'mkl' || matrix.backend == 'mkl-system'
+        if: matrix.backend == 'mkl'
         run: |
           if [[ "${{ steps.cache-mkl-apt.outputs.cache-hit }}" != 'true' ]]; then
             echo "MKL installation cache MISS. Installing MKL via apt..."
