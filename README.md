@@ -23,6 +23,43 @@ Add `efficient_pca` to your `Cargo.toml` dependencies.
 cargo add efficient_pca
 ```
 
+### Linear Algebra Backend Selection
+
+This crate supports multiple linear algebra backends for optimal performance across different platforms:
+
+#### OpenBLAS Backends
+- **`backend_openblas`** (default): Uses statically linked OpenBLAS
+- **`backend_openblas_system`**: Uses system/dynamically linked OpenBLAS
+  - **Recommended for macOS** where static linking can be problematic
+  - Requires OpenBLAS to be installed on your system
+
+#### Intel MKL Backends  
+- **`backend_mkl`**: Uses statically linked Intel MKL
+- **`backend_mkl_system`**: Uses system/dynamically linked Intel MKL
+
+#### Alternative Backend
+- **`backend_faer`**: Uses the pure Rust `faer` linear algebra library
+
+#### Usage Examples
+
+For macOS users or when experiencing static linking issues:
+```toml
+[dependencies]
+efficient_pca = { version = "*", default-features = false, features = ["backend_openblas_system"] }
+```
+
+For Intel systems with MKL installed:
+```toml
+[dependencies]
+efficient_pca = { version = "*", default-features = false, features = ["backend_mkl_system"] }
+```
+
+For pure Rust environments:
+```toml
+[dependencies]
+efficient_pca = { version = "*", default-features = false, features = ["backend_faer"] }
+```
+
 ---
 ## API Overview
 
