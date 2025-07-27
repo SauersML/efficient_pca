@@ -196,10 +196,16 @@ jobs:
         if: always() # Run even if prior steps failed, to see what's there
         run: |
           echo "Listing target/test_artifacts directory for ${{ matrix.backend }}:"
-          ls -R target/test_artifacts/
+          if [ -d "target/test_artifacts/" ]; then
+            ls -R target/test_artifacts/
+          else
+            echo "target/test_artifacts/ directory does not exist"
+            mkdir -p target/test_artifacts/
+            echo "Created empty target/test_artifacts/ directory"
+          fi
           echo "-----------------------------------------"
           echo "Searching for eigensnp_summary_results.tsv in target/test_artifacts for ${{ matrix.backend }}:"
-          find target/test_artifacts/ -name "eigensnp_summary_results.tsv" -print
+          find target/test_artifacts/ -name "eigensnp_summary_results.tsv" -print || echo "No eigensnp_summary_results.tsv files found"
           echo "-----------------------------------------"
 
       - name: Upload eigensnp test summary
