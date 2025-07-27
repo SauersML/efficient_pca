@@ -159,11 +159,13 @@ fn run_diagnostic_test_with_params(
         refine_pass_count,
         collect_diagnostics: true,
         diagnostic_block_list_id_to_trace,
+        local_pcs_output_dir: None,
     };
 
     let algorithm = EigenSNPCoreAlgorithm::new(config.clone());
+    let snp_metadata: Vec<efficient_pca::eigensnp::PcaSnpMetadata> = (0..mock_data_accessor.num_pca_snps()).map(|i| efficient_pca::eigensnp::PcaSnpMetadata { id: std::sync::Arc::new(format!("snp_{}", i)), chr: std::sync::Arc::new("chr1".to_string()), pos: i as u64 * 1000 + 100000 }).collect();
     let pca_result_tuple = algorithm
-        .compute_pca(&mock_data_accessor, &ld_block_specs)
+        .compute_pca(&mock_data_accessor, &ld_block_specs, &snp_metadata)
         .map_err(|e| e as Box<dyn std::error::Error>)?;
 
     let _pca_output: EigenSNPCoreOutput = pca_result_tuple.0;

@@ -25,10 +25,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [openblas, mkl, faer]
+        backend: [openblas, openblas-system, mkl, faer]
         include:
           - backend: openblas
             feature: backend_openblas
+            rustflags: ""
+          - backend: openblas-system
+            feature: backend_openblas_system
             rustflags: ""
           - backend: mkl
             feature: backend_mkl
@@ -69,7 +72,7 @@ jobs:
       - name: Cache gfortran apt package
         uses: actions/cache@v4
         id: cache-gfortran
-        if: matrix.backend == 'openblas' || matrix.backend == 'faer' # Only run this step if gfortran is needed
+        if: matrix.backend == 'openblas' || matrix.backend == 'openblas-system' || matrix.backend == 'faer' # Only run this step if gfortran is needed
         with:
           path: |
             /var/cache/apt/archives
@@ -79,12 +82,18 @@ jobs:
             ${{ runner.os }}-apt-gfortran-key-gfortran-v1
 
       - name: Install Fortran compiler
-        if: matrix.backend == 'openblas' || matrix.backend == 'faer'
+        if: matrix.backend == 'openblas' || matrix.backend == 'openblas-system' || matrix.backend == 'faer'
         run: |
           if [[ "${{ steps.cache-gfortran.outputs.cache-hit }}" != 'true' ]]; then
             sudo apt-get update -qq
           fi
           sudo apt-get install -y gfortran
+
+      - name: Install system OpenBLAS
+        if: matrix.backend == 'openblas-system'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libopenblas-dev
 
       - name: Cache MKL apt packages
         uses: actions/cache@v4
@@ -184,10 +193,16 @@ jobs:
         if: always() # Run even if prior steps failed, to see what's there
         run: |
           echo "Listing target/test_artifacts directory for ${{ matrix.backend }}:"
-          ls -R target/test_artifacts/
+          if [ -d "target/test_artifacts/" ]; then
+            ls -R target/test_artifacts/
+          else
+            echo "target/test_artifacts/ directory does not exist"
+            mkdir -p target/test_artifacts/
+            echo "Created empty target/test_artifacts/ directory"
+          fi
           echo "-----------------------------------------"
           echo "Searching for eigensnp_summary_results.tsv in target/test_artifacts for ${{ matrix.backend }}:"
-          find target/test_artifacts/ -name "eigensnp_summary_results.tsv" -print
+          find target/test_artifacts/ -name "eigensnp_summary_results.tsv" -print || echo "No eigensnp_summary_results.tsv files found"
           echo "-----------------------------------------"
 
       - name: Upload eigensnp test summary

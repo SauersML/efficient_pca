@@ -9,7 +9,7 @@
 
 use efficient_pca::eigensnp::{
     reorder_array_owned, reorder_columns_owned, EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig,
-    EigenSNPCoreOutput, LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, QcSampleId,
+    EigenSNPCoreOutput, LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, PcaSnpMetadata, QcSampleId,
     ThreadSafeStdError,
 };
 use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayView2 was already added, Array removed
@@ -734,7 +734,8 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+            algorithm.compute_pca(&test_data, &ld_blocks, &snp_metadata)
         });
 
         match output_result_tuple {
@@ -950,7 +951,8 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+            algorithm.compute_pca(&test_data, &ld_blocks, &snp_metadata)
         });
 
         match output_result_tuple {
@@ -1128,7 +1130,8 @@ mod eigensnp_integration_tests {
                 user_defined_block_tag: "block1".to_string(),
                 pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
             }];
-            algorithm.compute_pca(&test_data, &ld_blocks)
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+            algorithm.compute_pca(&test_data, &ld_blocks, &snp_metadata)
         });
 
         match output_result_tuple {
@@ -1278,8 +1281,9 @@ mod eigensnp_integration_tests {
         let algorithm = EigenSNPCoreAlgorithm::new(config);
         let ld_blocks = vec![];
 
+        let snp_metadata = create_dummy_snp_metadata(num_snps);
         let (output, _) = algorithm
-            .compute_pca(&test_data, &ld_blocks)
+            .compute_pca(&test_data, &ld_blocks, &snp_metadata)
             .expect("PCA with 0 SNPs failed");
 
         assert_eq!(output.num_pca_snps_used, 0);
@@ -1326,8 +1330,9 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
         }];
 
+        let snp_metadata = create_dummy_snp_metadata(num_snps);
         let (output, _) = algorithm
-            .compute_pca(&test_data, &ld_blocks)
+            .compute_pca(&test_data, &ld_blocks, &snp_metadata)
             .expect("PCA with 0 samples failed");
 
         assert_eq!(output.num_qc_samples_used, 0);
@@ -1412,7 +1417,8 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_total_snps).map(PcaSnpId).collect(),
         }];
 
-        let rust_output_result_tuple = algorithm.compute_pca(&test_data, &ld_blocks);
+            let snp_metadata = create_dummy_snp_metadata(num_total_snps);
+        let rust_output_result_tuple = algorithm.compute_pca(&test_data, &ld_blocks, &snp_metadata);
 
         let rust_output = match rust_output_result_tuple {
             Ok((output, _)) => {
@@ -1838,7 +1844,8 @@ pub fn run_pc_correlation_with_truth_set_test(
     }];
 
     let mut rust_pcs_computed = 0;
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((rust_result, _)) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
             save_matrix_to_tsv(
@@ -2082,7 +2089,8 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
     }];
 
     let mut rust_pcs_computed = 0;
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((rust_result, _)) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
             outcome_details.push_str(&format!(
@@ -2298,7 +2306,8 @@ pub fn run_generic_large_matrix_test(
 
     let mut rust_pcs_computed = 0;
 
-    match algorithm.compute_pca(&test_data_accessor, &ld_blocks) {
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((output, _)) => {
             rust_pcs_computed = output.num_principal_components_computed;
             write!(
@@ -2485,7 +2494,8 @@ pub fn run_sample_projection_accuracy_test(
     let mut rust_pca_output_option: Option<EigenSNPCoreOutput> = None; // Now directly in scope
     let mut k_eff_rust = 0;
 
-    match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train) {
+            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train, &snp_metadata) {
         Ok((output_struct, _)) => {
             k_eff_rust = output_struct.num_principal_components_computed;
             save_matrix_to_tsv(
@@ -2882,8 +2892,10 @@ where
     let algorithm_a = EigenSNPCoreAlgorithm::new(config_a);
     let algorithm_b = EigenSNPCoreAlgorithm::new(config_b);
 
+    let snp_metadata = create_dummy_snp_metadata(standardized_structured_data.nrows());
+    
     // Run EigenSnp A
-    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs) {
+    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata) {
         Ok((out, _)) => {
             writeln!(
                 outcome_details,
@@ -2932,7 +2944,7 @@ where
     };
 
     // Run EigenSnp B
-    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs) {
+    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata) {
         Ok((out, _)) => {
             writeln!(
                 outcome_details,
@@ -3463,6 +3475,8 @@ fn test_min_passes_for_quality_convergence() {
         pca_snp_ids_in_block: (0..d_total_snps).map(PcaSnpId).collect(),
     }];
 
+    let snp_metadata = create_dummy_snp_metadata(d_total_snps);
+
     // 6. Looping and Evaluation
     let max_passes_to_test = 5;
     let mut min_passes_found: i32 = -1;
@@ -3493,7 +3507,7 @@ fn test_min_passes_for_quality_convergence() {
         let test_data_accessor = TestDataAccessor::new(standardized_structured_data.clone());
         let algorithm = EigenSNPCoreAlgorithm::new(config);
 
-        match algorithm.compute_pca(&test_data_accessor, &ld_block_specs) {
+        match algorithm.compute_pca(&test_data_accessor, &ld_block_specs, &snp_metadata) {
             Ok((eigensnp_output_current_pass, _)) => {
                 // This variable will store the PC count from the pass that *first* meets criteria,
                 // or the last successful one if criteria are never met.
@@ -3768,7 +3782,8 @@ fn test_refinement_projection_accuracy() {
         }];
 
         let algorithm = EigenSNPCoreAlgorithm::new(config);
-        match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train) {
+        let snp_metadata = create_dummy_snp_metadata(d_total_snps);
+        match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train, &snp_metadata) {
             Ok((eigensnp_train_output_struct, _)) => {
                 save_matrix_to_tsv(
                     &eigensnp_train_output_struct
@@ -3948,4 +3963,17 @@ fn test_reorder_columns_repeated_indices() {
     let expected = arr2(&[[1, 2, 1, 1], [3, 4, 3, 3]]);
     let reordered = reorder_columns_owned(&original, &order);
     assert_eq!(reordered, expected);
+}
+
+use std::sync::Arc;
+
+// Helper function to create dummy SNP metadata for tests
+fn create_dummy_snp_metadata(num_snps: usize) -> Vec<PcaSnpMetadata> {
+    (0..num_snps)
+        .map(|i| PcaSnpMetadata {
+            id: Arc::new(format!("snp_{}", i)),
+            chr: Arc::new("chr1".to_string()),
+            pos: i as u64 * 1000 + 100000, // Simple position calculation
+        })
+        .collect()
 }
