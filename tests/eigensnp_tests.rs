@@ -1281,6 +1281,7 @@ mod eigensnp_integration_tests {
         let algorithm = EigenSNPCoreAlgorithm::new(config);
         let ld_blocks = vec![];
 
+        let snp_metadata = create_dummy_snp_metadata(num_snps);
         let (output, _) = algorithm
             .compute_pca(&test_data, &ld_blocks, &snp_metadata)
             .expect("PCA with 0 SNPs failed");
@@ -1329,8 +1330,8 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_snps).map(PcaSnpId).collect(),
         }];
 
+        let snp_metadata = create_dummy_snp_metadata(num_snps);
         let (output, _) = algorithm
-            let snp_metadata = create_dummy_snp_metadata(num_snps);
             .compute_pca(&test_data, &ld_blocks, &snp_metadata)
             .expect("PCA with 0 samples failed");
 
@@ -2891,6 +2892,8 @@ where
     let algorithm_a = EigenSNPCoreAlgorithm::new(config_a);
     let algorithm_b = EigenSNPCoreAlgorithm::new(config_b);
 
+    let snp_metadata = create_dummy_snp_metadata(standardized_structured_data.nrows());
+    
     // Run EigenSnp A
     let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata) {
         Ok((out, _)) => {
@@ -3472,6 +3475,8 @@ fn test_min_passes_for_quality_convergence() {
         pca_snp_ids_in_block: (0..d_total_snps).map(PcaSnpId).collect(),
     }];
 
+    let snp_metadata = create_dummy_snp_metadata(d_total_snps);
+
     // 6. Looping and Evaluation
     let max_passes_to_test = 5;
     let mut min_passes_found: i32 = -1;
@@ -3777,7 +3782,7 @@ fn test_refinement_projection_accuracy() {
         }];
 
         let algorithm = EigenSNPCoreAlgorithm::new(config);
-            let snp_metadata = create_dummy_snp_metadata(d_total_snps);
+        let snp_metadata = create_dummy_snp_metadata(d_total_snps);
         match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train, &snp_metadata) {
             Ok((eigensnp_train_output_struct, _)) => {
                 save_matrix_to_tsv(

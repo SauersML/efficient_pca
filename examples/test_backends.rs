@@ -7,7 +7,7 @@ fn main() {
     
     // Create and fit PCA
     let mut pca = PCA::new();
-    pca.fit(&data, None).expect("PCA fit failed");
+    pca.fit(data, None).expect("PCA fit failed");
     
     println!("PCA backend test works!");
     println!("Rotation matrix shape: {:?}", pca.rotation().unwrap().dim());
