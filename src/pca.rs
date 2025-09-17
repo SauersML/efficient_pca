@@ -252,7 +252,8 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         data_matrix -= &mean_vector;
 
-        let original_std_dev_vector = data_matrix.map_axis(Axis(0), |column| column.std(0.0));
+        let original_std_dev_vector =
+            data_matrix.map_axis(Axis(0), |column| column.std(1.0));
         let sanitized_scale_vector = original_std_dev_vector.mapv(|val| {
             if val.abs() < NEAR_ZERO_THRESHOLD {
                 1.0
@@ -528,7 +529,8 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         x_input_data -= &mean_vector; // Center data
 
-        let std_dev_vector_original = x_input_data.map_axis(Axis(0), |column| column.std(0.0));
+        let std_dev_vector_original =
+            x_input_data.map_axis(Axis(0), |column| column.std(1.0));
         // Sanitize scale: replace near-zero std devs with 1.0 to avoid division by zero/instability.
         // Non-finite values (checked in `with_model`, but good practice for direct fit too if data could be raw)
         // are also mapped to 1.0. `std` should produce finite values from finite input.
