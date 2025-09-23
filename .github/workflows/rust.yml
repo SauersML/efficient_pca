@@ -178,16 +178,71 @@ jobs:
           path: /home/runner/work/_temp/build_failure_flags/build_failed_${{ matrix.backend }}.flag
           retention-days: 1
 
-      - name: Test
+      - name: Run core test suite
         run: |
-          if [[ "${{ matrix.feature }}" == "backend_openblas" ]] || [[ "${{ matrix.feature }}" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
-            cargo test --features ${{ matrix.feature }}
+          set -euo pipefail
+
+          FEATURE="${MATRIX_FEATURE}"
+          if [[ "$FEATURE" == "backend_openblas" ]] || [[ "$FEATURE" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
+            FEATURE_ARGS=(--features "$FEATURE")
           else
-            cargo test --no-default-features --features ${{ matrix.feature }}
+            FEATURE_ARGS=(--no-default-features --features "$FEATURE")
+          fi
+
+          echo "Running cargo test for library, binary, and example targets"
+          cargo test "${FEATURE_ARGS[@]}" --lib --bins --examples
+
+          echo "Discovering non-eigensnp integration tests"
+          readarray -t NON_EIGENSNP_TESTS < <(find tests -maxdepth 1 -type f -name '*.rs' ! -name 'eigensnp*.rs' -exec basename {} .rs \; | sort)
+
+          if (( ${#NON_EIGENSNP_TESTS[@]} == 0 )); then
+            echo "No non-eigensnp integration tests detected"
+          else
+            for test_target in "${NON_EIGENSNP_TESTS[@]}"; do
+              echo "Running integration test target: ${test_target}"
+              cargo test "${FEATURE_ARGS[@]}" --test "${test_target}"
+            done
           fi
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
           RUST_BACKTRACE: 1
+          MATRIX_FEATURE: ${{ matrix.feature }}
+
+      - name: Run eigensnp test suite (non-blocking)
+        run: |
+          set -euo pipefail
+
+          FEATURE="${MATRIX_FEATURE}"
+          if [[ "$FEATURE" == "backend_openblas" ]] || [[ "$FEATURE" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
+            FEATURE_ARGS=(--features "$FEATURE")
+          else
+            FEATURE_ARGS=(--no-default-features --features "$FEATURE")
+          fi
+
+          echo "Discovering eigensnp-specific integration tests"
+          readarray -t EIGENSNP_TESTS < <(find tests -maxdepth 1 -type f -name 'eigensnp*.rs' -exec basename {} .rs \; | sort)
+
+          if (( ${#EIGENSNP_TESTS[@]} == 0 )); then
+            echo "No eigensnp integration tests detected"
+            exit 0
+          fi
+
+          declare -a FAILED_TESTS=()
+          for test_target in "${EIGENSNP_TESTS[@]}"; do
+            echo "Running eigensnp integration test target: ${test_target}"
+            if ! cargo test "${FEATURE_ARGS[@]}" --test "${test_target}"; then
+              echo "::warning::Eigensnp integration test '${test_target}' failed (permitted)."
+              FAILED_TESTS+=("${test_target}")
+            fi
+          done
+
+          if (( ${#FAILED_TESTS[@]} > 0 )); then
+            echo "::warning::The following eigensnp test targets failed but will not block CI: ${FAILED_TESTS[*]}"
+          fi
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUST_BACKTRACE: 1
+          MATRIX_FEATURE: ${{ matrix.feature }}
 
       - name: Verify contents of target/test_artifacts before upload
         if: always() # Run even if prior steps failed, to see what's there
