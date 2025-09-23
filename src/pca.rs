@@ -7,11 +7,15 @@ use ndarray::{s, Array1, Array2, ArrayViewMut1, Axis, ShapeBuilder};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.
-use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, LinAlgBackendProvider};
+#[cfg(not(feature = "backend_faer"))]
+use crate::linalg_backends::BackendEigh;
+use crate::linalg_backends::{BackendQR, BackendSVD, LinAlgBackendProvider};
 #[cfg(feature = "backend_faer")]
 use faer::linalg::matmul::matmul;
 #[cfg(feature = "backend_faer")]
-use faer::{Accum, MatMut, MatRef, Par};
+use faer::linalg::solvers::SelfAdjointEigen;
+#[cfg(feature = "backend_faer")]
+use faer::{Accum, MatMut, MatRef, Par, Side};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rand::Rng;
@@ -308,6 +312,51 @@ fn compute_feature_space_projection(
     data_matrix.t().dot(u_subset)
 }
 
+#[cfg(feature = "backend_faer")]
+fn faer_eigh_upper(matrix: &Array2<f64>) -> Result<(Array1<f64>, Array2<f64>), Box<dyn Error>> {
+    let (nrows, ncols) = matrix.dim();
+    if nrows != ncols {
+        return Err("faer_eigh_upper: matrix must be square".into());
+    }
+    if nrows == 0 {
+        return Ok((Array1::zeros(0), Array2::zeros((0, 0))));
+    }
+
+    let eig = if let Some(slice) = matrix.as_slice_memory_order() {
+        let mat_ref = if matrix.is_standard_layout() {
+            MatRef::from_row_major_slice(slice, nrows, ncols)
+        } else {
+            MatRef::from_column_major_slice(slice, nrows, ncols)
+        };
+        SelfAdjointEigen::new(mat_ref, Side::Upper)
+            .map_err(|e| format!("faer self_adjoint_eigen failed: {:?}", e))?
+    } else {
+        let owned = matrix.to_owned();
+        let slice = owned
+            .as_slice_memory_order()
+            .expect("Owned matrix copy should be contiguous");
+        let mat_ref = MatRef::from_row_major_slice(slice, nrows, ncols);
+        SelfAdjointEigen::new(mat_ref, Side::Upper)
+            .map_err(|e| format!("faer self_adjoint_eigen failed: {:?}", e))?
+    };
+
+    let mut eigenvalues = Array1::<f64>::zeros(ncols);
+    for (dst, src) in eigenvalues.iter_mut().zip(eig.S().column_vector().iter()) {
+        *dst = *src;
+    }
+
+    let mut eigenvectors = Array2::<f64>::zeros((nrows, ncols).f());
+    if nrows > 0 {
+        let slice_mut = eigenvectors
+            .as_slice_memory_order_mut()
+            .expect("column-major allocation must be contiguous");
+        let mut dst = MatMut::from_column_major_slice_mut(slice_mut, nrows, ncols);
+        dst.copy_from(eig.U());
+    }
+
+    Ok((eigenvalues, eigenvectors))
+}
+
 /// Principal component analysis (PCA) structure.
 ///
 /// This struct holds the results of a PCA (mean, scale, and rotation matrix)
@@ -511,19 +560,32 @@ impl PCA {
         self.mean = Some(mean_vector);
         self.scale = Some(sanitized_scale_vector);
 
+        #[cfg(not(feature = "backend_faer"))]
         let backend = LinAlgBackendProvider::<f64>::new();
+
+        #[cfg(feature = "backend_faer")]
+        faer::set_global_parallelism(Par::rayon(0));
 
         if n_features <= n_samples {
             let cov_matrix = compute_covariance_matrix(&data_matrix, n_samples);
 
-            let eigh_result = backend.eigh_upper(&cov_matrix).map_err(|e| {
+            #[cfg(feature = "backend_faer")]
+            let (eigenvalues, eigenvectors) = faer_eigh_upper(&cov_matrix).map_err(|e| {
                 format!(
-                    "PCA::fit (Covariance path): Eigen decomposition of covariance matrix failed (via backend): {}",
+                    "PCA::fit (Covariance path): Eigen decomposition of covariance matrix failed (via faer): {}",
                     e
                 )
             })?;
-            let eigenvalues = eigh_result.eigenvalues;
-            let eigenvectors = eigh_result.eigenvectors;
+            #[cfg(not(feature = "backend_faer"))]
+            let (eigenvalues, eigenvectors) = {
+                let eigh_result = backend.eigh_upper(&cov_matrix).map_err(|e| {
+                    format!(
+                        "PCA::fit (Covariance path): Eigen decomposition of covariance matrix failed (via backend): {}",
+                        e
+                    )
+                })?;
+                (eigh_result.eigenvalues, eigh_result.eigenvectors)
+            };
 
             let eigenvalues_desc: Vec<f64> = eigenvalues.iter().rev().copied().collect();
             let rank_limit =
@@ -554,14 +616,23 @@ impl PCA {
         } else {
             let gram_matrix = compute_gram_matrix(&data_matrix, n_samples);
 
-            let eigh_result_gram = backend.eigh_upper(&gram_matrix).map_err(|e| {
+            #[cfg(feature = "backend_faer")]
+            let (gram_eigenvalues, gram_eigenvectors_u) = faer_eigh_upper(&gram_matrix).map_err(|e| {
                 format!(
-                    "PCA::fit (Gram trick): Eigen decomposition of Gram matrix failed (via backend): {}",
+                    "PCA::fit (Gram trick): Eigen decomposition of Gram matrix failed (via faer): {}",
                     e
                 )
             })?;
-            let gram_eigenvalues = eigh_result_gram.eigenvalues;
-            let gram_eigenvectors_u = eigh_result_gram.eigenvectors;
+            #[cfg(not(feature = "backend_faer"))]
+            let (gram_eigenvalues, gram_eigenvectors_u) = {
+                let eigh_result_gram = backend.eigh_upper(&gram_matrix).map_err(|e| {
+                    format!(
+                        "PCA::fit (Gram trick): Eigen decomposition of Gram matrix failed (via backend): {}",
+                        e
+                    )
+                })?;
+                (eigh_result_gram.eigenvalues, eigh_result_gram.eigenvectors)
+            };
 
             let eigenvalues_desc: Vec<f64> = gram_eigenvalues.iter().rev().copied().collect();
             let rank_limit =
