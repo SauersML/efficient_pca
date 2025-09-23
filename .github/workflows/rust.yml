@@ -192,6 +192,9 @@ jobs:
           echo "Running cargo test for library, binary, and example targets"
           cargo test "${FEATURE_ARGS[@]}" --lib --bins --examples
 
+          echo "Running documentation tests"
+          cargo test "${FEATURE_ARGS[@]}" --doc
+
           echo "Discovering non-eigensnp integration tests"
           readarray -t NON_EIGENSNP_TESTS < <(find tests -maxdepth 1 -type f -name '*.rs' ! -name 'eigensnp*.rs' -exec basename {} .rs \; | sort)
 
@@ -216,6 +219,7 @@ jobs:
           if [[ "$FEATURE" == "backend_openblas" ]] || [[ "$FEATURE" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
             FEATURE_ARGS=(--features "$FEATURE")
           else
+
             FEATURE_ARGS=(--no-default-features --features "$FEATURE")
           fi
 
