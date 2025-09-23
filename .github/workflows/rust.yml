@@ -219,6 +219,7 @@ jobs:
           if [[ "$FEATURE" == "backend_openblas" ]] || [[ "$FEATURE" == "backend_openblas,enable-eigensnp-diagnostics" ]]; then
             FEATURE_ARGS=(--features "$FEATURE")
           else
+
             FEATURE_ARGS=(--no-default-features --features "$FEATURE")
           fi
 
