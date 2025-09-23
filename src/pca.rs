@@ -2,11 +2,16 @@
 
 #![doc = include_str!("../README.md")]
 
-use ndarray::{s, Array1, Array2, ArrayView1, Axis};
+use ndarray::parallel::prelude::*;
+use ndarray::{s, Array1, Array2, ArrayViewMut1, Axis, ShapeBuilder};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.
 use crate::linalg_backends::{BackendEigh, BackendQR, BackendSVD, LinAlgBackendProvider};
+#[cfg(feature = "backend_faer")]
+use faer::linalg::matmul::matmul;
+#[cfg(feature = "backend_faer")]
+use faer::{Accum, MatMut, MatRef, Par};
 // use crate::ndarray_backend::NdarrayLinAlgBackend; // Replaced by LinAlgBackendProvider
 // use crate::linalg_backend_dispatch::LinAlgBackendProvider; // Now part of linalg_backends
 use rand::Rng;
@@ -45,6 +50,262 @@ fn calculate_rank_by_tolerance(
         }
         None => sorted_desc_eigenvalues.len(),
     }
+}
+
+fn center_and_scale_columns(data_matrix: &mut Array2<f64>) -> (Array1<f64>, Array1<f64>) {
+    let n_samples = data_matrix.nrows();
+    let n_features = data_matrix.ncols();
+
+    const PARALLEL_COLUMN_THRESHOLD: usize = 256;
+
+    let mut mean_vector = Array1::<f64>::zeros(n_features);
+    let mut scale_vector = Array1::<f64>::zeros(n_features);
+
+    let mean_slice = mean_vector
+        .as_slice_mut()
+        .expect("mean vector should be contiguous");
+    let scale_slice = scale_vector
+        .as_slice_mut()
+        .expect("scale vector should be contiguous");
+
+    #[inline]
+    fn process_column(
+        mut column: ArrayViewMut1<'_, f64>,
+        mean_slot: &mut f64,
+        scale_slot: &mut f64,
+        n_samples: usize,
+    ) {
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        for &value in column.iter() {
+            sum += value;
+            sum_sq += value * value;
+        }
+
+        let n_samples_f64 = n_samples as f64;
+        let mean = sum / n_samples_f64;
+        let variance = if n_samples > 1 {
+            let centered_sum_sq = (sum_sq - sum * sum / n_samples_f64).max(0.0);
+            let var = centered_sum_sq / ((n_samples - 1) as f64);
+            if var.is_finite() {
+                var
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let std_dev = variance.sqrt();
+        let sanitized_std = if !std_dev.is_finite() || std_dev <= NEAR_ZERO_THRESHOLD {
+            1.0
+        } else {
+            std_dev
+        };
+
+        for value in column.iter_mut() {
+            *value = (*value - mean) / sanitized_std;
+        }
+
+        *mean_slot = mean;
+        *scale_slot = sanitized_std;
+    }
+
+    if n_features >= PARALLEL_COLUMN_THRESHOLD {
+        data_matrix
+            .axis_iter_mut(Axis(1))
+            .into_par_iter()
+            .zip(mean_slice.par_iter_mut())
+            .zip(scale_slice.par_iter_mut())
+            .for_each(|((column, mean_slot), scale_slot)| {
+                process_column(column, mean_slot, scale_slot, n_samples);
+            });
+    } else {
+        data_matrix
+            .axis_iter_mut(Axis(1))
+            .into_iter()
+            .zip(mean_slice.iter_mut())
+            .zip(scale_slice.iter_mut())
+            .for_each(|((column, mean_slot), scale_slot)| {
+                process_column(column, mean_slot, scale_slot, n_samples);
+            });
+    }
+
+    (mean_vector, scale_vector)
+}
+
+#[cfg(feature = "backend_faer")]
+fn compute_covariance_matrix(data_matrix: &Array2<f64>, n_samples: usize) -> Array2<f64> {
+    let (n_samples_total, n_features) = data_matrix.dim();
+    if n_features == 0 {
+        return Array2::zeros((0, 0));
+    }
+    let scale = 1.0 / ((n_samples - 1) as f64);
+    let mut covariance = Array2::<f64>::zeros((n_features, n_features).f());
+
+    let mut apply_matmul = |mat_a: MatRef<'_, f64>| {
+        let cov_slice = covariance
+            .as_slice_memory_order_mut()
+            .expect("Covariance matrix should provide contiguous storage");
+        let cov_dst = MatMut::from_column_major_slice_mut(cov_slice, n_features, n_features);
+        matmul(
+            cov_dst,
+            Accum::Replace,
+            mat_a.transpose(),
+            mat_a,
+            scale,
+            Par::rayon(0),
+        );
+    };
+
+    if let Some(slice) = data_matrix.as_slice_memory_order() {
+        let mat_a = if data_matrix.is_standard_layout() {
+            MatRef::from_row_major_slice(slice, n_samples_total, n_features)
+        } else {
+            MatRef::from_column_major_slice(slice, n_samples_total, n_features)
+        };
+        apply_matmul(mat_a);
+    } else {
+        let owned = data_matrix.to_owned();
+        let slice = owned
+            .as_slice_memory_order()
+            .expect("Owned copy should be contiguous");
+        let mat_a = MatRef::from_row_major_slice(slice, n_samples_total, n_features);
+        apply_matmul(mat_a);
+    }
+
+    covariance
+}
+
+#[cfg(not(feature = "backend_faer"))]
+fn compute_covariance_matrix(data_matrix: &Array2<f64>, n_samples: usize) -> Array2<f64> {
+    let mut cov_matrix = data_matrix.t().dot(data_matrix);
+    cov_matrix /= (n_samples - 1) as f64;
+    cov_matrix
+}
+
+#[cfg(feature = "backend_faer")]
+fn compute_gram_matrix(data_matrix: &Array2<f64>, n_samples: usize) -> Array2<f64> {
+    let (n_samples_total, n_features) = data_matrix.dim();
+    if n_samples_total == 0 {
+        return Array2::zeros((0, 0));
+    }
+    let scale = 1.0 / ((n_samples - 1) as f64);
+    let mut gram = Array2::<f64>::zeros((n_samples_total, n_samples_total).f());
+
+    let mut apply_matmul = |mat_a: MatRef<'_, f64>| {
+        let gram_slice = gram
+            .as_slice_memory_order_mut()
+            .expect("Gram matrix should provide contiguous storage");
+        let gram_dst =
+            MatMut::from_column_major_slice_mut(gram_slice, n_samples_total, n_samples_total);
+        matmul(
+            gram_dst,
+            Accum::Replace,
+            mat_a,
+            mat_a.transpose(),
+            scale,
+            Par::rayon(0),
+        );
+    };
+
+    if let Some(slice) = data_matrix.as_slice_memory_order() {
+        let mat_a = if data_matrix.is_standard_layout() {
+            MatRef::from_row_major_slice(slice, n_samples_total, n_features)
+        } else {
+            MatRef::from_column_major_slice(slice, n_samples_total, n_features)
+        };
+        apply_matmul(mat_a);
+    } else {
+        let owned = data_matrix.to_owned();
+        let slice = owned
+            .as_slice_memory_order()
+            .expect("Owned copy should be contiguous");
+        let mat_a = MatRef::from_row_major_slice(slice, n_samples_total, n_features);
+        apply_matmul(mat_a);
+    }
+
+    gram
+}
+
+#[cfg(not(feature = "backend_faer"))]
+fn compute_gram_matrix(data_matrix: &Array2<f64>, n_samples: usize) -> Array2<f64> {
+    let mut gram_matrix = data_matrix.dot(&data_matrix.t());
+    gram_matrix /= (n_samples - 1) as f64;
+    gram_matrix
+}
+
+#[cfg(feature = "backend_faer")]
+fn compute_feature_space_projection(
+    data_matrix: &Array2<f64>,
+    u_subset: &Array2<f64>,
+) -> Array2<f64> {
+    let (n_samples_total, n_features) = data_matrix.dim();
+    let (_, final_rank) = u_subset.dim();
+
+    if n_features == 0 || final_rank == 0 {
+        return Array2::zeros((n_features, final_rank));
+    }
+
+    let mut rotation = Array2::<f64>::zeros((n_features, final_rank).f());
+    let mut apply_matmul = |mat_a: MatRef<'_, f64>, mat_u: MatRef<'_, f64>| {
+        let rot_slice = rotation
+            .as_slice_memory_order_mut()
+            .expect("Rotation matrix should provide contiguous storage");
+        let rot_dst = MatMut::from_column_major_slice_mut(rot_slice, n_features, final_rank);
+        matmul(
+            rot_dst,
+            Accum::Replace,
+            mat_a.transpose(),
+            mat_u,
+            1.0,
+            Par::rayon(0),
+        );
+    };
+
+    let mut call_with_u = |mat_a: MatRef<'_, f64>| {
+        if let Some(u_slice) = u_subset.as_slice_memory_order() {
+            let mat_u = if u_subset.is_standard_layout() {
+                MatRef::from_row_major_slice(u_slice, n_samples_total, final_rank)
+            } else {
+                MatRef::from_column_major_slice(u_slice, n_samples_total, final_rank)
+            };
+            apply_matmul(mat_a, mat_u);
+        } else {
+            let owned_u = u_subset.to_owned();
+            let slice = owned_u
+                .as_slice_memory_order()
+                .expect("Owned copy should be contiguous");
+            let mat_u = MatRef::from_row_major_slice(slice, n_samples_total, final_rank);
+            apply_matmul(mat_a, mat_u);
+        }
+    };
+
+    if let Some(a_slice) = data_matrix.as_slice_memory_order() {
+        let mat_a = if data_matrix.is_standard_layout() {
+            MatRef::from_row_major_slice(a_slice, n_samples_total, n_features)
+        } else {
+            MatRef::from_column_major_slice(a_slice, n_samples_total, n_features)
+        };
+        call_with_u(mat_a);
+    } else {
+        let owned_a = data_matrix.to_owned();
+        let slice = owned_a
+            .as_slice_memory_order()
+            .expect("Owned copy should be contiguous");
+        let mat_a = MatRef::from_row_major_slice(slice, n_samples_total, n_features);
+        call_with_u(mat_a);
+    }
+
+    rotation
+}
+
+#[cfg(not(feature = "backend_faer"))]
+fn compute_feature_space_projection(
+    data_matrix: &Array2<f64>,
+    u_subset: &Array2<f64>,
+) -> Array2<f64> {
+    data_matrix.t().dot(u_subset)
 }
 
 /// Principal component analysis (PCA) structure.
@@ -246,56 +507,27 @@ impl PCA {
             return Err("PCA::fit: Input matrix must have at least 2 samples.".into());
         }
 
-        let mean_vector = data_matrix
-            .mean_axis(Axis(0))
-            .ok_or("PCA::fit: Failed to compute mean of the data.")?;
-        self.mean = Some(mean_vector.clone());
-        data_matrix -= &mean_vector;
+        let (mean_vector, sanitized_scale_vector) = center_and_scale_columns(&mut data_matrix);
+        self.mean = Some(mean_vector);
+        self.scale = Some(sanitized_scale_vector);
 
-        let original_std_dev_vector =
-            data_matrix.map_axis(Axis(0), |column| column.std(1.0));
-        let sanitized_scale_vector = original_std_dev_vector.mapv(|val| {
-            if val.abs() < NEAR_ZERO_THRESHOLD {
-                1.0
-            } else {
-                val
-            }
-        });
-        self.scale = Some(sanitized_scale_vector.clone());
-
-        let mut scaled_data_matrix = data_matrix;
-        scaled_data_matrix /= &sanitized_scale_vector;
-
-        let backend = LinAlgBackendProvider::<f64>::new(); // Use LinAlgBackendProvider
+        let backend = LinAlgBackendProvider::<f64>::new();
 
         if n_features <= n_samples {
-            let mut cov_matrix = scaled_data_matrix.t().dot(&scaled_data_matrix);
-            cov_matrix /= (n_samples - 1) as f64;
+            let cov_matrix = compute_covariance_matrix(&data_matrix, n_samples);
 
-            let eigh_result = backend.eigh_upper(&cov_matrix)
-                .map_err(|e| format!("PCA::fit (Covariance path): Eigen decomposition of covariance matrix failed (via backend): {}", e))?;
-            let original_eigenvalues = eigh_result.eigenvalues; // This is an Array1<f64>
-            let original_eigenvectors = eigh_result.eigenvectors; // This is an Array2<f64>
+            let eigh_result = backend.eigh_upper(&cov_matrix).map_err(|e| {
+                format!(
+                    "PCA::fit (Covariance path): Eigen decomposition of covariance matrix failed (via backend): {}",
+                    e
+                )
+            })?;
+            let eigenvalues = eigh_result.eigenvalues;
+            let eigenvectors = eigh_result.eigenvectors;
 
-            let mut indexed_eigenvalues: Vec<(usize, f64)> = original_eigenvalues
-                .iter() // This borrows original_eigenvalues
-                .map(|&val| val) // Dereference to get f64 values
-                .enumerate()
-                .collect();
-
-            indexed_eigenvalues.sort_unstable_by(|(_, a_val), (_, b_val)| {
-                b_val
-                    .partial_cmp(a_val)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let sorted_eigenvalues_for_tol: Vec<f64> =
-                indexed_eigenvalues.iter().map(|(_, val)| *val).collect();
-            let rank_limit = calculate_rank_by_tolerance(
-                &sorted_eigenvalues_for_tol,
-                tolerance,
-                NEAR_ZERO_THRESHOLD,
-            );
+            let eigenvalues_desc: Vec<f64> = eigenvalues.iter().rev().copied().collect();
+            let rank_limit =
+                calculate_rank_by_tolerance(&eigenvalues_desc, tolerance, NEAR_ZERO_THRESHOLD);
 
             let final_rank = std::cmp::min(rank_limit, n_features);
 
@@ -303,113 +535,70 @@ impl PCA {
                 self.rotation = Some(Array2::zeros((n_features, 0)));
                 self.explained_variance = Some(Array1::zeros(0));
             } else {
-                let final_explained_variance = Array1::from_iter(
-                    indexed_eigenvalues[..final_rank]
-                        .iter()
-                        .map(|(_, val)| val.max(EIGENVALUE_CLAMP_MIN)),
-                );
-                self.explained_variance = Some(final_explained_variance);
-
-                // Construct rotation_matrix from original_eigenvectors based on sorted indices
-                // Eigenvectors from eigh_upper are already normalized.
+                let mut explained_variance = Array1::<f64>::zeros(final_rank);
                 let mut rotation_matrix = Array2::<f64>::zeros((n_features, final_rank));
-                for i in 0..final_rank {
-                    let original_vec_idx = indexed_eigenvalues[i].0; // Get the original index of the eigenvector
+                let total = eigenvalues.len();
+
+                for component_idx in 0..final_rank {
+                    let eigen_idx = total - 1 - component_idx;
+                    let eigenvalue = eigenvalues[eigen_idx].max(EIGENVALUE_CLAMP_MIN);
+                    explained_variance[component_idx] = eigenvalue;
                     rotation_matrix
-                        .column_mut(i)
-                        .assign(&original_eigenvectors.column(original_vec_idx));
+                        .column_mut(component_idx)
+                        .assign(&eigenvectors.column(eigen_idx));
                 }
+
                 self.rotation = Some(rotation_matrix);
+                self.explained_variance = Some(explained_variance);
             }
         } else {
-            // Gram trick path
-            let mut gram_matrix = scaled_data_matrix.dot(&scaled_data_matrix.t());
-            gram_matrix /= (n_samples - 1) as f64;
+            let gram_matrix = compute_gram_matrix(&data_matrix, n_samples);
 
-            let eigh_result_gram = backend.eigh_upper(&gram_matrix)
-                .map_err(|e| format!("PCA::fit (Gram trick): Eigen decomposition of Gram matrix failed (via backend): {}", e))?;
-            let original_gram_eigenvalues = eigh_result_gram.eigenvalues; // Array1<f64>
-            let original_gram_eigenvectors_u = eigh_result_gram.eigenvectors; // Array2<f64> (these are U from U S V^T of Gram)
+            let eigh_result_gram = backend.eigh_upper(&gram_matrix).map_err(|e| {
+                format!(
+                    "PCA::fit (Gram trick): Eigen decomposition of Gram matrix failed (via backend): {}",
+                    e
+                )
+            })?;
+            let gram_eigenvalues = eigh_result_gram.eigenvalues;
+            let gram_eigenvectors_u = eigh_result_gram.eigenvectors;
 
-            let mut indexed_gram_eigenvalues: Vec<(usize, f64)> = original_gram_eigenvalues
-                .iter()
-                .map(|&v| v) // Use iter() to borrow original_gram_eigenvalues
-                .enumerate()
-                .collect();
+            let eigenvalues_desc: Vec<f64> = gram_eigenvalues.iter().rev().copied().collect();
+            let rank_limit =
+                calculate_rank_by_tolerance(&eigenvalues_desc, tolerance, NEAR_ZERO_THRESHOLD);
 
-            indexed_gram_eigenvalues.sort_unstable_by(|(_, a_val), (_, b_val)| {
-                b_val
-                    .partial_cmp(a_val)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // Build (eigenvalue, eigenvector-column) pairs in the same order.
-            // Each v_col is an owned Array1<f64>, so we can keep it after the loop.
-            let eig_pairs: Vec<(f64, Array1<f64>)> = indexed_gram_eigenvalues
-                .iter()
-                .map(|(idx, val)| (*val, original_gram_eigenvectors_u.column(*idx).to_owned()))
-                .collect();
-
-            let sorted_gram_eigenvalues_for_tol: Vec<f64> = indexed_gram_eigenvalues
-                .iter()
-                .map(|(_, val)| *val)
-                .collect();
-            let rank_limit = calculate_rank_by_tolerance(
-                &sorted_gram_eigenvalues_for_tol,
-                tolerance,
-                NEAR_ZERO_THRESHOLD,
-            );
-
-            let final_rank = std::cmp::min(rank_limit, n_samples); // Rank is capped by n_samples here
+            let final_rank = std::cmp::min(rank_limit, n_samples);
 
             if final_rank == 0 {
                 self.rotation = Some(Array2::zeros((n_features, 0)));
                 self.explained_variance = Some(Array1::zeros(0));
             } else {
-                let sorted_eigenvalues_gram_arr = Array1::from_iter(
-                    eig_pairs[..final_rank]
-                        .iter()
-                        .map(|(val, _)| val.max(EIGENVALUE_CLAMP_MIN)),
-                );
+                let mut explained_variance = Array1::<f64>::zeros(final_rank);
+                let mut u_subset = Array2::<f64>::zeros((n_samples, final_rank));
+                let total = gram_eigenvalues.len();
 
-                // Build U_subset using ndarray::stack
-                let u_block_views: Vec<ArrayView1<f64>> = eig_pairs[..final_rank]
-                    .iter()
-                    .map(|(_, v_col)| v_col.view()) // v_col is Array1<f64>, get its view
-                    .collect();
+                for component_idx in 0..final_rank {
+                    let eigen_idx = total - 1 - component_idx;
+                    let eigenvalue = gram_eigenvalues[eigen_idx].max(EIGENVALUE_CLAMP_MIN);
+                    explained_variance[component_idx] = eigenvalue;
+                    u_subset
+                        .column_mut(component_idx)
+                        .assign(&gram_eigenvectors_u.column(eigen_idx));
+                }
 
-                let u_subset = ndarray::stack(Axis(1), &u_block_views).map_err(|e| {
-                    format!(
-                        "PCA::fit (Gram trick): Failed to stack eigenvectors into U_subset: {}",
-                        e
-                    )
-                })?;
-                // u_subset is now an owned Array2<f64> of shape (n_samples, final_rank)
-
-                let mut rotation_matrix = scaled_data_matrix.t().dot(&u_subset); // (D x N) @ (N x final_rank) -> D x final_rank
-
-                // sorted_eigenvalues_gram_arr is the Array1<f64> of Gram eigenvalues (length final_rank)
-                // n_samples is available in this scope.
-                // NEAR_ZERO_THRESHOLD is a const.
-                let scale_factors =
-                    Array1::from_iter(sorted_eigenvalues_gram_arr.iter().map(|&lambda_gram| {
-                        // lambda_gram is already >= 0 due to .max(EIGENVALUE_CLAMP_MIN)
-                        let denom_squared = (n_samples - 1) as f64 * lambda_gram;
-                        // Compare squares to avoid sqrt(small_num) then check, and use a slightly more robust threshold
-                        if denom_squared > NEAR_ZERO_THRESHOLD * NEAR_ZERO_THRESHOLD {
-                            1.0 / denom_squared.sqrt()
-                        } else {
-                            0.0 // If eigenvalue is effectively zero, corresponding component's scale is zero
-                        }
-                    }));
-
-                // Broadcast multiply: (D × final_rank) .* (1 × final_rank)
-                // Scales each column of rotation_matrix by the corresponding scale_factor.
-                // ndarray broadcasts a 1D RHS along the last axis by default.
+                let mut rotation_matrix = compute_feature_space_projection(&data_matrix, &u_subset);
+                let scale_factors = explained_variance.map(|&lambda| {
+                    let denom_squared = (n_samples - 1) as f64 * lambda;
+                    if denom_squared > NEAR_ZERO_THRESHOLD * NEAR_ZERO_THRESHOLD {
+                        1.0 / denom_squared.sqrt()
+                    } else {
+                        0.0
+                    }
+                });
                 rotation_matrix *= &scale_factors;
 
                 self.rotation = Some(rotation_matrix);
-                self.explained_variance = Some(sorted_eigenvalues_gram_arr); // Set explained_variance here
+                self.explained_variance = Some(explained_variance);
             }
         }
         Ok(())
@@ -529,8 +718,7 @@ impl PCA {
         self.mean = Some(mean_vector.clone());
         x_input_data -= &mean_vector; // Center data
 
-        let std_dev_vector_original =
-            x_input_data.map_axis(Axis(0), |column| column.std(1.0));
+        let std_dev_vector_original = x_input_data.map_axis(Axis(0), |column| column.std(1.0));
         // Sanitize scale: replace near-zero std devs with 1.0 to avoid division by zero/instability.
         // Non-finite values (checked in `with_model`, but good practice for direct fit too if data could be raw)
         // are also mapped to 1.0. `std` should produce finite values from finite input.
