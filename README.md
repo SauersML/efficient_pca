@@ -242,13 +242,13 @@ let ld_blocks = vec![
 #### `EigenSNPCoreOutput`
 Final results containing PCA components:
 
-```rust
+```rust,ignore
 // After running compute_pca
 let (output, diagnostics) = algorithm.compute_pca(&genotype_data, &ld_blocks, &snp_metadata)?;
 
 // Access results
 let loadings = &output.final_snp_principal_component_loadings;  // SNPs x PCs
-let scores = &output.final_sample_principal_component_scores;   // Samples x PCs  
+let scores = &output.final_sample_principal_component_scores;   // Samples x PCs
 let eigenvalues = &output.final_principal_component_eigenvalues; // PC eigenvalues
 let num_pcs = output.num_principal_components_computed;
 ```
@@ -257,47 +257,98 @@ let num_pcs = output.num_principal_components_computed;
 
 ```rust
 use efficient_pca::eigensnp::{
-    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, 
-    LdBlockSpecification, PcaSnpMetadata, PcaSnpId
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig,
+    LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId,
+    PcaSnpMetadata, QcSampleId, ThreadSafeStdError,
 };
+use ndarray::{array, Array2};
 use std::sync::Arc;
 
-// Configure the algorithm
+struct InMemoryAccessor {
+    data: Array2<f32>,
+}
+
+impl PcaReadyGenotypeAccessor for InMemoryAccessor {
+    fn get_standardized_snp_sample_block(
+        &self,
+        snp_ids: &[PcaSnpId],
+        sample_ids: &[QcSampleId],
+    ) -> Result<Array2<f32>, ThreadSafeStdError> {
+        let mut block = Array2::zeros((snp_ids.len(), sample_ids.len()));
+        for (row_idx, PcaSnpId(snp_idx)) in snp_ids.iter().enumerate() {
+            for (col_idx, QcSampleId(sample_idx)) in sample_ids.iter().enumerate() {
+                block[(row_idx, col_idx)] = self.data[(*snp_idx, *sample_idx)];
+            }
+        }
+        Ok(block)
+    }
+
+    fn num_pca_snps(&self) -> usize {
+        self.data.nrows()
+    }
+
+    fn num_qc_samples(&self) -> usize {
+        self.data.ncols()
+    }
+}
+
+# fn main() -> Result<(), ThreadSafeStdError> {
 let config = EigenSNPCoreAlgorithmConfig {
-    target_num_global_pcs: 10,
-    components_per_ld_block: 5,
-    subset_factor_for_local_basis_learning: 0.15,
+    target_num_global_pcs: 2,
+    components_per_ld_block: 2,
+    subset_factor_for_local_basis_learning: 1.0,
+    min_subset_size_for_local_basis_learning: 1,
+    max_subset_size_for_local_basis_learning: 10,
     ..Default::default()
 };
 
 let algorithm = EigenSNPCoreAlgorithm::new(config);
 
-// Define your LD blocks (example: simple non-overlapping blocks)
-let ld_blocks = create_ld_blocks_from_your_data();
+let ld_blocks = vec![LdBlockSpecification {
+    user_defined_block_tag: "block1".to_string(),
+    pca_snp_ids_in_block: vec![PcaSnpId(0), PcaSnpId(1)],
+}];
 
-// Provide SNP metadata
-let snp_metadata: Vec<PcaSnpMetadata> = your_snps.iter().map(|snp| {
+let snp_metadata = vec![
     PcaSnpMetadata {
-        id: Arc::new(snp.id.clone()),
-        chr: Arc::new(snp.chromosome.clone()),
-        pos: snp.position,
-    }
-}).collect();
+        id: Arc::new("snp1".to_string()),
+        chr: Arc::new("1".to_string()),
+        pos: 100,
+    },
+    PcaSnpMetadata {
+        id: Arc::new("snp2".to_string()),
+        chr: Arc::new("1".to_string()),
+        pos: 200,
+    },
+];
 
-// Your genotype data accessor (implements PcaReadyGenotypeAccessor)
-let genotype_data = MyGenotypeAccessor::new(your_standardized_genotype_matrix);
+let genotype_data = InMemoryAccessor {
+    data: array![
+        [0.5, -0.5, 1.0],
+        [-0.5, 0.5, -1.0],
+    ],
+};
 
-// Run EigenSNP PCA
 let (output, _diagnostics) = algorithm.compute_pca(
-    &genotype_data, 
+    &genotype_data,
     &ld_blocks,
-    &snp_metadata
+    &snp_metadata,
 )?;
 
-// Use the results
-println!("Computed {} principal components", output.num_principal_components_computed);
-println!("SNP loadings shape: {:?}", output.final_snp_principal_component_loadings.dim());
-println!("Sample scores shape: {:?}", output.final_sample_principal_component_scores.dim());
+println!(
+    "Computed {} principal components",
+    output.num_principal_components_computed
+);
+println!(
+    "SNP loadings shape: {:?}",
+    output.final_snp_principal_component_loadings.dim()
+);
+println!(
+    "Sample scores shape: {:?}",
+    output.final_sample_principal_component_scores.dim()
+);
+# Ok(())
+# }
 ```
 
 ### Performance Considerations
@@ -318,7 +369,9 @@ efficient_pca = { version = "*", features = ["enable-eigensnp-diagnostics"] }
 ```
 
 ```rust
-let config = EigenSNPCoreAlgorithmConfig {
+use efficient_pca::eigensnp::EigenSNPCoreAlgorithmConfig;
+
+let _config = EigenSNPCoreAlgorithmConfig {
     collect_diagnostics: true,
     local_pcs_output_dir: Some("./local_pcs_output".to_string()),
     ..Default::default()
