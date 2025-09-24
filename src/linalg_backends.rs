@@ -187,7 +187,8 @@ mod ndarray_backend_impl {
         }
     }
 
-    pub use NdarrayLinAlgBackend as Backend;
+    #[cfg(not(feature = "backend_faer"))]
+    pub type Backend = NdarrayLinAlgBackend;
 }
 
 #[cfg(all(
