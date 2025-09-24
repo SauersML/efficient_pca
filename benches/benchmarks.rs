@@ -6,7 +6,7 @@ use jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use efficient_pca::PCA;
 use ndarray::Array2;
 use rand::distributions::Uniform;
@@ -76,10 +76,10 @@ fn generate_low_variance_data(
     let mut data_vec = Vec::with_capacity(n_samples * n_features);
 
     for _j in 0..n_features {
-        let is_low_var_feature = rng.gen::<f64>() < fraction_low_var_feats;
+        let is_low_var_feature = rng.r#gen::<f64>() < fraction_low_var_feats;
         for _i in 0..n_samples {
             if is_low_var_feature {
-                if rng.gen::<f64>() < majority_val_in_low_var_feat_freq {
+                if rng.r#gen::<f64>() < majority_val_in_low_var_feat_freq {
                     data_vec.push(0.0);
                 } else {
                     data_vec.push(rng.sample(minority_val_dist) as f64);
@@ -111,9 +111,9 @@ fn benchmark_pca(
 
     // Fallback for non-jemalloc or msvc builds - RSS and Virt will be 0
     #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
-    let resident_before = 0;
+    let resident_before = 0usize;
     #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
-    let active_before = 0;
+    let active_before = 0usize;
 
     let start_time = Instant::now();
 
@@ -142,7 +142,11 @@ fn benchmark_pca(
         pca.fit(data.clone(), None).expect("fit failed");
         transformed_data = pca.transform(data.clone()).expect("transform failed");
         let actual_fit_components = pca.rotation().map_or(0, |r| r.ncols());
-        assert_eq!(transformed_data.ncols(), actual_fit_components, "FIT: Transformed data column count should match actual components in the model after fit.");
+        assert_eq!(
+            transformed_data.ncols(),
+            actual_fit_components,
+            "FIT: Transformed data column count should match actual components in the model after fit."
+        );
     }
 
     assert_eq!(
@@ -161,9 +165,9 @@ fn benchmark_pca(
     let active_after = stats::active::read().unwrap();
 
     #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
-    let resident_after = 0;
+    let resident_after = 0usize;
     #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
-    let active_after = 0;
+    let active_after = 0usize;
 
     let rss_delta_bytes = resident_after.saturating_sub(resident_before);
     let virt_delta_bytes = active_after.saturating_sub(active_before);
@@ -236,7 +240,7 @@ fn determine_appropriate_sample_size(
         match scenario_name_short {
             "Large" | "Square" | "Sparse-W" => return 10,
             "Wide" | "LowVar-W" | "Wide-k10" | "Wide-k50" | "Wide-k200" if n_features >= 10000 => {
-                return 10
+                return 10;
             }
             "Wide-XL" if n_features >= 100000 => return 10,
             "Wide-L" if n_features >= 50000 => return 20,

@@ -2,10 +2,10 @@
 
 #![doc = include_str!("../README.md")]
 
-use ndarray::parallel::prelude::*;
 #[cfg(feature = "backend_faer")]
 use ndarray::ShapeBuilder;
-use ndarray::{s, Array1, Array2, ArrayViewMut1, Axis};
+use ndarray::parallel::prelude::*;
+use ndarray::{Array1, Array2, ArrayViewMut1, Axis, s};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.
@@ -93,11 +93,7 @@ fn center_and_scale_columns(data_matrix: &mut Array2<f64>) -> (Array1<f64>, Arra
         let variance = if n_samples > 1 {
             let centered_sum_sq = (sum_sq - sum * sum / n_samples_f64).max(0.0);
             let var = centered_sum_sq / ((n_samples - 1) as f64);
-            if var.is_finite() {
-                var
-            } else {
-                0.0
-            }
+            if var.is_finite() { var } else { 0.0 }
         } else {
             0.0
         };
@@ -840,7 +836,7 @@ impl PCA {
         // and should be at least n_components_requested (if possible within matrix dimensions).
         let mut l_sketch_components = l_sketch_components_ideal.min(max_possible_rank);
         l_sketch_components = l_sketch_components.max(1); // So at least 1 sketch component
-                                                          // So sketch is large enough to find requested components, if data rank allows.
+        // So sketch is large enough to find requested components, if data rank allows.
         l_sketch_components =
             l_sketch_components.max(n_components_requested.min(max_possible_rank));
 
@@ -895,7 +891,7 @@ impl PCA {
                 if q_prime_basis.ncols() == 0 {
                     break;
                 } // Orthonormal basis might have reduced rank
-                  // W_prime_intermediate = A.T @ Q_prime_basis  (D x N) @ (N x L) -> D x L
+                // W_prime_intermediate = A.T @ Q_prime_basis  (D x N) @ (N x L) -> D x L
                 let w_prime_intermediate_candidate = centered_scaled_data_a.t().dot(&q_prime_basis);
                 if w_prime_intermediate_candidate.ncols() == 0 {
                     break;
@@ -1105,9 +1101,9 @@ impl PCA {
         // --- 7. Calculate and Return Principal Component Scores for the Input Data ---
         // Scores = Centered_Scaled_Data_A @ Final_Rotation_Matrix
         // Need to access the potentially just-set self.rotation.
-        let rotation_for_transform = self.rotation.as_ref().ok_or_else(|| {
-            "PCA::rfit: Internal error: Rotation matrix not set after rfit processing."
-        })?;
+        let rotation_for_transform = self.rotation.as_ref().ok_or_else(
+            || "PCA::rfit: Internal error: Rotation matrix not set after rfit processing.",
+        )?;
 
         // centered_scaled_data_a is (N x D)
         // rotation_for_transform is (D x k_kept)
@@ -1132,16 +1128,16 @@ impl PCA {
     /// does not match the model's feature dimension.
     pub fn transform(&self, mut x: Array2<f64>) -> Result<Array2<f64>, Box<dyn Error>> {
         // Retrieve model components, so they exist.
-        let rotation_matrix = self.rotation.as_ref().ok_or_else(|| {
-            "PCA::transform: PCA model: Rotation matrix not set. Fit or load a model first."
-        })?;
-        let mean_vector = self.mean.as_ref().ok_or_else(|| {
-            "PCA::transform: PCA model: Mean vector not set. Fit or load a model first."
-        })?;
+        let rotation_matrix = self.rotation.as_ref().ok_or_else(
+            || "PCA::transform: PCA model: Rotation matrix not set. Fit or load a model first.",
+        )?;
+        let mean_vector = self.mean.as_ref().ok_or_else(
+            || "PCA::transform: PCA model: Mean vector not set. Fit or load a model first.",
+        )?;
         // self.scale is guaranteed to contain positive, finite values by model construction/loading.
-        let scale_vector = self.scale.as_ref().ok_or_else(|| {
-            "PCA::transform: PCA model: Scale vector not set. Fit or load a model first."
-        })?;
+        let scale_vector = self.scale.as_ref().ok_or_else(
+            || "PCA::transform: PCA model: Scale vector not set. Fit or load a model first.",
+        )?;
 
         let n_input_samples = x.nrows();
         let n_input_features = x.ncols();

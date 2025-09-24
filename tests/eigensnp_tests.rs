@@ -13,13 +13,13 @@ mod python_bootstrap;
 use python_bootstrap::ensure_python_packages_installed;
 
 use efficient_pca::eigensnp::{
-    reorder_array_owned, reorder_columns_owned, EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig,
-    EigenSNPCoreOutput, LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, PcaSnpMetadata,
-    QcSampleId, ThreadSafeStdError,
+    EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig, EigenSNPCoreOutput, LdBlockSpecification,
+    PcaReadyGenotypeAccessor, PcaSnpId, PcaSnpMetadata, QcSampleId, ThreadSafeStdError,
+    reorder_array_owned, reorder_columns_owned,
 };
-use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayView2 was already added, Array removed
-use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis, arr2, s}; // ArrayView2 was already added, Array removed
 use ndarray_rand::RandomExt;
+use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
 use rand::Rng; // Added for the .sample() method
 use rand::SeedableRng; // Already present, but ensure it's here
 use rand_chacha::ChaCha8Rng; // Already present, but ensure it's here
@@ -29,18 +29,18 @@ use std::io::Write; // Removed BufReader, BufRead
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::str::FromStr; // Import with an alias to avoid conflict with std::io::Write
-                       // use std::io::Write; // Already present
+// use std::io::Write; // Already present
 use std::path::Path; // Add Path
-                     // use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
+// use ndarray::{ArrayView1, ArrayView2}; // These are brought in by `use ndarray::{arr2, s, Array1, Array2, ArrayView1, Axis};`
 use lazy_static::lazy_static;
 use std::fmt::Display; // To constrain T
 
 // Removed: use crate::eigensnp_integration_tests::parse_pca_py_output;
-use crate::eigensnp_integration_tests::generate_structured_data;
-use crate::eigensnp_integration_tests::get_python_reference_pca;
+use crate::eigensnp_integration_tests::TEST_RESULTS;
 use crate::eigensnp_integration_tests::TestDataAccessor;
 use crate::eigensnp_integration_tests::TestResultRecord;
-use crate::eigensnp_integration_tests::TEST_RESULTS;
+use crate::eigensnp_integration_tests::generate_structured_data;
+use crate::eigensnp_integration_tests::get_python_reference_pca;
 const DEFAULT_FLOAT_TOLERANCE_F32: f32 = 1e-4; // Slightly looser for cross-implementation comparison
 const DEFAULT_FLOAT_TOLERANCE_F64: f64 = 1e-4; // Slightly looser for cross-implementation comparison
 
@@ -94,7 +94,12 @@ fn assert_f32_arrays_are_close_with_sign_flips(
     }
     if arr1.ncols() == 0 || arr2.ncols() == 0 {
         // One empty, one not
-        panic!("Array column count mismatch for {}: Left: {}, Right: {}. Both must be empty or non-empty.", context, arr1.ncols(), arr2.ncols());
+        panic!(
+            "Array column count mismatch for {}: Left: {}, Right: {}. Both must be empty or non-empty.",
+            context,
+            arr1.ncols(),
+            arr2.ncols()
+        );
     }
 
     for c_idx in 0..arr1.ncols() {
@@ -124,9 +129,14 @@ fn assert_f32_arrays_are_close_with_sign_flips(
         assert!(
             flipped_match,
             "Column {} mismatch for {} (even with sign flip check). Max diff: {}. First elements: {} vs {}",
-            c_idx, context,
-            col1.iter().zip(col2.iter()).map(|(a,b)| (a-b).abs().max((a-(-b)).abs())).fold(0.0f32, f32::max),
-            col1.get(0).unwrap_or(&0.0f32), col2.get(0).unwrap_or(&0.0f32)
+            c_idx,
+            context,
+            col1.iter()
+                .zip(col2.iter())
+                .map(|(a, b)| (a - b).abs().max((a - (-b)).abs()))
+                .fold(0.0f32, f32::max),
+            col1.get(0).unwrap_or(&0.0f32),
+            col2.get(0).unwrap_or(&0.0f32)
         );
     }
 }
@@ -248,7 +258,10 @@ mod eigensnp_integration_tests {
             .open(&tsv_path)?; // Pass tsv_path by reference
 
         // Write header
-        writeln!(file, "TestName	NumFeatures_D	NumSamples_N	NumPCsRequested_K	NumPCsComputed	Success	OutcomeDetails	Notes")?;
+        writeln!(
+            file,
+            "TestName	NumFeatures_D	NumSamples_N	NumPCsRequested_K	NumPCsComputed	Success	OutcomeDetails	Notes"
+        )?;
 
         for record in results_guard.iter() {
             writeln!(
@@ -278,7 +291,10 @@ mod eigensnp_integration_tests {
             "[SUMMARY_WRITER_DTOR] Test execution finished. Running summary writer destructor."
         );
         if let Err(e) = write_summary_file_impl() {
-            eprintln!("[SUMMARY_WRITER_DTOR] CRITICAL: Failed to write eigensnp_summary_results.tsv: {:?}", e);
+            eprintln!(
+                "[SUMMARY_WRITER_DTOR] CRITICAL: Failed to write eigensnp_summary_results.tsv: {:?}",
+                e
+            );
             // Do not panic in dtor
         }
     }
@@ -314,19 +330,22 @@ mod eigensnp_integration_tests {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        if let Some(mut stdin_pipe) = process.stdin.take() {
-            // Write to stdin in a separate thread to avoid deadlocks if the buffer fills up
-            std::thread::spawn(move || {
-                if let Err(e) = stdin_pipe.write_all(stdin_data.as_bytes()) {
-                    // eprintln is okay for a background thread error message in tests
-                    eprintln!("Failed to write to stdin of pca.py: {}", e); // Ensure this eprintln is acceptable or use logging framework
-                }
-            });
-        } else {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to open stdin pipe for pca.py",
-            )));
+        match process.stdin.take() {
+            Some(mut stdin_pipe) => {
+                // Write to stdin in a separate thread to avoid deadlocks if the buffer fills up
+                std::thread::spawn(move || {
+                    if let Err(e) = stdin_pipe.write_all(stdin_data.as_bytes()) {
+                        // eprintln is okay for a background thread error message in tests
+                        eprintln!("Failed to write to stdin of pca.py: {}", e); // Ensure this eprintln is acceptable or use logging framework
+                    }
+                });
+            }
+            _ => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to open stdin pipe for pca.py",
+                )));
+            }
         }
 
         let py_cmd_output = process.wait_with_output()?;
@@ -678,7 +697,7 @@ mod eigensnp_integration_tests {
                 );
             } else if current_line_is_empty {
                 lines.next(); // Consume the empty line
-                              // Continue to next iteration to peek at next line
+            // Continue to next iteration to peek at next line
             } else {
                 // Unexpected line
                 return Err(format!(
@@ -733,6 +752,7 @@ mod eigensnp_integration_tests {
                 components_per_ld_block: 10
                     .min(num_snps.min((num_samples / 2).max(10).min(num_samples.max(1)))),
                 random_seed: seed,
+                force_dense_pca: true,
                 ..Default::default()
             };
             let algorithm = EigenSNPCoreAlgorithm::new(config);
@@ -950,6 +970,7 @@ mod eigensnp_integration_tests {
                     .min(num_samples.max(1)),
                 components_per_ld_block: 10
                     .min(num_snps.min((num_samples / 2).max(10).min(num_samples.max(1)))),
+                force_dense_pca: true,
                 ..Default::default()
             };
             let algorithm = EigenSNPCoreAlgorithm::new(config);
@@ -1129,6 +1150,7 @@ mod eigensnp_integration_tests {
                     .min(num_samples.max(1)),
                 components_per_ld_block: 10
                     .min(num_snps.min((num_samples / 2).max(10).min(num_samples.max(1)))),
+                force_dense_pca: true,
                 ..Default::default()
             };
             let algorithm = EigenSNPCoreAlgorithm::new(config);
@@ -1415,6 +1437,7 @@ mod eigensnp_integration_tests {
             subset_factor_for_local_basis_learning: 1.0,
             min_subset_size_for_local_basis_learning: num_samples.max(1), // Ensure at least 1
             max_subset_size_for_local_basis_learning: num_samples.max(10), // Ensure at least 10
+            force_dense_pca: true,
             ..Default::default()
         };
         let algorithm = EigenSNPCoreAlgorithm::new(config);
@@ -1786,7 +1809,7 @@ pub fn run_pc_correlation_with_truth_set_test(
     // Get Truth PCs from pca.py by calling the new helper function
     let mut py_loadings_d_x_k: Array2<f32> = Array2::zeros((0, 0)); // D x K
     let mut py_scores_n_x_k: Array2<f32> = Array2::zeros((0, 0)); // N x K
-                                                                  // let mut py_eigenvalues_k: Array1<f64> = Array1::zeros(0); // K
+    // let mut py_eigenvalues_k: Array1<f64> = Array1::zeros(0); // K
     let mut effective_k_py = 0;
 
     let python_pca_result = get_python_reference_pca(
@@ -1841,6 +1864,7 @@ pub fn run_pc_correlation_with_truth_set_test(
         max_subset_size_for_local_basis_learning: (num_samples / 2).max(10).min(num_samples.max(1)),
         components_per_ld_block: 10
             .min(num_snps.min((num_samples / 2).max(10).min(num_samples.max(1)))),
+        force_dense_pca: true,
         ..Default::default()
     };
     let algorithm = EigenSNPCoreAlgorithm::new(config);
@@ -2085,6 +2109,7 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
         min_subset_size_for_local_basis_learning: min_subset_size,
         max_subset_size_for_local_basis_learning: max_subset_size,
         components_per_ld_block: components_per_block,
+        force_dense_pca: true,
         ..Default::default()
     };
 
@@ -2298,6 +2323,7 @@ pub fn run_generic_large_matrix_test(
         random_seed: seed,
         ..Default::default()
     };
+    base_config.force_dense_pca = true;
 
     if let Some(modifier) = config_modifier {
         base_config = modifier(base_config);
@@ -2489,6 +2515,7 @@ pub fn run_sample_projection_accuracy_test(
         target_num_global_pcs: k_components,
         random_seed: seed,
         // Default other params or make them configurable if needed for these tests
+        force_dense_pca: true,
         ..Default::default()
     };
     let algorithm_train = EigenSNPCoreAlgorithm::new(config_train);
@@ -2554,66 +2581,74 @@ pub fn run_sample_projection_accuracy_test(
         }
     }
 
-    // Get "Truth" Scores for Test Samples using pca.py on total data
+    // Get "Truth" Scores for Test Samples using pca.py on the training data
     let mut py_test_scores_ref_option: Option<Array2<f32>> = None;
 
     if test_successful {
         // Only proceed if eigensnp part was okay so far
-        let python_total_data_prefix = format!(
-            "sample_projection_{}x{}_k{}_py_total_ref",
-            num_snps, num_samples_total, k_components
+        let python_train_data_prefix = format!(
+            "sample_projection_{}x{}_k{}_py_train_ref",
+            num_snps, num_samples_train, k_components
         );
         match get_python_reference_pca(
-            &standardized_genos_total_snps_x_samples,
-            k_components, // Use original k_components for full data PCA
-            &python_total_data_prefix,
+            &train_data_snps_x_samples,
+            k_components, // Request the same number of components on the training data
+            &python_train_data_prefix,
         ) {
-            Ok((_py_loadings_total_k_x_d, py_scores_total_n_x_k, _py_eigenvalues_total)) => {
-                // _py_loadings_total is K x D
-                // py_scores_total_n_x_k is N_total x K
-                let k_py_total = _py_loadings_total_k_x_d.nrows(); // Kx D, so nrows is K
-                if py_scores_total_n_x_k.nrows() == num_samples_total
-                    && py_scores_total_n_x_k.ncols() >= k_components.min(k_py_total)
-                {
-                    // Extract test sample scores: from row num_samples_train onwards
-                    // Ensure k_eff_rust is used for slicing columns to match projected scores dimensions
-                    let num_cols_to_slice = k_eff_rust.min(py_scores_total_n_x_k.ncols());
-                    if num_cols_to_slice > 0 {
-                        let py_test_scores_ref = py_scores_total_n_x_k
-                            .slice(s![num_samples_train.., 0..num_cols_to_slice])
-                            .to_owned();
-                        save_matrix_to_tsv(
-                            &py_test_scores_ref.view(),
-                            artifact_dir.to_str().unwrap_or("."),
-                            "python_ref_test_scores.tsv",
-                        )
-                        .unwrap_or_default();
-                        py_test_scores_ref_option = Some(py_test_scores_ref);
-                        outcome_details.push_str(&format!("Python on total data successful. k_py_total: {}. Sliced to {} cols for comparison. ", k_py_total, num_cols_to_slice));
-                    } else {
-                        outcome_details.push_str(
-                            "Python on total data: 0 relevant components to slice for comparison. ",
-                        );
-                        // This might be a test failure if k_eff_rust or k_py_total was expected to be > 0
-                        if k_eff_rust > 0 {
-                            // If Rust produced PCs but Python didn't produce comparable ones
-                            test_successful = false;
-                            outcome_details.push_str("Mismatch: Rust produced PCs but Python reference had 0 comparable PCs. ");
+            Ok((py_loadings_train_k_x_d, _py_scores_train_n_x_k, _py_eigenvalues_train)) => {
+                let k_py_train = py_loadings_train_k_x_d.nrows();
+                let num_cols_to_slice = k_eff_rust.min(k_py_train);
+                if num_cols_to_slice > 0 {
+                    let mut py_loadings_train_d_by_k = py_loadings_train_k_x_d
+                        .slice(s![0..num_cols_to_slice, ..])
+                        .t()
+                        .to_owned();
+
+                    if let Some(ref rust_pca_output) = rust_pca_output_option {
+                        let rust_loadings_d_by_k = rust_pca_output
+                            .final_snp_principal_component_loadings
+                            .slice(s![.., 0..num_cols_to_slice]);
+                        for col_idx in 0..num_cols_to_slice {
+                            let rust_col = rust_loadings_d_by_k.column(col_idx);
+                            let mut py_col = py_loadings_train_d_by_k.column_mut(col_idx);
+                            let dot_product = rust_col.dot(&py_col);
+                            if dot_product < 0.0 {
+                                py_col.mapv_inplace(|value| -value);
+                            }
                         }
                     }
-                } else {
-                    test_successful = false;
+
+                    let py_test_scores_ref =
+                        test_data_snps_x_samples.t().dot(&py_loadings_train_d_by_k);
+
+                    save_matrix_to_tsv(
+                        &py_test_scores_ref.view(),
+                        artifact_dir.to_str().unwrap_or("."),
+                        "python_ref_test_scores.tsv",
+                    )
+                    .unwrap_or_default();
+
+                    py_test_scores_ref_option = Some(py_test_scores_ref);
                     outcome_details.push_str(&format!(
-                        "Python (total data) scores dimensions mismatch. Expected N_total x >=k_eff_py ({}x{}), Got {}x{}. ",
-                        num_samples_total, k_components.min(k_py_total),
-                        py_scores_total_n_x_k.nrows(), py_scores_total_n_x_k.ncols()
+                        "Python on training data successful. k_py_train: {}. Sliced to {} cols for comparison. ",
+                        k_py_train, num_cols_to_slice
                     ));
+                } else {
+                    outcome_details.push_str(
+                        "Python on training data: 0 relevant components to slice for comparison. ",
+                    );
+                    if k_eff_rust > 0 {
+                        test_successful = false;
+                        outcome_details.push_str(
+                            "Mismatch: Rust produced PCs but Python training reference had 0 comparable PCs. ",
+                        );
+                    }
                 }
             }
             Err(e) => {
                 test_successful = false;
                 outcome_details.push_str(&format!(
-                    "Python reference PCA on total data failed: {}. ",
+                    "Python reference PCA on training data failed: {}. ",
                     e
                 ));
             }
@@ -2885,6 +2920,7 @@ where
                     .min(standardized_structured_data.ncols().max(1)),
             ),
         ),
+        force_dense_pca: true,
         ..Default::default()
     };
 
@@ -3509,13 +3545,16 @@ fn test_min_passes_for_quality_convergence() {
             max_subset_size_for_local_basis_learning: (n_samples / 2).max(10).min(n_samples.max(1)),
             components_per_ld_block: 10
                 .min(d_total_snps.min((n_samples / 2).max(10).min(n_samples.max(1)))),
+            force_dense_pca: true,
             ..Default::default()
         };
 
         let test_data_accessor = TestDataAccessor::new(standardized_structured_data.clone());
         let algorithm = EigenSNPCoreAlgorithm::new(config);
 
-        match algorithm.compute_pca(&test_data_accessor, &ld_block_specs, &snp_metadata) {
+        let compute_result =
+            algorithm.compute_pca(&test_data_accessor, &ld_block_specs, &snp_metadata);
+        match compute_result {
             Ok((eigensnp_output_current_pass, _)) => {
                 // This variable will store the PC count from the pass that *first* meets criteria,
                 // or the last successful one if criteria are never met.
@@ -3668,8 +3707,11 @@ fn test_min_passes_for_quality_convergence() {
         outcome_details: overall_outcome_details.clone(),
         notes: format!(
             "Min passes found for convergence: {}. Expected <= {}. Thresholds: ScoreCor >= {:.3}, LoadCor >= {:.3}, EigAcc (-MSRE) >= {:.3e}",
-            min_passes_found, expected_max_passes_for_convergence,
-            thresholds.min_score_correlation, thresholds.min_loading_correlation, thresholds.max_neg_eigenvalue_accuracy
+            min_passes_found,
+            expected_max_passes_for_convergence,
+            thresholds.min_score_correlation,
+            thresholds.min_loading_correlation,
+            thresholds.max_neg_eigenvalue_accuracy
         ),
     };
     TEST_RESULTS.lock().unwrap().push(record);
@@ -3741,7 +3783,8 @@ fn test_refinement_projection_accuracy() {
     if py_total_scores_n_x_k.nrows() < n_samples_total {
         panic!(
             "Python reference scores have fewer rows ({}) than n_samples_total ({}). Cannot slice test set scores.",
-            py_total_scores_n_x_k.nrows(), n_samples_total
+            py_total_scores_n_x_k.nrows(),
+            n_samples_total
         );
     }
     // Ensure py_total_scores_n_x_k has columns before trying to slice
@@ -3780,6 +3823,7 @@ fn test_refinement_projection_accuracy() {
                 .min(n_samples_train.max(1)),
             components_per_ld_block: 10
                 .min(d_total_snps.min((n_samples_train / 2).max(10).min(n_samples_train.max(1)))),
+            force_dense_pca: true,
             ..Default::default()
         };
 
@@ -3791,11 +3835,12 @@ fn test_refinement_projection_accuracy() {
 
         let algorithm = EigenSNPCoreAlgorithm::new(config);
         let snp_metadata = create_dummy_snp_metadata(d_total_snps);
-        match algorithm.compute_pca(
+        let compute_result = algorithm.compute_pca(
             &test_data_accessor_train,
             &ld_block_specs_train,
             &snp_metadata,
-        ) {
+        );
+        match compute_result {
             Ok((eigensnp_train_output_struct, _)) => {
                 save_matrix_to_tsv(
                     &eigensnp_train_output_struct
