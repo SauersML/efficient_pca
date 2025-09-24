@@ -91,7 +91,7 @@ fn eigenvalues_descending(matrix: &Array2<f64>) -> Vec<f64> {
 fn eigenvalues_descending(matrix: &Array2<f64>) -> Vec<f64> {
     use ndarray_linalg::{Eigh, UPLO};
 
-    let (mut eigenvalues, _) = matrix.eigh(UPLO::Upper).expect("eigendecomposition failed");
+    let (eigenvalues, _) = matrix.eigh(UPLO::Upper).expect("eigendecomposition failed");
     let mut values = eigenvalues.to_vec();
     values.sort_by(|a, b| b.partial_cmp(a).expect("eigenvalues must be comparable"));
     values
@@ -1953,8 +1953,17 @@ mod pca_tests {
         }
 
         if explained_variance_fit_eff_v161.len() > 0 {
-            if !approx::abs_diff_eq!(explained_variance_fit_eff_v161[0], 4.0, epsilon = TOLERANCE) {
-                panic!("Efficient PCA (fit) first explained variance for hardcoded data should be approx 4.0. Got: {}", explained_variance_fit_eff_v161[0]);
+            let expected_first_ev = n_features as f64;
+            if !approx::abs_diff_eq!(
+                explained_variance_fit_eff_v161[0],
+                expected_first_ev,
+                epsilon = TOLERANCE
+            ) {
+                panic!(
+                    "Efficient PCA (fit) first explained variance for hardcoded data should reflect sample-variance scaling (~{}). Got: {}",
+                    expected_first_ev,
+                    explained_variance_fit_eff_v161[0]
+                );
             }
         }
 

@@ -22,15 +22,18 @@ impl<F: 'static + Copy + Send + Sync> LinAlgBackendProvider<F> {
     feature = "faer_links_ndarray_static_openblas"
 ))]
 use ndarray::s;
-#[cfg(any(
-    feature = "backend_openblas",
-    feature = "backend_openblas_system",
-    feature = "backend_mkl",
-    feature = "backend_mkl_system",
-    feature = "faer_links_ndarray_static_openblas"
+use ndarray::{Array1, Array2};
+#[cfg(all(
+    not(feature = "backend_faer"),
+    any(
+        feature = "backend_openblas",
+        feature = "backend_openblas_system",
+        feature = "backend_mkl",
+        feature = "backend_mkl_system",
+        feature = "faer_links_ndarray_static_openblas"
+    )
 ))]
 use ndarray_linalg::Lapack;
-use ndarray::{Array1, Array2};
 // use num_traits::Float; // No longer needed directly by provider
 use std::error::Error;
 use std::marker::PhantomData;
@@ -90,9 +93,11 @@ mod ndarray_backend_impl {
     use ndarray_linalg::{Eigh, Lapack, SVDInto, QR, UPLO};
     use std::error::Error;
 
+    #[cfg_attr(feature = "backend_faer", allow(dead_code))]
     #[derive(Debug, Default, Copy, Clone)]
     pub struct NdarrayLinAlgBackend;
 
+    #[cfg_attr(feature = "backend_faer", allow(dead_code))]
     fn to_dyn_error<E: Error + Send + Sync + 'static>(e: E) -> Box<dyn Error + Send + Sync> {
         Box::new(e)
     }
@@ -185,12 +190,15 @@ mod ndarray_backend_impl {
     pub use NdarrayLinAlgBackend as Backend;
 }
 
-#[cfg(any(
-    feature = "backend_openblas",
-    feature = "backend_openblas_system",
-    feature = "backend_mkl",
-    feature = "backend_mkl_system",
-    feature = "faer_links_ndarray_static_openblas"
+#[cfg(all(
+    not(feature = "backend_faer"),
+    any(
+        feature = "backend_openblas",
+        feature = "backend_openblas_system",
+        feature = "backend_mkl",
+        feature = "backend_mkl_system",
+        feature = "faer_links_ndarray_static_openblas"
+    )
 ))]
 use ndarray_backend_impl::Backend as NdarrayLinAlgBackend;
 
