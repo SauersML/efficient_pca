@@ -22,6 +22,14 @@ impl<F: 'static + Copy + Send + Sync> LinAlgBackendProvider<F> {
     feature = "faer_links_ndarray_static_openblas"
 ))]
 use ndarray::s;
+#[cfg(any(
+    feature = "backend_openblas",
+    feature = "backend_openblas_system",
+    feature = "backend_mkl",
+    feature = "backend_mkl_system",
+    feature = "faer_links_ndarray_static_openblas"
+))]
+use ndarray_linalg::Lapack;
 use ndarray::{Array1, Array2};
 // use num_traits::Float; // No longer needed directly by provider
 use std::error::Error;
