@@ -6,7 +6,7 @@ use python_bootstrap::ensure_python_packages_installed;
 use efficient_pca::PCA;
 
 // For ndarray operations
-use ndarray::{array, Array2, Axis};
+use ndarray::{Array2, Axis, array};
 
 // For Linfa PCA functionality
 use linfa::dataset::DatasetBase;
@@ -101,7 +101,7 @@ fn eigenvalues_descending(matrix: &Array2<f64>) -> Vec<f64> {
 mod genome_tests {
     use super::*;
     // use ndarray::array; // Already imported at top level of file
-    use ndarray::{s, ArrayView1}; // Array2 also needed for some tests
+    use ndarray::{ArrayView1, s}; // Array2 also needed for some tests
     use rand::Rng;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -256,13 +256,14 @@ mod genome_tests {
         // Run PCA
         let mut pca = PCA::new();
 
-        match pca.rfit(
+        let rfit_result = pca.rfit(
             data_matrix.clone(), // data_matrix is consumed by rfit
             n_components,
             5,        // oversampling parameter
             Some(42), // seed
             None,     // no variance tolerance
-        ) {
+        );
+        match rfit_result {
             Ok(transformed) => {
                 // rfit now returns the transformed principal components directly
                 println!("PCA rfit computation successful, transformed PCs obtained.");
@@ -326,13 +327,14 @@ mod genome_tests {
 
                     // Run PCA on filtered data
                     let mut pca_filtered = PCA::new();
-                    match pca_filtered.rfit(
+                    let rfit_result = pca_filtered.rfit(
                         filtered_matrix, // filtered_matrix is consumed by rfit
                         n_components,
                         5,
                         Some(42),
                         None,
-                    ) {
+                    );
+                    match rfit_result {
                         Ok(transformed_filtered) => {
                             // rfit now returns transformed PCs
                             // let transformed_filtered = pca_filtered.transform(filtered_matrix).unwrap(); // This is now redundant
@@ -781,7 +783,7 @@ mod genome_tests {
 #[cfg(test)]
 mod model_persistence_tests {
     use super::*;
-    use ndarray::{array, Array1, Array2};
+    use ndarray::{Array1, Array2, array};
     use std::error::Error;
     use std::f64;
     use tempfile::NamedTempFile; // For f64::NAN
@@ -796,19 +798,29 @@ mod model_persistence_tests {
     ) {
         match (arr1_opt, arr2_opt) {
             (Some(a1), Some(a2)) => {
-                assert_eq!(a1.dim(), a2.dim(), "Dimension mismatch for {} Array1", context_msg);
+                assert_eq!(
+                    a1.dim(),
+                    a2.dim(),
+                    "Dimension mismatch for {} Array1",
+                    context_msg
+                );
                 for (i, (v1, v2)) in a1.iter().zip(a2.iter()).enumerate() {
                     assert!(
                         (v1 - v2).abs() < COMPARISON_TOLERANCE,
                         "Value mismatch at index {} for {}: {} vs {}",
-                        i, context_msg, v1, v2
+                        i,
+                        context_msg,
+                        v1,
+                        v2
                     );
                 }
             }
             (None, None) => { /* Both are None, which is considered equal in this context */ }
             _ => panic!(
                 "Optional Array1 mismatch for {}: one is Some, other is None. Arr1: {:?}, Arr2: {:?}",
-                context_msg, arr1_opt.is_some(), arr2_opt.is_some()
+                context_msg,
+                arr1_opt.is_some(),
+                arr2_opt.is_some()
             ),
         }
     }
@@ -821,19 +833,29 @@ mod model_persistence_tests {
     ) {
         match (arr1_opt, arr2_opt) {
             (Some(a1), Some(a2)) => {
-                assert_eq!(a1.dim(), a2.dim(), "Dimension mismatch for {} Array2", context_msg);
+                assert_eq!(
+                    a1.dim(),
+                    a2.dim(),
+                    "Dimension mismatch for {} Array2",
+                    context_msg
+                );
                 for (idx, (v1, v2)) in a1.iter().zip(a2.iter()).enumerate() {
                     assert!(
                         (v1 - v2).abs() < COMPARISON_TOLERANCE,
                         "Value mismatch at flat index {} for {}: {} vs {}",
-                        idx, context_msg, v1, v2
+                        idx,
+                        context_msg,
+                        v1,
+                        v2
                     );
                 }
             }
             (None, None) => { /* Both are None, considered equal */ }
             _ => panic!(
                 "Optional Array2 mismatch for {}: one is Some, other is None. Arr1: {:?}, Arr2: {:?}",
-                context_msg, arr1_opt.is_some(), arr2_opt.is_some()
+                context_msg,
+                arr1_opt.is_some(),
+                arr2_opt.is_some()
             ),
         }
     }
@@ -1477,7 +1499,7 @@ mod pca_tests {
                 .unwrap()
         } else {
             pca.fit(input.clone(), None).unwrap(); // fit does not return PCs
-                                                   // so, transform is still needed after fit.
+            // so, transform is still needed after fit.
             pca.transform(input.clone()).unwrap()
         };
 
@@ -1491,7 +1513,7 @@ mod pca_tests {
     }
 
     use super::*; // This brings PcaReferenceResults into scope for this module if it's outside
-                  // use ndarray::array; // Already imported at top level of file
+    // use ndarray::array; // Already imported at top level of file
     use ndarray_rand::rand_distr::Distribution;
 
     #[test]
@@ -1502,12 +1524,30 @@ mod pca_tests {
         use ndarray_v15;
 
         fn assert_f64_slices_approx_equal(s1: &[f64], s2: &[f64], tol: f64, context_msg: &str) {
-            assert_eq!(s1.len(), s2.len(), "Length mismatch for '{}': expected {}, got {}. s1_len: {}, s2_len: {}. s1 first 5: {:?}, s2 first 5: {:?}", context_msg, s2.len(), s1.len(), s1.len(), s2.len(), s1.iter().take(5).collect::<Vec<_>>(), s2.iter().take(5).collect::<Vec<_>>());
+            assert_eq!(
+                s1.len(),
+                s2.len(),
+                "Length mismatch for '{}': expected {}, got {}. s1_len: {}, s2_len: {}. s1 first 5: {:?}, s2 first 5: {:?}",
+                context_msg,
+                s2.len(),
+                s1.len(),
+                s1.len(),
+                s2.len(),
+                s1.iter().take(5).collect::<Vec<_>>(),
+                s2.iter().take(5).collect::<Vec<_>>()
+            );
             for i in 0..s1.len() {
                 if !approx::abs_diff_eq!(s1[i], s2[i], epsilon = tol) {
                     panic!(
                         "Element mismatch at index {} in '{}'. s1[i]: {:.6e}, s2[i]: {:.6e}, diff: {:.2e}, tol: {:.1e}. (Full s1: {:?}, Full s2: {:?})",
-                        i, context_msg, s1[i], s2[i], (s1[i] - s2[i]).abs(), tol, s1, s2
+                        i,
+                        context_msg,
+                        s1[i],
+                        s2[i],
+                        (s1[i] - s2[i]).abs(),
+                        tol,
+                        s1,
+                        s2
                     );
                 }
             }
@@ -1583,10 +1623,33 @@ mod pca_tests {
                         col1 (first {}): {:?}{}\n\
                         col2 (first {}): {:?}{}\n\
                         -col2 (first {}): {:?}{}",
-                        j, context_msg, tol,
-                        display_limit, col1.iter().take(display_limit).copied().collect::<Vec<_>>(), if col1.len() > display_limit { "..." } else { "" },
-                        display_limit, col2.iter().take(display_limit).copied().collect::<Vec<_>>(), if col2.len() > display_limit { "..." } else { "" },
-                        display_limit, col2.iter().map(|&x_val| -x_val).take(display_limit).collect::<Vec<_>>(), if col2.len() > display_limit { "..." } else { "" }
+                        j,
+                        context_msg,
+                        tol,
+                        display_limit,
+                        col1.iter().take(display_limit).copied().collect::<Vec<_>>(),
+                        if col1.len() > display_limit {
+                            "..."
+                        } else {
+                            ""
+                        },
+                        display_limit,
+                        col2.iter().take(display_limit).copied().collect::<Vec<_>>(),
+                        if col2.len() > display_limit {
+                            "..."
+                        } else {
+                            ""
+                        },
+                        display_limit,
+                        col2.iter()
+                            .map(|&x_val| -x_val)
+                            .take(display_limit)
+                            .collect::<Vec<_>>(),
+                        if col2.len() > display_limit {
+                            "..."
+                        } else {
+                            ""
+                        }
                     );
                 }
             }
@@ -1839,18 +1902,30 @@ mod pca_tests {
                             linfa_top_sv
                         };
                         assert!(
-                            approx::abs_diff_eq!(sv_fit_sorted_vec[0], adjusted_linfa_sv_for_fit, epsilon = TOLERANCE * 10.0),
+                            approx::abs_diff_eq!(
+                                sv_fit_sorted_vec[0],
+                                adjusted_linfa_sv_for_fit,
+                                epsilon = TOLERANCE * 10.0
+                            ),
                             "Top SV mismatch (fit vs Linfa adjusted): fit_sv={:.4e}, linfa_sv_adj={:.4e} (orig_linfa_sv={:.4e}, factor={:.4e})",
-                            sv_fit_sorted_vec[0], adjusted_linfa_sv_for_fit, linfa_top_sv, common_std_dev_fit
+                            sv_fit_sorted_vec[0],
+                            adjusted_linfa_sv_for_fit,
+                            linfa_top_sv,
+                            common_std_dev_fit
                         );
                     } else {
-                        panic!("pca_fit_eff.scale() vector is empty, cannot adjust Linfa SV for comparison.");
+                        panic!(
+                            "pca_fit_eff.scale() vector is empty, cannot adjust Linfa SV for comparison."
+                        );
                     }
                 } else {
                     panic!("pca_fit_eff.scale() is None, cannot adjust Linfa SV for comparison.");
                 }
             } else {
-                panic!("sv_fit_sorted_vec is empty, but Linfa reported {} SV(s). Inconsistent SV counts.", sv_linfa_sorted_vec.len());
+                panic!(
+                    "sv_fit_sorted_vec is empty, but Linfa reported {} SV(s). Inconsistent SV counts.",
+                    sv_linfa_sorted_vec.len()
+                );
             }
 
             // Comparison for 'rfit' vs Linfa Singular Value
@@ -1864,18 +1939,30 @@ mod pca_tests {
                             linfa_top_sv
                         };
                         assert!(
-                            approx::abs_diff_eq!(sv_rfit_sorted_vec[0], adjusted_linfa_sv_for_rfit, epsilon = TOLERANCE * 20.0),
+                            approx::abs_diff_eq!(
+                                sv_rfit_sorted_vec[0],
+                                adjusted_linfa_sv_for_rfit,
+                                epsilon = TOLERANCE * 20.0
+                            ),
                             "Top SV mismatch (rfit vs Linfa adjusted): rfit_sv={:.4e}, linfa_sv_adj={:.4e} (orig_linfa_sv={:.4e}, factor={:.4e})",
-                            sv_rfit_sorted_vec[0], adjusted_linfa_sv_for_rfit, linfa_top_sv, common_std_dev_rfit
+                            sv_rfit_sorted_vec[0],
+                            adjusted_linfa_sv_for_rfit,
+                            linfa_top_sv,
+                            common_std_dev_rfit
                         );
                     } else {
-                        panic!("pca_rfit_eff.scale() vector is empty, cannot adjust Linfa SV for comparison.");
+                        panic!(
+                            "pca_rfit_eff.scale() vector is empty, cannot adjust Linfa SV for comparison."
+                        );
                     }
                 } else {
                     panic!("pca_rfit_eff.scale() is None, cannot adjust Linfa SV for comparison.");
                 }
             } else {
-                panic!("sv_rfit_sorted_vec is empty, but Linfa reported {} SV(s). Inconsistent SV counts.", sv_linfa_sorted_vec.len());
+                panic!(
+                    "sv_rfit_sorted_vec is empty, but Linfa reported {} SV(s). Inconsistent SV counts.",
+                    sv_linfa_sorted_vec.len()
+                );
             }
         } else {
             // Linfa found no SVs
@@ -1885,17 +1972,23 @@ mod pca_tests {
                 || sv_fit_sorted_vec
                     .iter()
                     .all(|&x| x.abs() < TOLERANCE * 10.0);
-            assert!(fit_is_effectively_empty,
-                    "Expected fit SVs to be empty or near-zero if Linfa SVs are empty; fit has {} SVs: {:?}",
-                    sv_fit_sorted_vec.len(), sv_fit_sorted_vec);
+            assert!(
+                fit_is_effectively_empty,
+                "Expected fit SVs to be empty or near-zero if Linfa SVs are empty; fit has {} SVs: {:?}",
+                sv_fit_sorted_vec.len(),
+                sv_fit_sorted_vec
+            );
 
             let rfit_is_effectively_empty = sv_rfit_sorted_vec.is_empty()
                 || sv_rfit_sorted_vec
                     .iter()
                     .all(|&x| x.abs() < TOLERANCE * 20.0);
-            assert!(rfit_is_effectively_empty,
-                    "Expected rfit SVs to be empty or near-zero if Linfa SVs are empty; rfit has {} SVs: {:?}",
-                    sv_rfit_sorted_vec.len(), sv_rfit_sorted_vec);
+            assert!(
+                rfit_is_effectively_empty,
+                "Expected rfit SVs to be empty or near-zero if Linfa SVs are empty; rfit has {} SVs: {:?}",
+                sv_rfit_sorted_vec.len(),
+                sv_rfit_sorted_vec
+            );
         }
 
         let sum_ev_fit_eff = explained_variance_fit_eff_v161.sum();
@@ -1932,7 +2025,11 @@ mod pca_tests {
                     "Explained Variance Ratio (fit vs linfa - common top, Linfa NaN adj. to 1.0)",
                 );
             } else {
-                panic!("Length mismatch: Explained Variance Ratio (fit vs linfa): fit_len={}, linfa_len={}", ratio_fit_eff_vec.len(), len_linfa_ratio);
+                panic!(
+                    "Length mismatch: Explained Variance Ratio (fit vs linfa): fit_len={}, linfa_len={}",
+                    ratio_fit_eff_vec.len(),
+                    len_linfa_ratio
+                );
             }
 
             if ratio_rfit_eff_vec.len() >= len_linfa_ratio {
@@ -1943,13 +2040,31 @@ mod pca_tests {
                     "Explained Variance Ratio (rfit vs linfa - common top, Linfa NaN adj. to 1.0)",
                 );
             } else {
-                panic!("Length mismatch: Explained Variance Ratio (rfit vs linfa): rfit_len={}, linfa_len={}", ratio_rfit_eff_vec.len(), len_linfa_ratio);
+                panic!(
+                    "Length mismatch: Explained Variance Ratio (rfit vs linfa): rfit_len={}, linfa_len={}",
+                    ratio_rfit_eff_vec.len(),
+                    len_linfa_ratio
+                );
             }
         } else {
-            assert!(ratio_fit_eff_vec.is_empty() || ratio_fit_eff_vec.iter().all(|&x| x.abs() < TOLERANCE * 10.0 || x.is_nan()),
-                    "Fit EVR: expected empty or near-zero/NaN if Linfa EVR is empty; got {} elements: {:?}", ratio_fit_eff_vec.len(), ratio_fit_eff_vec);
-            assert!(ratio_rfit_eff_vec.is_empty() || ratio_rfit_eff_vec.iter().all(|&x| x.abs() < TOLERANCE * 20.0 || x.is_nan()),
-                    "RFit EVR: expected empty or near-zero/NaN if Linfa EVR is empty; got {} elements: {:?}", ratio_rfit_eff_vec.len(), ratio_rfit_eff_vec);
+            assert!(
+                ratio_fit_eff_vec.is_empty()
+                    || ratio_fit_eff_vec
+                        .iter()
+                        .all(|&x| x.abs() < TOLERANCE * 10.0 || x.is_nan()),
+                "Fit EVR: expected empty or near-zero/NaN if Linfa EVR is empty; got {} elements: {:?}",
+                ratio_fit_eff_vec.len(),
+                ratio_fit_eff_vec
+            );
+            assert!(
+                ratio_rfit_eff_vec.is_empty()
+                    || ratio_rfit_eff_vec
+                        .iter()
+                        .all(|&x| x.abs() < TOLERANCE * 20.0 || x.is_nan()),
+                "RFit EVR: expected empty or near-zero/NaN if Linfa EVR is empty; got {} elements: {:?}",
+                ratio_rfit_eff_vec.len(),
+                ratio_rfit_eff_vec
+            );
         }
 
         if explained_variance_fit_eff_v161.len() > 0 {
@@ -1961,13 +2076,14 @@ mod pca_tests {
             ) {
                 panic!(
                     "Efficient PCA (fit) first explained variance for hardcoded data should reflect sample-variance scaling (~{}). Got: {}",
-                    expected_first_ev,
-                    explained_variance_fit_eff_v161[0]
+                    expected_first_ev, explained_variance_fit_eff_v161[0]
                 );
             }
         }
 
-        println!("Test 'test_pca_fit_consistency_linfa' (comparing with Linfa) passed with aliased ndarray_v15 and type bridging!");
+        println!(
+            "Test 'test_pca_fit_consistency_linfa' (comparing with Linfa) passed with aliased ndarray_v15 and type bridging!"
+        );
         Ok(())
     }
 
@@ -2014,11 +2130,21 @@ mod pca_tests {
     #[test]
     fn test_pca_5x7() {
         let input = array![
-            [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
-            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
-            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
-            [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
-            [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
+            [
+                0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732
+            ],
+            [
+                0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335
+            ],
+            [
+                -0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903
+            ],
+            [
+                -0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456
+            ],
+            [
+                0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712
+            ]
         ];
         run_python_pca_test(&input, 7, false, 0, None, 1e-6, "test_pca_5x7");
     }
@@ -2026,11 +2152,21 @@ mod pca_tests {
     #[test]
     fn test_rpca_5x7_k4() {
         let input = array![
-            [0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732],
-            [0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335],
-            [-0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903],
-            [-0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456],
-            [0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712]
+            [
+                0.5855288, -1.8179560, -0.1162478, 0.8168998, 0.7796219, 1.8050975, 0.8118732
+            ],
+            [
+                0.7094660, 0.6300986, 1.8173120, -0.8863575, 1.4557851, -0.4816474, 2.1968335
+            ],
+            [
+                -0.1093033, -0.2761841, 0.3706279, -0.3315776, -0.6443284, 0.6203798, 2.0491903
+            ],
+            [
+                -0.4534972, -0.2841597, 0.5202165, 1.1207127, -1.5531374, 0.6121235, 1.6324456
+            ],
+            [
+                0.6058875, -0.9193220, -0.7505320, 0.2987237, -1.5977095, -0.1623110, 0.2542712
+            ]
         ];
         run_python_pca_test(&input, 4, true, 0, Some(1926), 1e-6, "test_rpca_5x7_k4");
     }

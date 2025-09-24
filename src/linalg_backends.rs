@@ -54,7 +54,7 @@ pub struct EighOutput<F: 'static> {
 /// Implementers will typically expect `matrix` to be symmetric.
 pub trait BackendEigh<F: 'static + Copy + Send + Sync> {
     fn eigh_upper(&self, matrix: &Array2<F>)
-        -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>>;
+    -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>>;
 }
 
 /// Trait for QR decomposition, focusing on retrieving the Q factor.
@@ -89,8 +89,8 @@ pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
     feature = "faer_links_ndarray_static_openblas"
 ))]
 mod ndarray_backend_impl {
-    use super::{s, Array2, BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
-    use ndarray_linalg::{Eigh, Lapack, SVDInto, QR, UPLO};
+    use super::{Array2, BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput, s};
+    use ndarray_linalg::{Eigh, Lapack, QR, SVDInto, UPLO};
     use std::error::Error;
 
     #[cfg_attr(feature = "backend_faer", allow(dead_code))]
@@ -209,9 +209,9 @@ mod faer_specific_code {
     // Encapsulate faer-specific code and its imports
     use super::{BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
     use bytemuck::Pod;
-    use faer::traits::num_traits::Zero; // Use Zero via faer's re-export
-    use faer::traits::ComplexField;
     use faer::MatRef; // Use faer::MatRef for Faer matrix views.
+    use faer::traits::ComplexField;
+    use faer::traits::num_traits::Zero; // Use Zero via faer's re-export
     use ndarray::{Array1, Array2};
     use std::error::Error;
 
@@ -220,13 +220,15 @@ mod faer_specific_code {
     // use faer::dyn_stack::GlobalPodBuffer; // No longer needed
     // use faer::linalg::svd::ComputeSvdVectors as ComputeVectors; // Commented out as likely not needed
     use faer::linalg::solvers::Svd as FaerSolverSvd; // Alias for the new SVD solver
-                                                     // SvdReq is likely not needed.
+    // SvdReq is likely not needed.
 
     // --- internal util ---------------------------------------------------------
     #[inline(always)]
     unsafe fn read_unchecked<T: Copy>(ptr: *const T) -> T {
-        debug_assert!(!ptr.is_null());
-        *ptr
+        unsafe {
+            debug_assert!(!ptr.is_null());
+            *ptr
+        }
     }
 
     fn to_dyn_error_faer(msg: String) -> Box<dyn Error + Send + Sync> {
