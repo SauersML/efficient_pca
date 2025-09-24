@@ -7,10 +7,15 @@
 // exceeds the number of samples. Small test cases or cases where samples >= features
 // have been deemphasized or removed to better reflect real-world usage scenarios.
 
+#[path = "python_bootstrap.rs"]
+mod python_bootstrap;
+
+use python_bootstrap::ensure_python_packages_installed;
+
 use efficient_pca::eigensnp::{
     reorder_array_owned, reorder_columns_owned, EigenSNPCoreAlgorithm, EigenSNPCoreAlgorithmConfig,
-    EigenSNPCoreOutput, LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, PcaSnpMetadata, QcSampleId,
-    ThreadSafeStdError,
+    EigenSNPCoreOutput, LdBlockSpecification, PcaReadyGenotypeAccessor, PcaSnpId, PcaSnpMetadata,
+    QcSampleId, ThreadSafeStdError,
 };
 use ndarray::{arr2, s, Array1, Array2, ArrayView1, ArrayView2, Axis}; // ArrayView2 was already added, Array removed
 use ndarray_rand::rand_distr::{Normal, StandardNormal, Uniform}; // Added Normal, StandardNormal
@@ -298,6 +303,7 @@ mod eigensnp_integration_tests {
         let mut script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         script_path.push("tests/pca.py");
 
+        ensure_python_packages_installed();
         let mut process = Command::new("python3")
             .arg(script_path.to_str().ok_or("Invalid script path")?)
             .arg("--generate-reference-pca")
@@ -1417,7 +1423,7 @@ mod eigensnp_integration_tests {
             pca_snp_ids_in_block: (0..num_total_snps).map(PcaSnpId).collect(),
         }];
 
-            let snp_metadata = create_dummy_snp_metadata(num_total_snps);
+        let snp_metadata = create_dummy_snp_metadata(num_total_snps);
         let rust_output_result_tuple = algorithm.compute_pca(&test_data, &ld_blocks, &snp_metadata);
 
         let rust_output = match rust_output_result_tuple {
@@ -1844,7 +1850,7 @@ pub fn run_pc_correlation_with_truth_set_test(
     }];
 
     let mut rust_pcs_computed = 0;
-            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    let snp_metadata = create_dummy_snp_metadata(num_snps);
     match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((rust_result, _)) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
@@ -2089,7 +2095,7 @@ fn test_pc_correlation_structured_1000snps_200samples_5truepcs() {
     }];
 
     let mut rust_pcs_computed = 0;
-            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    let snp_metadata = create_dummy_snp_metadata(num_snps);
     match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((rust_result, _)) => {
             rust_pcs_computed = rust_result.num_principal_components_computed;
@@ -2306,7 +2312,7 @@ pub fn run_generic_large_matrix_test(
 
     let mut rust_pcs_computed = 0;
 
-            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    let snp_metadata = create_dummy_snp_metadata(num_snps);
     match algorithm.compute_pca(&test_data_accessor, &ld_blocks, &snp_metadata) {
         Ok((output, _)) => {
             rust_pcs_computed = output.num_principal_components_computed;
@@ -2494,7 +2500,7 @@ pub fn run_sample_projection_accuracy_test(
     let mut rust_pca_output_option: Option<EigenSNPCoreOutput> = None; // Now directly in scope
     let mut k_eff_rust = 0;
 
-            let snp_metadata = create_dummy_snp_metadata(num_snps);
+    let snp_metadata = create_dummy_snp_metadata(num_snps);
     match algorithm_train.compute_pca(&test_data_accessor_train, &ld_blocks_train, &snp_metadata) {
         Ok((output_struct, _)) => {
             k_eff_rust = output_struct.num_principal_components_computed;
@@ -2893,9 +2899,10 @@ where
     let algorithm_b = EigenSNPCoreAlgorithm::new(config_b);
 
     let snp_metadata = create_dummy_snp_metadata(standardized_structured_data.nrows());
-    
+
     // Run EigenSnp A
-    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata) {
+    let output_a = match algorithm_a.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata)
+    {
         Ok((out, _)) => {
             writeln!(
                 outcome_details,
@@ -2944,7 +2951,8 @@ where
     };
 
     // Run EigenSnp B
-    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata) {
+    let output_b = match algorithm_b.compute_pca(&test_data_accessor, ld_block_specs, &snp_metadata)
+    {
         Ok((out, _)) => {
             writeln!(
                 outcome_details,
@@ -3783,7 +3791,11 @@ fn test_refinement_projection_accuracy() {
 
         let algorithm = EigenSNPCoreAlgorithm::new(config);
         let snp_metadata = create_dummy_snp_metadata(d_total_snps);
-        match algorithm.compute_pca(&test_data_accessor_train, &ld_block_specs_train, &snp_metadata) {
+        match algorithm.compute_pca(
+            &test_data_accessor_train,
+            &ld_block_specs_train,
+            &snp_metadata,
+        ) {
             Ok((eigensnp_train_output_struct, _)) => {
                 save_matrix_to_tsv(
                     &eigensnp_train_output_struct

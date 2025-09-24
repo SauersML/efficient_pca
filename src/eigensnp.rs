@@ -841,8 +841,7 @@ impl EigenSNPCoreAlgorithm {
                     writeln!(writer)?;
 
                     // Zip the metadata with the rows of the loadings matrix
-                    for (snp_info, loadings_row) in
-                        block_snp_metadata.iter().zip(local_pcs.rows())
+                    for (snp_info, loadings_row) in block_snp_metadata.iter().zip(local_pcs.rows())
                     {
                         write!(
                             writer,

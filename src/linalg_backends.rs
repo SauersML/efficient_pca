@@ -14,7 +14,15 @@ impl<F: 'static + Copy + Send + Sync> LinAlgBackendProvider<F> {
 }
 
 // --- Common imports needed by multiple sections ---
-use ndarray::{s, Array1, Array2};
+#[cfg(any(
+    feature = "backend_openblas",
+    feature = "backend_openblas_system",
+    feature = "backend_mkl",
+    feature = "backend_mkl_system",
+    feature = "faer_links_ndarray_static_openblas"
+))]
+use ndarray::s;
+use ndarray::{Array1, Array2};
 // use num_traits::Float; // No longer needed directly by provider
 use std::error::Error;
 use std::marker::PhantomData;
@@ -33,7 +41,7 @@ pub struct EighOutput<F: 'static> {
 
 /// Trait for symmetric eigendecomposition (similar to LAPACK's DSYEVR or DSYEVD).
 /// Implementers will typically expect `matrix` to be symmetric.
-pub trait BackendEigh<F: Lapack + 'static + Copy + Send + Sync> {
+pub trait BackendEigh<F: 'static + Copy + Send + Sync> {
     fn eigh_upper(&self, matrix: &Array2<F>)
         -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>>;
 }
@@ -52,7 +60,7 @@ pub struct SVDOutput<F: 'static> {
 }
 
 /// Trait for Singular Value Decomposition.
-pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
+pub trait BackendSVD<F: 'static + Copy + Send + Sync> {
     fn svd_into(
         &self,
         matrix: Array2<F>,
@@ -62,104 +70,121 @@ pub trait BackendSVD<F: Lapack + 'static + Copy + Send + Sync> {
 }
 
 // --- NdarrayLinAlgBackend Implementation (originally from ndarray_backend.rs) ---
-// Specific imports for ndarray-linalg backend
-use ndarray_linalg::{Eigh, Lapack, SVDInto, QR, UPLO};
-// use num_traits::AsPrimitive; // Removed as not directly used by trait impls
+#[cfg(any(
+    feature = "backend_openblas",
+    feature = "backend_openblas_system",
+    feature = "backend_mkl",
+    feature = "backend_mkl_system",
+    feature = "faer_links_ndarray_static_openblas"
+))]
+mod ndarray_backend_impl {
+    use super::{s, Array2, BackendEigh, BackendQR, BackendSVD, EighOutput, SVDOutput};
+    use ndarray_linalg::{Eigh, Lapack, SVDInto, QR, UPLO};
+    use std::error::Error;
 
-// Define a concrete type for ndarray-linalg backend
-#[derive(Debug, Default, Copy, Clone)]
-pub struct NdarrayLinAlgBackend;
+    #[derive(Debug, Default, Copy, Clone)]
+    pub struct NdarrayLinAlgBackend;
 
-// Helper to convert ndarray-linalg's error to Box<dyn Error + Send + Sync>
-fn to_dyn_error<E: Error + Send + Sync + 'static>(e: E) -> Box<dyn Error + Send + Sync> {
-    Box::new(e)
-}
-
-// Single impl block handles f32, f64, complex if you need it
-impl<F> BackendEigh<F> for NdarrayLinAlgBackend
-where
-    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
-{
-    fn eigh_upper(
-        &self,
-        matrix: &Array2<F>,
-    ) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        // Use direct Eigh call
-        let (eigvals, eigvecs) = matrix.eigh(UPLO::Upper).map_err(to_dyn_error)?;
-        Ok(EighOutput {
-            eigenvalues: eigvals,
-            eigenvectors: eigvecs,
-        })
+    fn to_dyn_error<E: Error + Send + Sync + 'static>(e: E) -> Box<dyn Error + Send + Sync> {
+        Box::new(e)
     }
-}
 
-impl<F> BackendQR<F> for NdarrayLinAlgBackend
-where
-    F: Lapack + 'static + Copy + Send + Sync,
-{
-    fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        let (nrows, ncols) = matrix.dim();
-        if nrows == 0 {
-            return Ok(Array2::zeros((0, 0)));
+    impl<F> BackendEigh<F> for NdarrayLinAlgBackend
+    where
+        F: Lapack<Real = F> + 'static + Copy + Send + Sync,
+    {
+        fn eigh_upper(
+            &self,
+            matrix: &Array2<F>,
+        ) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
+            let (eigvals, eigvecs) = matrix.eigh(UPLO::Upper).map_err(to_dyn_error)?;
+            Ok(EighOutput {
+                eigenvalues: eigvals,
+                eigenvectors: eigvecs,
+            })
         }
-        let k = nrows.min(ncols); // Re-introduce k
-                                  // Use direct QR call
-        let (q_full, _) = matrix.qr().map_err(to_dyn_error)?;
-        Ok(q_full.slice_move(s![.., 0..k]))
     }
+
+    impl<F> BackendQR<F> for NdarrayLinAlgBackend
+    where
+        F: Lapack + 'static + Copy + Send + Sync,
+    {
+        fn qr_q_factor(
+            &self,
+            matrix: &Array2<F>,
+        ) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
+            let (nrows, ncols) = matrix.dim();
+            if nrows == 0 {
+                return Ok(Array2::zeros((0, 0)));
+            }
+            let k = nrows.min(ncols);
+            let (q_full, _) = matrix.qr().map_err(to_dyn_error)?;
+            Ok(q_full.slice_move(s![.., 0..k]))
+        }
+    }
+
+    impl<F> BackendSVD<F> for NdarrayLinAlgBackend
+    where
+        F: Lapack<Real = F> + 'static + Copy + Send + Sync,
+    {
+        fn svd_into(
+            &self,
+            matrix: Array2<F>,
+            compute_u: bool,
+            compute_v: bool,
+        ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
+            let original_rows = matrix.nrows();
+            let original_cols = matrix.ncols();
+
+            let (u_option, s, vt_option) = matrix
+                .svd_into(compute_u, compute_v)
+                .map_err(to_dyn_error)?;
+
+            let k_effective = s.len();
+
+            let u_final = if let Some(mut u_mat) = u_option {
+                if u_mat.ncols() > k_effective {
+                    assert_eq!(u_mat.nrows(), original_rows, "U matrix row count mismatch");
+                    u_mat = u_mat.slice_move(s![.., 0..k_effective]);
+                }
+                Some(u_mat)
+            } else {
+                None
+            };
+
+            let vt_final = if let Some(mut vt_mat) = vt_option {
+                if vt_mat.nrows() > k_effective {
+                    assert_eq!(
+                        vt_mat.ncols(),
+                        original_cols,
+                        "VT matrix column count mismatch",
+                    );
+                    vt_mat = vt_mat.slice_move(s![0..k_effective, ..]);
+                }
+                Some(vt_mat)
+            } else {
+                None
+            };
+
+            Ok(SVDOutput {
+                u: u_final,
+                s,
+                vt: vt_final,
+            })
+        }
+    }
+
+    pub use NdarrayLinAlgBackend as Backend;
 }
 
-impl<F> BackendSVD<F> for NdarrayLinAlgBackend
-where
-    F: Lapack<Real = F> + 'static + Copy + Send + Sync,
-{
-    fn svd_into(
-        &self,
-        matrix: Array2<F>,
-        compute_u: bool,
-        compute_v: bool,
-    ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        let original_rows = matrix.nrows();
-        let original_cols = matrix.ncols();
-
-        // Use direct SVDInto call
-        let (u_option, s, vt_option) = matrix
-            .svd_into(compute_u, compute_v)
-            .map_err(to_dyn_error)?;
-
-        let k_effective = s.len();
-
-        let u_final = if let Some(mut u_mat) = u_option {
-            if u_mat.ncols() > k_effective {
-                assert_eq!(u_mat.nrows(), original_rows, "U matrix row count mismatch");
-                u_mat = u_mat.slice_move(s![.., 0..k_effective]);
-            }
-            Some(u_mat)
-        } else {
-            None
-        };
-
-        let vt_final = if let Some(mut vt_mat) = vt_option {
-            if vt_mat.nrows() > k_effective {
-                assert_eq!(
-                    vt_mat.ncols(),
-                    original_cols,
-                    "VT matrix column count mismatch"
-                );
-                vt_mat = vt_mat.slice_move(s![0..k_effective, ..]);
-            }
-            Some(vt_mat)
-        } else {
-            None
-        };
-
-        Ok(SVDOutput {
-            u: u_final,
-            s,
-            vt: vt_final,
-        })
-    }
-}
+#[cfg(any(
+    feature = "backend_openblas",
+    feature = "backend_openblas_system",
+    feature = "backend_mkl",
+    feature = "backend_mkl_system",
+    feature = "faer_links_ndarray_static_openblas"
+))]
+use ndarray_backend_impl::Backend as NdarrayLinAlgBackend;
 
 // --- FaerLinAlgBackend Implementation (originally from faer_backend.rs) ---
 #[cfg(feature = "backend_faer")]

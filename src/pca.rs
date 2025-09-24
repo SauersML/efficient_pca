@@ -3,7 +3,9 @@
 #![doc = include_str!("../README.md")]
 
 use ndarray::parallel::prelude::*;
-use ndarray::{s, Array1, Array2, ArrayViewMut1, Axis, ShapeBuilder};
+#[cfg(feature = "backend_faer")]
+use ndarray::ShapeBuilder;
+use ndarray::{s, Array1, Array2, ArrayViewMut1, Axis};
 // UPLO is no longer needed as the backend's eigh_upper handles this.
 // QR trait for .qr() and SVDInto for .svd_into() are replaced by backend calls.
 // Eigh trait for .eigh() is replaced by backend calls.

@@ -1,3 +1,7 @@
+#[path = "python_bootstrap.rs"]
+mod python_bootstrap;
+
+use python_bootstrap::ensure_python_packages_installed;
 // For the crate's PCA
 use efficient_pca::PCA;
 
@@ -8,7 +12,6 @@ use ndarray::{array, Array2, Axis};
 use linfa::dataset::DatasetBase;
 use linfa::prelude::*;
 use linfa_reduction::Pca as LinfaPcaModel; // The PCA implementation from Linfa, aliased
-use ndarray_linalg::{Eigh, QR, UPLO};
 
 use rand::Rng;
 use rand::SeedableRng;
@@ -19,6 +22,79 @@ fn generate_random_data(n_samples: usize, n_features: usize, seed: u64) -> Array
     Array2::from_shape_fn((n_samples, n_features), |_| {
         rng.gen_range(0..=2) as f64 // Generates 0.0, 1.0, or 2.0
     })
+}
+
+fn orthonormalize_columns(matrix: &Array2<f64>) -> Array2<f64> {
+    let (rows, cols) = matrix.dim();
+    let mut q = Array2::<f64>::zeros((rows, cols));
+
+    for j in 0..cols {
+        let mut v = matrix.column(j).to_owned();
+        for k in 0..j {
+            let projection = v.dot(&q.column(k));
+            for i in 0..rows {
+                v[i] -= projection * q[[i, k]];
+            }
+        }
+
+        let norm_squared: f64 = v.iter().map(|&val| val * val).sum();
+        if norm_squared > 1e-24 {
+            let norm = norm_squared.sqrt();
+            for i in 0..rows {
+                q[[i, j]] = v[i] / norm;
+            }
+        } else {
+            for i in 0..rows {
+                q[[i, j]] = 0.0;
+            }
+        }
+    }
+
+    q
+}
+
+#[cfg(feature = "backend_faer")]
+fn eigenvalues_descending(matrix: &Array2<f64>) -> Vec<f64> {
+    use faer::linalg::solvers::SelfAdjointEigen;
+    use faer::{MatRef, Side};
+
+    let (nrows, ncols) = matrix.dim();
+    assert_eq!(nrows, ncols, "covariance matrix must be square");
+    if nrows == 0 {
+        return Vec::new();
+    }
+
+    let eigen = if let Some(slice) = matrix.as_slice_memory_order() {
+        let mat_ref = if matrix.is_standard_layout() {
+            MatRef::from_row_major_slice(slice, nrows, ncols)
+        } else {
+            MatRef::from_column_major_slice(slice, nrows, ncols)
+        };
+        SelfAdjointEigen::new(mat_ref, Side::Upper)
+            .expect("faer self-adjoint eigen decomposition failed")
+    } else {
+        let owned = matrix.to_owned();
+        let slice = owned
+            .as_slice_memory_order()
+            .expect("owned covariance copy should be contiguous");
+        let mat_ref = MatRef::from_row_major_slice(slice, nrows, ncols);
+        SelfAdjointEigen::new(mat_ref, Side::Upper)
+            .expect("faer self-adjoint eigen decomposition failed")
+    };
+
+    let mut values: Vec<f64> = eigen.S().column_vector().iter().copied().collect();
+    values.sort_by(|a, b| b.partial_cmp(a).expect("eigenvalues must be comparable"));
+    values
+}
+
+#[cfg(not(feature = "backend_faer"))]
+fn eigenvalues_descending(matrix: &Array2<f64>) -> Vec<f64> {
+    use ndarray_linalg::{Eigh, UPLO};
+
+    let (mut eigenvalues, _) = matrix.eigh(UPLO::Upper).expect("eigendecomposition failed");
+    let mut values = eigenvalues.to_vec();
+    values.sort_by(|a, b| b.partial_cmp(a).expect("eigenvalues must be comparable"));
+    values
 }
 
 #[cfg(test)]
@@ -409,7 +485,7 @@ mod genome_tests {
         let random_basis = Array2::<f64>::from_shape_fn((n_samples, n_real_components), |_| {
             rng.gen_range(-1.0..1.0)
         });
-        let (q, _) = random_basis.qr().unwrap();
+        let q = super::orthonormalize_columns(&random_basis);
 
         // Make sure we have orthogonal unit vectors for true factors
         let true_factors = q.slice(s![.., 0..n_real_components]).to_owned();
@@ -471,6 +547,7 @@ mod genome_tests {
             }
         }
 
+        super::ensure_python_packages_installed();
         let cmd_output = Command::new("python3")
             .args(&vec![
                 "tests/pca.py",
@@ -496,11 +573,7 @@ mod genome_tests {
             }
         }
         let cov_matrix = centered_data.dot(&centered_data.t()) / (n_samples as f64 - 1.0);
-        let (mut eigenvalues, _) = cov_matrix.eigh(UPLO::Upper).unwrap();
-        eigenvalues
-            .as_slice_mut()
-            .unwrap()
-            .sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let eigenvalues = super::eigenvalues_descending(&cov_matrix);
         let total_variance: f64 = eigenvalues.iter().take(n_components).sum();
 
         println!("\n[Comparison] Explained Variance:");
@@ -1258,6 +1331,7 @@ mod pca_tests {
         tol: f64,
         test_name: &str,
     ) {
+        super::ensure_python_packages_installed();
         fn parse_transformed_csv_from_python(output_text: &str) -> ndarray::Array2<f64> {
             println!("[Rust Debug] Entering parse_transformed_csv_from_python...");
             let mut lines = Vec::new();
