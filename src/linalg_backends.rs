@@ -720,7 +720,7 @@ where
         &self,
         matrix: &Array2<F>,
     ) -> Result<EighOutput<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.eigh_upper(matrix)
+        NdarrayLinAlgBackend::default().eigh_upper(matrix)
     }
 }
 
@@ -761,7 +761,7 @@ where
     NdarrayLinAlgBackend: BackendQR<F>,
 {
     fn qr_q_factor(&self, matrix: &Array2<F>) -> Result<Array2<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.qr_q_factor(matrix)
+        NdarrayLinAlgBackend::default().qr_q_factor(matrix)
     }
 }
 
@@ -808,6 +808,6 @@ where
         compute_u: bool,
         compute_v: bool,
     ) -> Result<SVDOutput<F>, Box<dyn Error + Send + Sync>> {
-        NdarrayLinAlgBackend.svd_into(matrix, compute_u, compute_v)
+        NdarrayLinAlgBackend::default().svd_into(matrix, compute_u, compute_v)
     }
 }
