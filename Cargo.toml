@@ -70,6 +70,8 @@ backend_mkl_system = ["dep:ndarray-linalg", "ndarray-linalg/intel-mkl-system"]
 backend_faer = ["dep:faer"]
 faer_links_ndarray_static_openblas = ["backend_faer", "backend_openblas"]
 
+eigensnp = [] # Requires nightly Rust
+
 # --- Utility Features ---
 jemalloc = ["dep:jemalloc-ctl"]
 enable-eigensnp-diagnostics = []
