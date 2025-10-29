@@ -485,23 +485,51 @@ jobs:
           path: artifacts/ # All downloaded artifacts will be in subdirectories under 'artifacts/'
                            # e.g., artifacts/eigensnp-test-artifacts-openblas/target/test_artifacts/...
 
+      - name: Check for eigensnp artifacts
+        id: check-eigensnp-artifacts
+        run: |
+          mkdir -p artifacts/
+          if [ -n "$(find artifacts/ -name "eigensnp_summary_results.tsv" -print -quit)" ]; then
+            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: List downloaded artifact structure
         run: |
           echo "Listing contents of artifacts/ directory:"
-          ls -R artifacts/
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts)" ]; then
+            ls -R artifacts/
+          else
+            echo "artifacts/ directory does not exist or is empty"
+          fi
           echo "-----------------------------------------"
           echo "Searching for eigensnp_summary_results.tsv files:"
-          find artifacts/ -name "eigensnp_summary_results.tsv" -print
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts)" ]; then
+            find artifacts/ -name "eigensnp_summary_results.tsv" -print || true
+          else
+            echo "No eigensnp_summary_results.tsv files found"
+          fi
           echo "-----------------------------------------"
           echo "Searching for any .tsv files:"
-          find artifacts/ -name "*.tsv" -print
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts)" ]; then
+            find artifacts/ -name "*.tsv" -print || true
+          else
+            echo "No .tsv files found"
+          fi
           echo "-----------------------------------------"
 
+      - name: Skip analysis when no eigensnp artifacts are present
+        if: steps.check-eigensnp-artifacts.outputs.has_artifacts != 'true'
+        run: echo "No eigensnp_summary_results.tsv artifacts were found; skipping analysis."
+
       - name: Run analysis script
+        if: steps.check-eigensnp-artifacts.outputs.has_artifacts == 'true'
         run: |
           python tests/analyze_eigensnp_results.py --input-dir artifacts/ --output-dir analysis_output/
 
       - name: Upload analysis report
+        if: steps.check-eigensnp-artifacts.outputs.has_artifacts == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: eigensnp-analysis-report
