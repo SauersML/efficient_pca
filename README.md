@@ -118,10 +118,16 @@ Loads a PCA model from a file previously saved with `save_model`. The loaded mod
 
 EigenSNP is a sophisticated Principal Component Analysis algorithm specifically designed for large-scale genomic datasets, such as those found in biobanks or population-scale studies. It efficiently handles datasets where the number of SNPs (features) significantly exceeds the number of samples.
 
+To use EigenSNP, enable the `eigensnp` feature in your `Cargo.toml` (note that this currently requires the use of nightly Rust):
+```toml
+[dependencies]
+efficient_pca = { version = "*", features = ["eigensnp"] }
+```
+
 ### Key Features
 
 * 🧬 **Genomic-Optimized**: Designed for SNP data with linkage disequilibrium (LD) block structure
-* ⚡ **Scalable**: Uses randomized SVD (RSVD) and memory-efficient f32 precision for large datasets  
+* ⚡ **Scalable**: Uses randomized SVD (RSVD) and memory-efficient f32 precision for large datasets
 * 🔧 **Highly Configurable**: Extensive tuning parameters for different dataset characteristics
 * 📊 **Multi-Stage Algorithm**: Local eigenSNP basis learning → condensed features → global PCA → refinement
 * 🔍 **Diagnostics**: Optional detailed diagnostics for algorithm analysis (with feature flag)
