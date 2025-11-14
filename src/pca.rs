@@ -361,7 +361,7 @@ fn faer_eigh_upper(matrix: &Array2<f64>) -> Result<(Array1<f64>, Array2<f64>), B
 /// and can be used to transform data into the principal component space.
 /// It supports both exact PCA computation and a faster, approximate randomized PCA.
 /// Models can also be loaded from/saved to files.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct PCA {
     /// The rotation matrix (principal components).
     /// Shape: (n_features, k_components)
