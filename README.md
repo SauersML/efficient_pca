@@ -2,6 +2,8 @@
 
 This Rust library provides Principal Component Analysis (PCA), both exact and fast approximate methods. It is a modified version of the original work by Erik Garrison. Forked from https://github.com/ekg/pca.
 
+- Please create issues for bugs or feature requests. Your feedback is appreciated!
+
 ---
 ## Core Features
 
